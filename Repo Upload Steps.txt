@@ -1,0 +1,28 @@
+USB FILE LOCKER REPO SETUP
+
+Main app repo folder:
+C:\Users\jonis\OneDrive\Desktop\USBFileLockerApp
+
+Standalone API repo folder:
+C:\Users\jonis\OneDrive\Desktop\USBFileLockerAPI-Repo
+
+Suggested GitHub repo names:
+- usb-file-locker-app
+- usb-file-locker-api
+
+What to upload:
+- Main app repo for the full Windows toolkit
+- API repo for the Railway website or product API
+
+Push flow:
+1. Create an empty GitHub repo.
+2. Copy the remote URL.
+3. In the repo folder, run:
+   git remote add origin <your-url>
+   git push -u origin main
+
+Review before pushing:
+- Make sure settings.json is not included
+- Make sure .key files are not included
+- Make sure .locked files are not included
+- Make sure audit logs are not included

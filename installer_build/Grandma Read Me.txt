@@ -1,0 +1,75 @@
+PRIVACY AND PC SAFETY - SIMPLE USB
+==================================
+
+START HERE
+----------
+1. Plug in the USB drive.
+2. Double-click "START HERE - GRANDMA.cmd".
+3. Press 1 for USB File Locker.
+4. Press 2 for PC Safety Check.
+5. Press 3 to read these instructions again.
+
+USB FILE LOCKER
+---------------
+Use this to lock private files.
+
+First time:
+1. Click "CREATE MASTER USB KEY".
+2. Save the key on this USB drive.
+3. Keep the USB drive safe.
+
+To lock files:
+1. Click "LOAD USB KEY".
+2. Pick the key on the USB drive.
+3. Click "ADD FILES" or "ADD FOLDER".
+4. Type the optional PIN. It is exact and case-sensitive.
+5. Click "LOCK COPY". Keep the original until unlocking has been tested.
+
+To unlock:
+1. Open USB File Locker.
+2. Load the USB key.
+3. Add the .locked file.
+4. Type the exact PIN used when locking.
+5. Click "UNLOCK TO FOLDER" if you want to keep the unlocked copy.
+
+New locks are portable between Windows PCs.
+
+Before locking important files:
+1. Open RECOVERY CENTER.
+2. Click RUN KEY + PIN RECOVERY TEST.
+3. Back up the master key to a separate private USB drive.
+4. Use COMPARE A BACKUP KEY to check it.
+
+Large folders run in the background. The app stays responsive and shows progress.
+
+If the app says "OLD WINDOWS-BOUND LOCK":
+1. Take the old .locked file to the original PC and Windows account.
+2. Load the correct USB key and type the exact old PIN.
+3. Select the old lock and click "UPGRADE OLD LOCKS".
+4. Bring the new .portable.locked file to this PC.
+5. Keep the old lock until the portable copy has been tested.
+
+PC SAFETY CHECK
+---------------
+Use this to check Microsoft Defender.
+
+Click "QUICK SCAN" for a normal check.
+Click "UPDATE PROTECTION" to update Defender.
+Click "FULL SCAN" only when you have lots of time.
+
+LOCKED AUDIT REPORT
+-------------------
+USB File Locker has an "AUDIT LOG" button.
+Click "EXPORT LOCKED LOGS" to make a locked safety report.
+It needs the USB key and optional PIN to open.
+
+PRIVACY
+-------
+The audit log records actions, times, success/failure, and anonymous event IDs.
+It does NOT record keystrokes, passwords, PINs, USB secrets, file contents,
+client names, or full file paths.
+
+IMPORTANT
+---------
+Do not lose the USB key. Locked files cannot be recovered without it.
+This USB package is not HIPAA certified and does not prove legal compliance.
