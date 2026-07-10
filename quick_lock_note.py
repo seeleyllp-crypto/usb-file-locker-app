@@ -9,6 +9,9 @@ import usb_file_locker as locker
 class QuickLockNoteApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("quick-lock-note", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Quick Lock Note")
         self.geometry("900x680")
         self.minsize(820, 620)

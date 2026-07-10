@@ -18,6 +18,9 @@ def summary_signature(summary):
 class GlobalBreachGuard(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("global-breach-guard", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Global Breach Guard")
         self.geometry("520x360")
         self.minsize(460, 320)

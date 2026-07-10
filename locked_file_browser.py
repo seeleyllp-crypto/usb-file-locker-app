@@ -10,6 +10,9 @@ import usb_file_locker as locker
 class LockedFileBrowser(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("locked-file-browser", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Locked File Browser")
         self.geometry("1180x760")
         self.minsize(1020, 680)

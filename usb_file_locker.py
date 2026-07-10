@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import queue
 import secrets
 import shutil
@@ -15,9 +16,11 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 import zipfile
 from ctypes import wintypes
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -34,6 +37,45 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
+DESKTOP_APP_VERSION = "2026.07.10"
+DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
+LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
+LICENSE_MAX_AGE_DAYS = 30
+PLAN_FEATURE_TITLES = {
+    "portable-locking": "Portable locking tools",
+    "quick-lock-note": "Quick lock notes",
+    "personal-vault": "Personal Vault",
+    "locked-file-browser": "Locked File Browser",
+    "audit-log-viewer": "Audit Log Viewer",
+    "perm-unlock": "PERM UNLOCK workflow",
+    "privacy-safety-hub": "Privacy Safety Hub",
+    "global-breach-guard": "Global Breach Guard",
+    "text-log-processor": "Text Log Processor",
+    "owner-usb-mode": "Owner USB mode",
+    "signature-bundle": "Signature bundle extras",
+}
+PLAN_FEATURE_REQUIREMENTS = {
+    "portable-locking": "$5 Starter",
+    "quick-lock-note": "$5 Starter",
+    "personal-vault": "$50 Plus",
+    "locked-file-browser": "$50 Plus",
+    "audit-log-viewer": "$50 Plus",
+    "perm-unlock": "$50 Plus",
+    "privacy-safety-hub": "$100 Pro",
+    "global-breach-guard": "$100 Pro",
+    "text-log-processor": "$100 Pro",
+    "owner-usb-mode": "$100 Pro",
+    "signature-bundle": "$200 Signature",
+}
+SCRIPT_LICENSE_FEATURES = {
+    "privacy_safety_hub.py": "privacy-safety-hub",
+    "personal_vault_pad.py": "personal-vault",
+    "audit_log_viewer.py": "audit-log-viewer",
+    "global_breach_guard.py": "global-breach-guard",
+    "text_log_processor.py": "text-log-processor",
+    "locked_file_browser.py": "locked-file-browser",
+    "perm_unlock_workbench.py": "perm-unlock",
+}
 
 
 def normalize_saved_path(path):
@@ -1328,6 +1370,341 @@ def save_owner_policy(settings, policy):
     save_settings(settings)
 
 
+def utc_now_text():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_utc_text(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def license_state_template():
+    return {
+        "server_url": DEFAULT_LICENSE_SERVER,
+        "license_key": "",
+        "receipt": "",
+        "status": "unlicensed",
+        "plan_id": "",
+        "plan_name": "",
+        "features": [],
+        "machine_id": "",
+        "machine_name": "",
+        "license_id": "",
+        "customer_label": "",
+        "customer_email": "",
+        "license_expires_at": "",
+        "receipt_expires_at": "",
+        "last_checked_utc": "",
+        "last_error": "",
+    }
+
+
+def normalize_license_server_url(url):
+    text = str(url or "").strip()
+    if not text:
+        return DEFAULT_LICENSE_SERVER
+    return text.rstrip("/")
+
+
+def current_machine_fingerprint():
+    pieces = [
+        os.environ.get("COMPUTERNAME", ""),
+        os.environ.get("USERNAME", ""),
+        os.environ.get("USERDOMAIN", ""),
+        platform.node(),
+        platform.system(),
+        platform.release(),
+        os.environ.get("PROCESSOR_ARCHITECTURE", ""),
+    ]
+    try:
+        identity = volume_identity(APP_DIR)
+        pieces.extend([identity.get("serial", ""), identity.get("label", "")])
+    except Exception:
+        pass
+    data = "|".join(piece for piece in pieces if piece).encode("utf-8")
+    if not data:
+        data = b"usb-file-locker-machine"
+    return hashlib.sha256(data).hexdigest()[:32].upper()
+
+
+def current_machine_name():
+    return (
+        os.environ.get("COMPUTERNAME")
+        or platform.node()
+        or "This PC"
+    )
+
+
+def normalize_license_state(data=None):
+    state = license_state_template()
+    if isinstance(data, dict):
+        for key in state:
+            if key in data:
+                state[key] = data[key]
+    state["server_url"] = normalize_license_server_url(state.get("server_url"))
+    state["license_key"] = str(state.get("license_key", "") or "").strip()
+    state["receipt"] = str(state.get("receipt", "") or "").strip()
+    state["status"] = str(state.get("status", "unlicensed") or "unlicensed").strip().lower()
+    state["plan_id"] = str(state.get("plan_id", "") or "").strip().lower()
+    state["plan_name"] = str(state.get("plan_name", "") or "").strip()
+    state["machine_id"] = str(state.get("machine_id", "") or "").strip() or current_machine_fingerprint()
+    state["machine_name"] = str(state.get("machine_name", "") or "").strip() or current_machine_name()
+    state["license_id"] = str(state.get("license_id", "") or "").strip()
+    state["customer_label"] = str(state.get("customer_label", "") or "").strip()
+    state["customer_email"] = str(state.get("customer_email", "") or "").strip()
+    state["license_expires_at"] = str(state.get("license_expires_at", "") or "").strip()
+    state["receipt_expires_at"] = str(state.get("receipt_expires_at", "") or "").strip()
+    state["last_checked_utc"] = str(state.get("last_checked_utc", "") or "").strip()
+    state["last_error"] = str(state.get("last_error", "") or "").strip()
+    features = state.get("features", [])
+    if isinstance(features, str):
+        features = [features]
+    state["features"] = sorted({str(item).strip() for item in features if str(item).strip()})
+    return state
+
+
+def load_license_state(settings):
+    settings = settings if isinstance(settings, dict) else {}
+    encoded = settings.get("license_state")
+    if encoded:
+        try:
+            encrypted = base64.b64decode(str(encoded).encode("ascii"), validate=True)
+            plain = dpapi_unprotect(encrypted, LICENSE_STATE_ENTROPY)
+            payload = json.loads(plain.decode("utf-8"))
+            return normalize_license_state(payload if isinstance(payload, dict) else {})
+        except Exception:
+            pass
+    legacy = settings.get("license")
+    if isinstance(legacy, dict):
+        return normalize_license_state(legacy)
+    return normalize_license_state({})
+
+
+def save_license_state(settings, state):
+    normalized = normalize_license_state(state)
+    plain = json.dumps(normalized, sort_keys=True).encode("utf-8")
+    settings["license_state"] = base64.b64encode(dpapi_protect(plain, LICENSE_STATE_ENTROPY)).decode("ascii")
+    settings.pop("license", None)
+    save_settings(settings)
+    return normalized
+
+
+def clear_license_state(settings, server_url=None):
+    state = license_state_template()
+    if server_url:
+        state["server_url"] = normalize_license_server_url(server_url)
+    return save_license_state(settings, state)
+
+
+def masked_license_key(key):
+    text = str(key or "").strip()
+    if len(text) <= 14:
+        return text
+    return f"{text[:8]}...{text[-6:]}"
+
+
+def feature_title(feature_id):
+    return PLAN_FEATURE_TITLES.get(feature_id, feature_id.replace("-", " ").title())
+
+
+def feature_required_plan(feature_id):
+    return PLAN_FEATURE_REQUIREMENTS.get(feature_id, "an active license")
+
+
+def license_is_active(state):
+    current = normalize_license_state(state)
+    if current.get("status") != "active":
+        return False
+    if not current.get("license_key") or not current.get("receipt"):
+        return False
+    if current.get("machine_id") != current_machine_fingerprint():
+        return False
+    receipt_expires = parse_utc_text(current.get("receipt_expires_at"))
+    if receipt_expires and receipt_expires < datetime.now(timezone.utc):
+        return False
+    if current.get("last_checked_utc"):
+        checked = parse_utc_text(current.get("last_checked_utc"))
+        if checked and checked < datetime.now(timezone.utc) - timedelta(days=LICENSE_MAX_AGE_DAYS):
+            return False
+    return True
+
+
+def license_feature_allowed(feature_id, settings=None, state=None):
+    if not feature_id:
+        return True
+    current = normalize_license_state(state if state is not None else load_license_state(settings or load_settings()))
+    if not license_is_active(current):
+        return False
+    return feature_id in set(current.get("features", []))
+
+
+def license_status_text(state):
+    current = normalize_license_state(state)
+    if license_is_active(current):
+        plan_name = current.get("plan_name") or current.get("plan_id", "").title()
+        return f"License active: {plan_name}"
+    if current.get("license_key"):
+        status = current.get("status", "saved").replace("_", " ").upper()
+        return f"License saved: {status}"
+    return "License inactive: open License Center"
+
+
+def license_summary_text(state):
+    current = normalize_license_state(state)
+    lines = [
+        f"Server: {current.get('server_url') or DEFAULT_LICENSE_SERVER}",
+        f"Machine ID: {current.get('machine_id') or current_machine_fingerprint()}",
+    ]
+    if current.get("license_key"):
+        lines.append(f"License key: {masked_license_key(current['license_key'])}")
+    if current.get("plan_name"):
+        lines.append(f"Plan: {current['plan_name']}")
+    if current.get("last_checked_utc"):
+        lines.append(f"Last checked: {current['last_checked_utc']}")
+    if current.get("receipt_expires_at"):
+        lines.append(f"Receipt expires: {current['receipt_expires_at']}")
+    if current.get("last_error"):
+        lines.append(f"Last error: {current['last_error']}")
+    return "\n".join(lines)
+
+
+def license_feature_lines(state):
+    current = normalize_license_state(state)
+    features = current.get("features", [])
+    if not features:
+        return "No premium entitlements loaded yet."
+    return "\n".join(f"- {feature_title(feature_id)}" for feature_id in features)
+
+
+def license_required_message(feature_id):
+    return (
+        f"{feature_title(feature_id)} needs an active {feature_required_plan(feature_id)} license.\n\n"
+        f"Open License Center, paste the license key, and activate it on this PC.\n\n"
+        f"Unlocking existing files and recovery tools still stay available."
+    )
+
+
+def ensure_license_feature(feature_id, parent=None, show_message=True):
+    if license_feature_allowed(feature_id):
+        return True
+    if show_message:
+        messagebox.showwarning("License required", license_required_message(feature_id), parent=parent)
+    return False
+
+
+def license_api_post_json(server_url, api_path, payload):
+    url = normalize_license_server_url(server_url) + api_path
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+            message = payload.get("message") or payload.get("error") or raw
+        except Exception:
+            message = raw or f"License server returned HTTP {exc.code}."
+        raise ValueError(message) from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach the license server.\n\n{exc.reason}") from exc
+    try:
+        payload = json.loads(raw) if raw else {}
+    except Exception as exc:
+        raise ValueError("License server returned invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("License server returned an unexpected response.")
+    if payload.get("ok") is False:
+        raise ValueError(str(payload.get("message") or payload.get("error") or "License request failed."))
+    return payload
+
+
+def apply_license_response(state, payload):
+    current = normalize_license_state(state)
+    plan = payload.get("plan") or {}
+    license_info = payload.get("license") or {}
+    activation = payload.get("activation") or {}
+    message = str(payload.get("message", "") or "").strip()
+    current["status"] = str(payload.get("status", "active" if payload.get("active") else current.get("status", "saved"))).strip().lower()
+    current["plan_id"] = str(plan.get("id", current.get("plan_id", "")) or "").strip().lower()
+    current["plan_name"] = str(plan.get("name", current.get("plan_name", "")) or "").strip()
+    entitlements = plan.get("entitlements", [])
+    if isinstance(entitlements, str):
+        entitlements = [entitlements]
+    current["features"] = sorted({str(item).strip() for item in entitlements if str(item).strip()})
+    current["receipt"] = str(payload.get("receipt", current.get("receipt", "")) or "").strip()
+    current["license_id"] = str(license_info.get("license_id", current.get("license_id", "")) or "").strip()
+    current["customer_label"] = str(license_info.get("customer_label", current.get("customer_label", "")) or "").strip()
+    current["customer_email"] = str(license_info.get("customer_email", current.get("customer_email", "")) or "").strip()
+    current["license_expires_at"] = str(license_info.get("expires_at_utc", current.get("license_expires_at", "")) or "").strip()
+    current["receipt_expires_at"] = str(activation.get("valid_until_utc", current.get("receipt_expires_at", "")) or "").strip()
+    current["machine_id"] = current_machine_fingerprint()
+    current["machine_name"] = current_machine_name()
+    current["last_checked_utc"] = str(payload.get("server_time_utc", utc_now_text()) or utc_now_text()).strip()
+    current["last_error"] = "" if payload.get("active") else message
+    return normalize_license_state(current)
+
+
+def build_license_failure_state(state, message):
+    current = normalize_license_state(state)
+    current["last_error"] = str(message).strip()
+    if current.get("status") == "active" and license_is_active(current):
+        return current
+    current["status"] = "error"
+    return current
+
+
+def activate_license_online(state):
+    current = normalize_license_state(state)
+    if not current.get("license_key"):
+        raise ValueError("Paste a license key first.")
+    payload = license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/licenses/activate",
+        {
+            "license_key": current.get("license_key"),
+            "machine_id": current_machine_fingerprint(),
+            "machine_name": current_machine_name(),
+            "app_version": DESKTOP_APP_VERSION,
+        },
+    )
+    return apply_license_response(current, payload)
+
+
+def verify_license_online(state):
+    current = normalize_license_state(state)
+    if not current.get("license_key"):
+        raise ValueError("Paste a license key first.")
+    payload = license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/licenses/verify",
+        {
+            "license_key": current.get("license_key"),
+            "receipt": current.get("receipt", ""),
+            "machine_id": current_machine_fingerprint(),
+            "app_version": DESKTOP_APP_VERSION,
+        },
+    )
+    return apply_license_response(current, payload)
+
+
 def owner_key_allowed(key, policy):
     if not policy:
         return True, ""
@@ -1355,6 +1732,9 @@ def pythonw_path():
 
 def launch_companion_script(script_name, *args):
     script_name = str(script_name)
+    feature_id = SCRIPT_LICENSE_FEATURES.get(script_name)
+    if feature_id and not license_feature_allowed(feature_id):
+        raise PermissionError(license_required_message(feature_id))
     if getattr(sys, "frozen", False):
         exe_path = RUNTIME_DIR / f"{Path(script_name).stem}.exe"
         if not exe_path.exists():
@@ -2404,6 +2784,8 @@ class USBFileLocker(tk.Tk):
         self.key_status = tk.StringVar(value="LOCKED - load your master USB key")
         self.access_status = tk.StringVar(value="")
         self.breach_status = tk.StringVar(value="Breach detection ready.")
+        self.license_state = load_license_state(self.settings)
+        self.license_status = tk.StringVar(value=license_status_text(self.license_state))
         self.pin_visible = tk.BooleanVar(value=False)
         self.pin_mode = tk.StringVar(value="USB KEY ONLY")
         self.progress_value = tk.DoubleVar(value=0)
@@ -2412,12 +2794,14 @@ class USBFileLocker(tk.Tk):
         self.cancel_event = threading.Event()
         self.busy_buttons = []
         self.key_required_buttons = []
+        self.license_gated_buttons = {}
         self.secondary_windows = []
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
         self.apply_access_state()
         self.refresh_breach_status()
+        self.after(3000, self.refresh_license_state_silent)
         self.after(20000, self.periodic_breach_refresh)
         self.after(1500, self.monitor_loaded_key)
 
@@ -2436,6 +2820,7 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w", pady=(0, 10))
         tk.Label(outer, textvariable=self.breach_status, bg=BG, fg=YELLOW, font=("Segoe UI", 9, "bold"), wraplength=860, justify="left").pack(anchor="w", pady=(0, 10))
+        tk.Label(outer, textvariable=self.license_status, bg=BG, fg=GREEN, font=("Segoe UI", 9, "bold"), wraplength=860, justify="left").pack(anchor="w", pady=(0, 12))
 
         panel = tk.Frame(outer, bg=PANEL)
         panel.pack(fill="both", expand=True)
@@ -2450,6 +2835,8 @@ class USBFileLocker(tk.Tk):
         self.panic_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.register_button = tk.Button(top, text="REGISTER .LOCKED", command=self.register_association_from_gui, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.register_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
+        self.license_button = tk.Button(top, text="LICENSE CENTER", command=self.open_license_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.license_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.apps_hub_button = tk.Button(top, text="APPS HUB", command=self.open_apps_hub, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.apps_hub_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.recovery_button = tk.Button(top, text="RECOVERY CENTER", command=self.open_recovery_center, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
@@ -2612,7 +2999,6 @@ class USBFileLocker(tk.Tk):
         tk.Label(outer, textvariable=self.status, bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 0))
         self.key_required_buttons = [
             self.recovery_button,
-            self.audit_button,
             self.add_files_button,
             self.add_folder_button,
             self.clear_files_button,
@@ -2629,6 +3015,22 @@ class USBFileLocker(tk.Tk):
             self.lock_note_button,
             self.personal_vault_button,
         ]
+        self.license_gated_buttons = {
+            self.apps_hub_button: "privacy-safety-hub",
+            self.breach_button: "global-breach-guard",
+            self.global_guard_button: "global-breach-guard",
+            self.owner_enable_button: "owner-usb-mode",
+            self.owner_disable_button: "owner-usb-mode",
+            self.owner_verify_button: "owner-usb-mode",
+            self.scan_personal_button: "portable-locking",
+            self.lock_button: "portable-locking",
+            self.lock_remove_button: "portable-locking",
+            self.lock_note_button: "quick-lock-note",
+            self.add_perm_unlock_items_button: "perm-unlock",
+            self.perm_unlock_button: "perm-unlock",
+            self.perm_unlock_folder_button: "perm-unlock",
+            self.personal_vault_button: "personal-vault",
+        }
 
     def toggle_pin_visibility(self):
         self.pin_entry.configure(show="" if self.pin_visible.get() else "*")
@@ -2648,6 +3050,16 @@ class USBFileLocker(tk.Tk):
             return False
         allowed, _message = owner_key_allowed(self.key, self.owner_policy)
         return allowed
+
+    def update_license_state_ui(self, state=None, save=False):
+        if state is None:
+            self.license_state = load_license_state(self.settings)
+        else:
+            self.license_state = normalize_license_state(state)
+            if save:
+                self.license_state = save_license_state(self.settings, self.license_state)
+        self.license_status.set(license_status_text(self.license_state))
+        return self.license_state
 
     def apply_access_state(self):
         locked = not self.active_key_matches_owner_policy()
@@ -2670,6 +3082,9 @@ class USBFileLocker(tk.Tk):
         disable_owner_off = not self.owner_policy or not self.active_key_matches_owner_policy()
         self.owner_disable_button.configure(state="disabled" if disable_owner_off else "normal")
         self.owner_verify_button.configure(state="normal" if self.owner_policy else "disabled")
+        for button, feature_id in self.license_gated_buttons.items():
+            if button.cget("state") != "disabled" and not license_feature_allowed(feature_id, state=self.license_state):
+                button.configure(state="disabled")
 
     def unload_session(self, reason, action_name, result):
         previous_key = self.key["key_id"] if self.key else ""
@@ -2723,12 +3138,186 @@ class USBFileLocker(tk.Tk):
         )
 
     def open_apps_hub(self):
+        if not ensure_license_feature("privacy-safety-hub", parent=self):
+            self.status.set("Apps Hub needs an active Pro license.")
+            return
         try:
             launch_companion_script("privacy_safety_hub.py")
             self.status.set("Opened Apps Hub.")
         except Exception as exc:
             self.status.set("Could not open Apps Hub.")
             messagebox.showerror("Could not open Apps Hub", str(exc))
+
+    def refresh_license_state_silent(self):
+        state = load_license_state(self.settings)
+        if not state.get("license_key") or not state.get("receipt"):
+            self.update_license_state_ui(state)
+            self.apply_access_state()
+            return
+
+        def worker():
+            try:
+                updated = verify_license_online(state)
+            except Exception as exc:
+                updated = build_license_failure_state(state, exc)
+            try:
+                self.after(0, lambda: self.winfo_exists() and self.finish_license_refresh(updated))
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_license_refresh(self, state):
+        self.update_license_state_ui(state, save=True)
+        self.apply_access_state()
+
+    def open_license_center(self):
+        dialog = tk.Toplevel(self)
+        self.register_secondary_window(dialog)
+        dialog.title("License Center")
+        dialog.geometry("760x620")
+        dialog.minsize(700, 580)
+        dialog.configure(bg=BG)
+
+        state = normalize_license_state(self.license_state)
+        server_var = tk.StringVar(value=state.get("server_url", DEFAULT_LICENSE_SERVER))
+        license_var = tk.StringVar(value=state.get("license_key", ""))
+        status_var = tk.StringVar(value=license_status_text(state))
+        summary_var = tk.StringVar(value=license_summary_text(state))
+        features_var = tk.StringVar(value=license_feature_lines(state))
+        machine_var = tk.StringVar(value=current_machine_fingerprint())
+
+        tk.Label(dialog, text="License Center", bg=BG, fg=TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=22, pady=(20, 4))
+        tk.Label(
+            dialog,
+            text="Activate this PC against your VaultLink API license, then the app will unlock the right tool set for the saved plan.",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", padx=22, pady=(0, 16))
+
+        panel = tk.Frame(dialog, bg=PANEL)
+        panel.pack(fill="both", expand=True, padx=22, pady=(0, 20))
+
+        def add_label(text, row):
+            tk.Label(panel, text=text, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).grid(row=row, column=0, sticky="w", padx=18, pady=(16 if row == 0 else 12, 4))
+
+        add_label("LICENSE API URL", 0)
+        server_entry = tk.Entry(panel, textvariable=server_var, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 10))
+        server_entry.grid(row=1, column=0, sticky="ew", padx=18, ipady=7)
+
+        add_label("LICENSE KEY", 2)
+        license_entry = tk.Entry(panel, textvariable=license_var, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Consolas", 10))
+        license_entry.grid(row=3, column=0, sticky="ew", padx=18, ipady=7)
+
+        add_label("THIS PC", 4)
+        tk.Entry(panel, textvariable=machine_var, state="readonly", readonlybackground=FIELD, fg=TEXT, relief="flat", font=("Consolas", 10)).grid(row=5, column=0, sticky="ew", padx=18, ipady=7)
+
+        action_row = tk.Frame(panel, bg=PANEL)
+        action_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(16, 0))
+
+        def refresh_dialog(new_state=None):
+            current = normalize_license_state(new_state if new_state is not None else self.license_state)
+            status_var.set(license_status_text(current))
+            summary_var.set(license_summary_text(current))
+            features_var.set(license_feature_lines(current))
+            if new_state is not None:
+                server_var.set(current.get("server_url", DEFAULT_LICENSE_SERVER))
+                license_var.set(current.get("license_key", ""))
+
+        def persist_and_refresh(new_state):
+            self.finish_license_refresh(new_state)
+            refresh_dialog(self.license_state)
+
+        def collect_state():
+            fresh = normalize_license_state(self.license_state)
+            fresh["server_url"] = normalize_license_server_url(server_var.get())
+            fresh["license_key"] = license_var.get().strip()
+            fresh["machine_id"] = current_machine_fingerprint()
+            fresh["machine_name"] = current_machine_name()
+            return fresh
+
+        def activate_now():
+            try:
+                updated = activate_license_online(collect_state())
+                persist_and_refresh(updated)
+                if license_is_active(updated):
+                    self.status.set(f"License activated for {updated.get('plan_name') or updated.get('plan_id', '').title()}.")
+                    messagebox.showinfo("License activated", "This PC is now activated and the app unlocked the matching plan.", parent=dialog)
+                else:
+                    self.status.set("License activation finished, but the plan is not active yet.")
+                    messagebox.showwarning(
+                        "Activation needs attention",
+                        updated.get("last_error") or license_status_text(updated),
+                        parent=dialog,
+                    )
+            except Exception as exc:
+                failed = build_license_failure_state(collect_state(), exc)
+                persist_and_refresh(failed)
+                self.status.set("License activation failed.")
+                messagebox.showerror("License activation failed", str(exc), parent=dialog)
+
+        def verify_now():
+            try:
+                updated = verify_license_online(collect_state())
+                persist_and_refresh(updated)
+                if license_is_active(updated):
+                    self.status.set("License verification complete.")
+                    messagebox.showinfo("License verified", "The saved license and receipt are valid on this PC.", parent=dialog)
+                else:
+                    self.status.set("License verification finished, but the plan is not active.")
+                    messagebox.showwarning(
+                        "License not active",
+                        updated.get("last_error") or license_status_text(updated),
+                        parent=dialog,
+                    )
+            except Exception as exc:
+                failed = build_license_failure_state(collect_state(), exc)
+                persist_and_refresh(failed)
+                self.status.set("License verification failed.")
+                messagebox.showerror("License verification failed", str(exc), parent=dialog)
+
+        def clear_now():
+            if not messagebox.askyesno("Clear saved license", "Remove the saved license key and activation receipt from this PC?", parent=dialog):
+                return
+            cleared = clear_license_state(self.settings, server_var.get())
+            self.license_state = cleared
+            self.license_status.set(license_status_text(cleared))
+            self.apply_access_state()
+            refresh_dialog(cleared)
+            self.status.set("Cleared the saved license from this PC.")
+
+        def use_default_server():
+            server_var.set(DEFAULT_LICENSE_SERVER)
+
+        def copy_machine_id():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(machine_var.get())
+            self.status.set("Copied this PC's machine ID.")
+
+        tk.Button(action_row, text="ACTIVATE", command=activate_now, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=16, ipady=8)
+        tk.Button(action_row, text="VERIFY", command=verify_now, bg=WHITE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=16, ipady=8)
+        tk.Button(action_row, text="DEFAULT API", command=use_default_server, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
+        tk.Button(action_row, text="COPY MACHINE ID", command=copy_machine_id, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
+        tk.Button(action_row, text="CLEAR", command=clear_now, bg=RED, fg=WHITE, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=16, ipady=8)
+
+        status_panel = tk.Frame(panel, bg="#181c24")
+        status_panel.grid(row=7, column=0, sticky="nsew", padx=18, pady=(16, 12))
+        tk.Label(status_panel, text="STATUS", bg="#181c24", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
+        tk.Label(status_panel, textvariable=status_var, bg="#181c24", fg=GREEN, font=("Segoe UI", 10, "bold"), justify="left", wraplength=620).pack(anchor="w", padx=14)
+        tk.Label(status_panel, textvariable=summary_var, bg="#181c24", fg=TEXT, font=("Segoe UI", 9), justify="left", wraplength=620).pack(anchor="w", padx=14, pady=(8, 14))
+
+        feature_panel = tk.Frame(panel, bg="#181c24")
+        feature_panel.grid(row=8, column=0, sticky="nsew", padx=18, pady=(0, 18))
+        tk.Label(feature_panel, text="ENTITLEMENTS", bg="#181c24", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
+        tk.Label(feature_panel, textvariable=features_var, bg="#181c24", fg=TEXT, font=("Segoe UI", 9), justify="left", wraplength=620).pack(anchor="w", padx=14, pady=(0, 14))
+
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(7, weight=1)
+        panel.rowconfigure(8, weight=1)
+        license_entry.focus_set()
 
     def refresh_breach_status(self):
         try:
@@ -2751,6 +3340,9 @@ class USBFileLocker(tk.Tk):
                 self.after(20000, self.periodic_breach_refresh)
 
     def open_breach_check(self):
+        if not ensure_license_feature("global-breach-guard", parent=self):
+            self.status.set("Breach Detection needs an active Pro license.")
+            return
         try:
             _window, summary = open_breach_detection_window(self)
             self.breach_status.set(
@@ -2767,6 +3359,9 @@ class USBFileLocker(tk.Tk):
             messagebox.showerror("Could not open Breach Detection", str(exc))
 
     def open_global_breach_guard(self):
+        if not ensure_license_feature("global-breach-guard", parent=self):
+            self.status.set("Global Breach Guard needs an active Pro license.")
+            return
         try:
             launch_companion_script("global_breach_guard.py")
             self.status.set("Opened Global Breach Guard.")
@@ -2974,6 +3569,9 @@ class USBFileLocker(tk.Tk):
         refresh_recent()
 
     def verify_owner_usb_now(self):
+        if not ensure_license_feature("owner-usb-mode", parent=self):
+            self.status.set("Owner USB mode needs an active Pro license.")
+            return
         if not self.owner_policy:
             self.status.set("Owner USB mode is off.")
             messagebox.showinfo("Owner USB mode off", "This PC is not currently locked to an owner USB.")
@@ -3021,6 +3619,9 @@ class USBFileLocker(tk.Tk):
                 self.after(1500, self.monitor_loaded_key)
 
     def enable_owner_usb_mode(self):
+        if not ensure_license_feature("owner-usb-mode", parent=self):
+            self.status.set("Owner USB mode needs an active Pro license.")
+            return
         if not self.require_key():
             return
         origin = self.key.get("origin")
@@ -3053,6 +3654,9 @@ class USBFileLocker(tk.Tk):
         )
 
     def disable_owner_usb_mode(self):
+        if not ensure_license_feature("owner-usb-mode", parent=self):
+            self.status.set("Owner USB mode needs an active Pro license.")
+            return
         if not self.owner_policy:
             self.status.set("Owner USB mode is already off.")
             return
@@ -3279,6 +3883,9 @@ class USBFileLocker(tk.Tk):
         self.status.set("Added 1 folder.")
 
     def add_perm_unlock_items(self):
+        if not ensure_license_feature("perm-unlock", parent=self):
+            self.status.set("PERM UNLOCK needs an active Plus license.")
+            return
         try:
             folder = ensure_perm_unlock_folder()
             entries = sorted(folder.iterdir(), key=lambda path: (path.is_file(), path.name.lower()))
@@ -3550,6 +4157,9 @@ class USBFileLocker(tk.Tk):
             messagebox.showerror("Could not check backup", str(exc))
 
     def scan_personal_files(self):
+        if not ensure_license_feature("portable-locking", parent=self):
+            self.status.set("Scanning personal files needs an active Starter license.")
+            return
         self.status.set("Scanning Desktop, Documents, and Downloads by filename...")
         self.update()
         paths = scan_personal_file_candidates()
@@ -3748,6 +4358,9 @@ class USBFileLocker(tk.Tk):
         return list(self.file_list.get(0, "end"))
 
     def lock_selected(self):
+        if not ensure_license_feature("portable-locking", parent=self):
+            self.status.set("Locking new files needs an active Starter license.")
+            return
         if not self.require_key():
             return
         paths = self.selected_or_all_files()
@@ -3792,6 +4405,9 @@ class USBFileLocker(tk.Tk):
         self.start_background_job("Lock copy", len(paths), worker, finished)
 
     def lock_and_remove_selected(self):
+        if not ensure_license_feature("portable-locking", parent=self):
+            self.status.set("Locking new files needs an active Starter license.")
+            return
         if not self.require_key():
             return
         paths = self.selected_or_all_files()
@@ -3923,6 +4539,9 @@ class USBFileLocker(tk.Tk):
         self.unlock_selected(output_dir)
 
     def perm_unlock_selected(self):
+        if not ensure_license_feature("perm-unlock", parent=self):
+            self.status.set("PERM UNLOCK needs an active Plus license.")
+            return
         output_dir = filedialog.askdirectory(title="Choose folder for permanently unlocked files")
         if not output_dir:
             self.status.set("Permanent unlock canceled.")
@@ -3931,6 +4550,9 @@ class USBFileLocker(tk.Tk):
         self.unlock_selected(output_dir)
 
     def perm_unlock_selected_to_perm_folder(self):
+        if not ensure_license_feature("perm-unlock", parent=self):
+            self.status.set("PERM UNLOCK needs an active Plus license.")
+            return
         try:
             output_dir = ensure_perm_unlock_folder()
             self.status.set(f"Permanent unlock folder ready: {output_dir}")
@@ -3940,6 +4562,9 @@ class USBFileLocker(tk.Tk):
             messagebox.showerror("PERM UNLOCK folder error", str(exc))
 
     def lock_text_note(self):
+        if not ensure_license_feature("quick-lock-note", parent=self):
+            self.status.set("Quick lock notes need an active Starter license.")
+            return
         if not self.require_key():
             return
         note = tk.Toplevel(self)
@@ -3999,6 +4624,9 @@ class USBFileLocker(tk.Tk):
         tk.Button(note, text="LOCK NOTE", command=save_note, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 10, "bold")).pack(pady=(0, 16), ipadx=18, ipady=10)
 
     def open_personal_vault(self):
+        if not ensure_license_feature("personal-vault", parent=self):
+            self.status.set("Personal Vault needs an active Plus license.")
+            return
         if not self.require_key():
             return
         pin = self.pin_entry.get()

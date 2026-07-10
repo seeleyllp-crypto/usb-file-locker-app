@@ -185,6 +185,9 @@ def failures_report(analysis):
 class TextLogProcessor(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("text-log-processor", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Text Log Processor")
         self.geometry("1400x920")
         self.minsize(1180, 760)

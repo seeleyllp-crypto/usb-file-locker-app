@@ -11,6 +11,9 @@ import usb_file_locker as locker
 class PermUnlockWorkbench(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("perm-unlock", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("PERM UNLOCK Workbench")
         self.geometry("1120x760")
         self.minsize(980, 680)

@@ -11,6 +11,9 @@ import usb_file_locker as locker
 class PersonalVaultPad(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("personal-vault", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Personal Vault Pad")
         self.geometry("1220x820")
         self.minsize(1060, 740)

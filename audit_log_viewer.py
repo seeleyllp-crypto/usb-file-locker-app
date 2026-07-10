@@ -9,6 +9,9 @@ import usb_file_locker as locker
 class AuditLogViewer(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("audit-log-viewer", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("Audit Log Viewer")
         self.geometry("1260x860")
         self.minsize(1080, 760)
