@@ -39,7 +39,7 @@ Railway will start the service with:
 ## Local run
 
 ```powershell
-cd C:\Users\jonis\OneDrive\Desktop\USBFileLockerApp\usb_locker_api
+cd C:\path\to\USBFileLockerApp\usb_locker_api
 python main.py
 ```
 

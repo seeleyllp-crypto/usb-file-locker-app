@@ -1,10 +1,10 @@
 USB FILE LOCKER REPO SETUP
 
 Main app repo folder:
-C:\Users\jonis\OneDrive\Desktop\USBFileLockerApp
+C:\path\to\USBFileLockerApp
 
 Standalone API repo folder:
-C:\Users\jonis\OneDrive\Desktop\USBFileLockerAPI-Repo
+C:\path\to\USBFileLockerAPI-Repo
 
 Suggested GitHub repo names:
 - usb-file-locker-app
