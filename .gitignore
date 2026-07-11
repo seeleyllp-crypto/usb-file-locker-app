@@ -28,6 +28,7 @@ installer_build/portable_v2_work/
 installer_build/transparent_package/
 
 usb_locker_api/__pycache__/
+usb_locker_api/data/
 
 .vscode/
 .idea/

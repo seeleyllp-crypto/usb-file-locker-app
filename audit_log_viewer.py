@@ -1,4 +1,5 @@
 import os
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -35,6 +36,8 @@ class AuditLogViewer(tk.Tk):
         self.records = []
         self.filtered_records = []
         self.latest_verification = (True, 0, "No audit events have been recorded yet.")
+        self.api_export_busy = False
+        self.api_export_button = None
         self.tree = None
         self.details = None
         self.build_ui()
@@ -65,13 +68,35 @@ class AuditLogViewer(tk.Tk):
         tk.Entry(top, textvariable=self.pin_var, show="*", bg=locker.FIELD, fg=locker.TEXT, insertbackground=locker.TEXT, relief="flat", font=("Segoe UI", 10), width=24).grid(row=1, column=2, sticky="ew", padx=(0, 18), ipady=7)
 
         action_row = tk.Frame(top, bg=locker.PANEL)
-        action_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=18, pady=(12, 18))
+        action_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=18, pady=(12, 10))
         tk.Button(action_row, text="REFRESH", command=self.refresh_data, bg=locker.GREEN, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=14, ipady=8)
         tk.Button(action_row, text="BREACH CHECK", command=self.open_breach_check, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="EXPORT RAW", command=self.export_raw, bg=locker.WHITE, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="EXPORT LOCKED REPORT", command=self.export_locked_report, bg=locker.YELLOW, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="OPEN AUDIT FOLDER", command=self.open_audit_folder, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="OPEN MAIN LOCKER", command=self.open_main_locker, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=12, ipady=8)
+
+        api_row = tk.Frame(top, bg=locker.PANEL)
+        api_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 18))
+        self.api_export_button = tk.Button(
+            api_row,
+            text="UPLOAD + DOWNLOAD API COPY",
+            command=self.upload_download_api_copy,
+            bg="#4d8cff",
+            fg=locker.WHITE,
+            activebackground="#6ba0ff",
+            activeforeground=locker.WHITE,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.api_export_button.pack(side="left", ipadx=14, ipady=8)
+        tk.Label(
+            api_row,
+            text="PRIVACY-SAFE FIELDS ONLY | SIGNED DOWNLOAD | SHORT-LIVED SERVER COPY",
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(12, 0))
 
         top.columnconfigure(0, weight=1)
         top.columnconfigure(2, weight=1)
@@ -345,6 +370,89 @@ class AuditLogViewer(tk.Tk):
         except Exception as exc:
             locker.log_event("audit_viewer_export_raw", destination, "failed", str(exc))
             messagebox.showerror("Export failed", str(exc))
+
+    def upload_download_api_copy(self):
+        if self.api_export_busy:
+            return
+        state = locker.load_license_state(locker.load_settings())
+        if not locker.license_is_active(state):
+            messagebox.showwarning(
+                "Active license required",
+                "Open License Center in the main locker and activate this PC first.",
+                parent=self,
+            )
+            return
+        timestamp = locker.utc_now_text().replace("-", "").replace(":", "").replace("T", "-").replace("Z", "")
+        destination = filedialog.asksaveasfilename(
+            title="Download API Audit Copy",
+            initialdir=str(Path.home() / "Downloads"),
+            initialfile=f"vaultlink-audit-{timestamp}.json",
+            defaultextension=".json",
+            filetypes=[("JSON audit report", "*.json")],
+            parent=self,
+        )
+        if not destination:
+            return
+        self.api_export_busy = True
+        self.api_export_button.configure(state="disabled", text="UPLOADING...")
+        self.status.set("Creating a privacy-safe report and sending it to the API...")
+        worker = threading.Thread(
+            target=self._run_api_export,
+            args=(state, destination),
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_api_export(self, state, destination):
+        try:
+            upload = locker.upload_audit_report_online(state)
+            out_path = locker.download_audit_export_online(state, upload, destination)
+            self.after(
+                0,
+                lambda response=upload, path=str(out_path): self._finish_api_export(
+                    True,
+                    path,
+                    response,
+                ),
+            )
+        except Exception as exc:
+            message = str(exc)
+            self.after(
+                0,
+                lambda error=message, path=destination: self._finish_api_export(
+                    False,
+                    path,
+                    {"message": error},
+                ),
+            )
+
+    def _finish_api_export(self, success, destination, response):
+        self.api_export_busy = False
+        self.api_export_button.configure(state="normal", text="UPLOAD + DOWNLOAD API COPY")
+        if not success:
+            error = str(response.get("message") or "The API export failed.")
+            locker.log_event("audit_api_export", destination, "failed", error)
+            self.status.set("API audit export failed.")
+            messagebox.showerror("API export failed", error, parent=self)
+            return
+        event_count = int(response.get("event_count", 0) or 0)
+        expires_at = str(response.get("expires_at_utc", "") or "unknown")
+        export_id = str(response.get("export_id", "") or "")
+        locker.log_event("audit_api_export", destination, "ok", f"events={event_count}")
+        self.status.set(f"API copy downloaded: {export_id}")
+        try:
+            os.startfile(Path(destination).parent)
+        except OSError:
+            pass
+        messagebox.showinfo(
+            "API Audit Copy Downloaded",
+            f"Saved {event_count} privacy-safe event(s).\n\n"
+            f"File: {destination}\n"
+            f"Export ID: {export_id}\n"
+            f"Server copy expires: {expires_at}",
+            parent=self,
+        )
+        self.refresh_data()
 
     def open_audit_folder(self):
         try:

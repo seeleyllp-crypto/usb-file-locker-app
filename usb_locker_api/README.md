@@ -9,12 +9,14 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 - A homepage at `/`
 - A route index at `/docs`
 - A health endpoint at `/health`
+- Licensed privacy-safe audit uploads with signed, expiring JSON downloads
 
 ## What it is not
 
 - It does not unlock files remotely
 - It does not expose USB secrets, PINs, vault contents, or private file access
 - It does not move the Windows desktop security logic onto the public internet
+- It does not accept raw files, file contents, full paths, USB secrets, passwords, or PINs in audit exports
 
 ## Railway setup
 
@@ -22,6 +24,8 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 2. In Railway, connect the repo.
 3. Set the Railway `Root Directory` to `usb_locker_api`.
 4. Deploy.
+
+For restart-safe audit-export retention, mount a Railway Volume and set `AUDIT_EXPORT_DIR` to its folder, such as `/data/audit_exports`. You can also set `AUDIT_EXPORT_RETENTION_HOURS` from 1 to 168; the default is 24 hours. Without a Volume, immediate upload-and-download still works, but Railway can remove pending exports when the service restarts.
 
 Railway will start the service with:
 

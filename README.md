@@ -2,6 +2,8 @@
 
 USB File Locker App is a Windows desktop toolkit for locking files and folders with a USB key, keeping a personal vault, reviewing privacy-safe audit logs, and watching for suspicious access patterns.
 
+The Audit Log Viewer can upload its approved privacy-safe report fields to the licensed Railway API and immediately download a signed JSON copy. The server never receives raw files, file contents, USB secrets, passwords, PINs, client names, or full paths.
+
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window

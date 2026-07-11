@@ -12,12 +12,25 @@ from urllib.parse import urlparse
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.2.0"
+API_VERSION = "0.3.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
+AUDIT_DOWNLOAD_PREFIX = "vla1"
 DEFAULT_SIGNING_SECRET = "vaultlink-dev-signing-secret-change-me"
-MAX_JSON_BODY_BYTES = 64 * 1024
+MAX_JSON_BODY_BYTES = 4 * 1024 * 1024
+MAX_AUDIT_REPORT_BYTES = 3 * 1024 * 1024
+MAX_AUDIT_EVENTS = 20000
+try:
+    AUDIT_EXPORT_RETENTION_HOURS = min(
+        max(int(os.getenv("AUDIT_EXPORT_RETENTION_HOURS", "24")), 1),
+        168,
+    )
+except ValueError:
+    AUDIT_EXPORT_RETENTION_HOURS = 24
+AUDIT_EXPORT_DIR = Path(
+    os.getenv("AUDIT_EXPORT_DIR", str(ROOT_DIR / "data" / "audit_exports"))
+).expanduser()
 
 
 FEATURES = [
@@ -107,6 +120,7 @@ SECURITY_NOTES = [
     "The public API never unlocks files, never receives USB secrets, and never stores PINs or vault contents.",
     "Desktop encryption and USB-key logic stay in the Windows app instead of moving onto the internet-facing service.",
     "Licensing is stateless right now: the server signs license keys and machine receipts, but strict seat counting needs a real database later.",
+    "Audit exports are reduced to privacy-safe fields, require an active licensed machine, and use short-lived signed download links.",
 ]
 
 
@@ -351,11 +365,15 @@ def docs_payload():
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
             {"method": "POST", "path": "/api/v1/licenses/activate", "purpose": "Machine-bound license activation"},
             {"method": "POST", "path": "/api/v1/licenses/verify", "purpose": "License and receipt verification"},
+            {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
+            {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
         ],
         "required_env": [
             {"name": "PORT", "required": False, "purpose": "HTTP bind port on Railway or local runs"},
             {"name": "LICENSE_SIGNING_SECRET", "required": True, "purpose": "HMAC secret for license keys and activation receipts"},
             {"name": "LICENSE_ADMIN_TOKEN", "required": True, "purpose": "Admin-only token required for issuing new licenses"},
+            {"name": "AUDIT_EXPORT_DIR", "required": False, "purpose": "Persistent audit-export folder; mount a Railway Volume here for durable retention"},
+            {"name": "AUDIT_EXPORT_RETENTION_HOURS", "required": False, "purpose": "Signed export lifetime from 1 to 168 hours; default 24"},
         ],
     }
 
@@ -701,12 +719,264 @@ def verify_license(payload):
     }
 
 
+def clean_audit_text(value, limit):
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    return " ".join(text.split())[:limit]
+
+
+def clean_audit_hash(value):
+    text = clean_audit_text(value, 64).lower()
+    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+        return ""
+    return text
+
+
+def clean_audit_event(record):
+    if not isinstance(record, dict):
+        raise ValueError("Every audit event must be a JSON object.")
+    try:
+        sequence = max(int(record.get("sequence", 0)), 0)
+    except (TypeError, ValueError):
+        sequence = 0
+    result = clean_audit_text(record.get("result"), 16).lower()
+    if result not in {"success", "failure"}:
+        result = "unknown"
+    return {
+        "sequence": sequence,
+        "time_utc": clean_audit_text(record.get("time_utc"), 32),
+        "event_id": clean_audit_text(record.get("event_id"), 64),
+        "action": clean_audit_text(record.get("action"), 80),
+        "result": result,
+        "hash": clean_audit_hash(record.get("hash")),
+        "previous_hash": clean_audit_hash(record.get("previous_hash")),
+    }
+
+
+def clean_audit_section(section, remaining_events):
+    if not isinstance(section, dict):
+        section = {}
+    events = section.get("events", [])
+    if not isinstance(events, list):
+        raise ValueError("Audit report events must be a JSON array.")
+    if len(events) > remaining_events:
+        raise ValueError(f"Audit report exceeds the {MAX_AUDIT_EVENTS} event limit.")
+    safe_events = [clean_audit_event(record) for record in events]
+    return {
+        "valid": bool(section.get("valid")),
+        "event_count": len(safe_events),
+        "verification": clean_audit_text(section.get("verification"), 300),
+        "events": safe_events,
+    }
+
+
+def clean_defender_status(status):
+    if not isinstance(status, dict):
+        return {"available": False}
+    safe = {"available": bool(status.get("available"))}
+    for name in (
+        "AntivirusEnabled",
+        "RealTimeProtectionEnabled",
+        "BehaviorMonitorEnabled",
+        "IoavProtectionEnabled",
+        "ProtectedNow",
+    ):
+        if name in status:
+            safe[name] = bool(status.get(name))
+    for name in (
+        "AntivirusSignatureLastUpdated",
+        "QuickScanAge",
+        "FullScanAge",
+        "LastQuickScanSource",
+        "LastFullScanSource",
+    ):
+        if name in status:
+            safe[name] = clean_audit_text(status.get(name), 80)
+    return safe
+
+
+def clean_audit_report(report):
+    if not isinstance(report, dict):
+        raise ValueError("report must be a JSON object.")
+    usb_section = clean_audit_section(report.get("usb_file_locker_audit"), MAX_AUDIT_EVENTS)
+    remaining = MAX_AUDIT_EVENTS - len(usb_section["events"])
+    safety_section = clean_audit_section(report.get("pc_safety_check_audit"), remaining)
+    limitations = report.get("limitations", [])
+    if not isinstance(limitations, list):
+        limitations = []
+    return {
+        "report_type": "Privacy Safety Audit Report",
+        "exported_at_utc": clean_audit_text(report.get("exported_at_utc"), 32),
+        "privacy_notice": (
+            "This report contains no keystrokes, passwords, PINs, USB secrets, "
+            "file contents, client names, or full file paths."
+        ),
+        "defender_status": clean_defender_status(report.get("defender_status")),
+        "usb_file_locker_audit": usb_section,
+        "pc_safety_check_audit": safety_section,
+        "limitations": [clean_audit_text(item, 240) for item in limitations[:10]],
+    }
+
+
+def require_active_audit_license(payload):
+    try:
+        verification = verify_license(payload)
+    except ValueError as exc:
+        raise PermissionError(f"License verification failed: {exc}") from exc
+    if not verification.get("active"):
+        message = verification.get("message") or "An active machine license is required."
+        raise PermissionError(message)
+    entitlements = set((verification.get("plan") or {}).get("entitlements", []))
+    if "audit-log-viewer" not in entitlements:
+        raise PermissionError("This license plan does not include API audit exports.")
+    return verification
+
+
+def audit_storage_is_persistent():
+    return bool(os.getenv("AUDIT_EXPORT_DIR", "").strip())
+
+
+def valid_audit_export_id(export_id):
+    text = str(export_id or "").strip()
+    return (
+        text.startswith("AUD-")
+        and 8 <= len(text) <= 64
+        and all(character.isalnum() or character in {"-", "_"} for character in text)
+    )
+
+
+def audit_export_path(export_id):
+    if not valid_audit_export_id(export_id):
+        raise ValueError("Invalid audit export id.")
+    return AUDIT_EXPORT_DIR / f"{export_id}.json"
+
+
+def cleanup_expired_audit_exports():
+    if not AUDIT_EXPORT_DIR.exists():
+        return
+    cutoff = datetime.now(timezone.utc).timestamp() - (AUDIT_EXPORT_RETENTION_HOURS + 1) * 3600
+    for path in AUDIT_EXPORT_DIR.glob("AUD-*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
+
+
+def write_private_audit_export(path, payload):
+    AUDIT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(AUDIT_EXPORT_DIR, 0o700)
+    except OSError:
+        pass
+    body = json_bytes(payload)
+    if len(body) > MAX_AUDIT_REPORT_BYTES:
+        raise ValueError("The privacy-safe audit report is too large to store.")
+    temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        with temp_path.open("xb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(temp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return body
+
+
+def create_audit_export(payload):
+    verification = require_active_audit_license(payload)
+    report = clean_audit_report(payload.get("report"))
+    cleanup_expired_audit_exports()
+    export_id = f"AUD-{secrets.token_hex(12).upper()}"
+    uploaded_at = datetime.now(timezone.utc)
+    expires_at = uploaded_at + timedelta(hours=AUDIT_EXPORT_RETENTION_HOURS)
+    machine_id = str(payload.get("machine_id", "")).strip()
+    machine_hash = hashlib.sha256(machine_id.encode("utf-8")).hexdigest()[:16]
+    license_view = verification.get("license") or {}
+    plan = verification.get("plan") or {}
+    stored = {
+        "schema_version": 1,
+        "export_id": export_id,
+        "uploaded_at_utc": format_utc(uploaded_at),
+        "expires_at_utc": format_utc(expires_at),
+        "source": {
+            "license_id": clean_audit_text(license_view.get("license_id"), 80),
+            "plan_id": clean_audit_text(plan.get("id"), 40),
+            "machine_hash": machine_hash,
+            "app_version": clean_audit_text(payload.get("app_version"), 40),
+        },
+        "report": report,
+    }
+    path = audit_export_path(export_id)
+    body = write_private_audit_export(path, stored)
+    token = sign_token(
+        AUDIT_DOWNLOAD_PREFIX,
+        {
+            "export_id": export_id,
+            "machine_hash": machine_hash,
+            "expires_at_utc": format_utc(expires_at),
+        },
+    )
+    filename = f"vaultlink-audit-{export_id}.json"
+    return {
+        "ok": True,
+        "created": True,
+        "export_id": export_id,
+        "filename": filename,
+        "download_path": f"/api/v1/audit-exports/{export_id}/download",
+        "download_token": token,
+        "expires_at_utc": format_utc(expires_at),
+        "retention_hours": AUDIT_EXPORT_RETENTION_HOURS,
+        "storage": "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral",
+        "size_bytes": len(body),
+        "event_count": (
+            report["usb_file_locker_audit"]["event_count"]
+            + report["pc_safety_check_audit"]["event_count"]
+        ),
+        "server_time_utc": utc_now(),
+    }
+
+
+def load_audit_export_download(export_id, token):
+    if not token:
+        raise PermissionError("The signed audit download token is required.")
+    try:
+        token_payload = verify_token(token, AUDIT_DOWNLOAD_PREFIX)
+    except ValueError as exc:
+        raise PermissionError(f"Audit download token did not verify: {exc}") from exc
+    if token_payload.get("export_id") != export_id:
+        raise PermissionError("Audit download token does not match this export.")
+    expires_at = parse_utc(token_payload.get("expires_at_utc"))
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        try:
+            audit_export_path(export_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise PermissionError("This audit download link has expired.")
+    path = audit_export_path(export_id)
+    if not path.exists():
+        raise FileNotFoundError("The audit export was not found or the server restarted.")
+    body = path.read_bytes()
+    if len(body) > MAX_AUDIT_REPORT_BYTES:
+        raise ValueError("Stored audit export is too large.")
+    return body, f"vaultlink-audit-{export_id}.json"
+
+
 class ApiHandler(BaseHTTPRequestHandler):
     def send_json(self, payload, status=HTTPStatus.OK):
         body = json_bytes(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -715,6 +985,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_download(self, body, filename):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -760,6 +1041,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "time_utc": utc_now(),
                     "license_admin_configured": admin_token_configured(),
                     "using_default_signing_secret": using_default_signing_secret(),
+                    "audit_exports_enabled": True,
+                    "audit_export_storage": (
+                        "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral"
+                    ),
+                    "audit_export_retention_hours": AUDIT_EXPORT_RETENTION_HOURS,
                 }
             )
             return
@@ -784,6 +1070,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "admin license issue",
                         "license activate",
                         "license verify",
+                        "license-authenticated privacy-safe audit export upload",
+                        "signed short-lived audit export download",
                     ],
                     "banned_remote_actions": [
                         "remote unlock",
@@ -795,6 +1083,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "license_limitations": [
                         "Receipt signing works without a database.",
                         "Strict seat counting and revocation lists need persistent storage later.",
+                    ],
+                    "audit_export_controls": [
+                        "Only approved privacy-safe fields are retained.",
+                        "Upload requires an active machine-bound license with Audit Log Viewer access.",
+                        "Downloads require a signed expiring bearer link.",
+                        "Configure AUDIT_EXPORT_DIR on a Railway Volume for restart-safe retention.",
                     ],
                 }
             )
@@ -809,9 +1103,40 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "recommended_env": [
                         "LICENSE_SIGNING_SECRET",
                         "LICENSE_ADMIN_TOKEN",
+                        "AUDIT_EXPORT_DIR",
+                        "AUDIT_EXPORT_RETENTION_HOURS",
                     ],
                 }
             )
+            return
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) == 5
+            and parts[:3] == ["api", "v1", "audit-exports"]
+            and parts[4] == "download"
+        ):
+            try:
+                authorization = self.headers.get("Authorization", "").strip()
+                token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+                if not token:
+                    token = self.headers.get("X-Audit-Download-Token", "").strip()
+                body, filename = load_audit_export_download(parts[3], token)
+                self.send_download(body, filename)
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except FileNotFoundError as exc:
+                self.send_json(
+                    {"ok": False, "error": "not_found", "message": str(exc)},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "error": "bad_request", "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
             return
 
         self.send_json(
@@ -837,6 +1162,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/v1/licenses/verify":
                 self.send_json(verify_license(payload))
+                return
+            if path == "/api/v1/audit-exports":
+                self.send_json(create_audit_export(payload), status=HTTPStatus.CREATED)
                 return
             self.send_json(
                 {

@@ -41,6 +41,7 @@ DESKTOP_APP_VERSION = "2026.07.10"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
+MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
     "portable-locking": "Portable locking tools",
     "quick-lock-note": "Quick lock notes",
@@ -1703,6 +1704,79 @@ def verify_license_online(state):
         },
     )
     return apply_license_response(current, payload)
+
+
+def upload_audit_report_online(state):
+    current = normalize_license_state(state)
+    if not license_is_active(current):
+        raise ValueError("Activate this PC in License Center before using API audit export.")
+    if not license_feature_allowed("audit-log-viewer", state=current):
+        raise ValueError("This license plan does not include API audit export.")
+    return license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/audit-exports",
+        {
+            "license_key": current.get("license_key"),
+            "receipt": current.get("receipt"),
+            "machine_id": current_machine_fingerprint(),
+            "app_version": DESKTOP_APP_VERSION,
+            "report": build_audit_report(),
+        },
+    )
+
+
+def download_audit_export_online(state, upload_response, destination):
+    current = normalize_license_state(state)
+    if not isinstance(upload_response, dict):
+        raise ValueError("The API did not return audit export details.")
+    download_path = str(upload_response.get("download_path", "")).strip()
+    download_token = str(upload_response.get("download_token", "")).strip()
+    if (
+        not download_path.startswith("/api/v1/audit-exports/")
+        or not download_path.endswith("/download")
+        or not download_token.startswith("vla1.")
+    ):
+        raise ValueError("The API returned invalid audit download details.")
+    url = normalize_license_server_url(current.get("server_url")) + download_path
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {download_token}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read(MAX_AUDIT_API_DOWNLOAD_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            error_payload = json.loads(error_body)
+            message = error_payload.get("message") or error_payload.get("error") or error_body
+        except Exception:
+            message = error_body or f"Audit API returned HTTP {exc.code}."
+        raise ValueError(message) from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not download the audit report.\n\n{exc.reason}") from exc
+    if len(raw) > MAX_AUDIT_API_DOWNLOAD_BYTES:
+        raise ValueError("The downloaded audit report is larger than the app allows.")
+    try:
+        downloaded = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("The API download was not a valid JSON audit report.") from exc
+    if not isinstance(downloaded, dict):
+        raise ValueError("The API download had an unexpected format.")
+    if downloaded.get("export_id") != upload_response.get("export_id"):
+        raise ValueError("The downloaded audit report did not match the uploaded export.")
+    target = Path(destination)
+    if target.exists() and target.is_dir():
+        filename = str(upload_response.get("filename", "")).strip() or "vaultlink-audit-export.json"
+        target = target / safe_filename_piece(filename, "vaultlink-audit-export.json")
+    if target.suffix.lower() != ".json":
+        target = target.with_name(target.name + ".json")
+    write_bytes_atomic(target, raw)
+    return target
 
 
 def owner_key_allowed(key, policy):
