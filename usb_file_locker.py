@@ -17,6 +17,7 @@ import threading
 import time
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from ctypes import wintypes
@@ -41,6 +42,7 @@ DESKTOP_APP_VERSION = "2026.07.10"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
+MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
     "portable-locking": "Portable locking tools",
@@ -1415,6 +1417,62 @@ def normalize_license_server_url(url):
     return text.rstrip("/")
 
 
+def validated_license_server_url(url):
+    text = normalize_license_server_url(url)
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("License API URL must be a complete http:// or https:// address.")
+    if parsed.username or parsed.password:
+        raise ValueError("License API URL cannot contain a username or password.")
+    if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise ValueError("License API URL must be the server address without a path, query, or fragment.")
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("License API must use HTTPS. Plain HTTP is allowed only for local testing.")
+    return text
+
+
+def valid_api_license_key(key):
+    parts = str(key or "").strip().split(".")
+    if len(parts) != 3 or parts[0] != "vlk1":
+        return False
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    return all(len(part) >= 16 and all(character in allowed for character in part) for part in parts[1:])
+
+
+def require_valid_api_license_key(key):
+    text = str(key or "").strip()
+    if not text:
+        raise ValueError("Paste a license key first.")
+    if not valid_api_license_key(text):
+        raise ValueError("This is not a VaultLink API license key. A valid key starts with vlk1.")
+    return text
+
+
+def license_state_with_key(state, new_key, server_url=None):
+    current = normalize_license_state(state)
+    key = str(new_key or "").strip()
+    selected_server = normalize_license_server_url(server_url or current.get("server_url"))
+    if key == current.get("license_key"):
+        current["server_url"] = selected_server
+        return normalize_license_state(current)
+    replacement = license_state_template()
+    replacement["server_url"] = selected_server
+    replacement["license_key"] = key
+    replacement["status"] = "saved" if key else "unlicensed"
+    replacement["machine_id"] = current_machine_fingerprint()
+    replacement["machine_name"] = current_machine_name()
+    return normalize_license_state(replacement)
+
+
+class NoApiRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+API_URL_OPENER = urllib.request.build_opener(NoApiRedirectHandler())
+
+
 def current_machine_fingerprint():
     pieces = [
         os.environ.get("COMPUTERNAME", ""),
@@ -1601,40 +1659,97 @@ def ensure_license_feature(feature_id, parent=None, show_message=True):
     return False
 
 
-def license_api_post_json(server_url, api_path, payload):
-    url = normalize_license_server_url(server_url) + api_path
+def license_api_post_json(server_url, api_path, payload, extra_headers=None):
+    url = validated_license_server_url(server_url) + api_path
     body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            raw = response.read().decode("utf-8")
+        with API_URL_OPENER.open(request, timeout=15) as response:
+            raw_bytes = response.read(MAX_API_RESPONSE_BYTES + 1)
+            if len(raw_bytes) > MAX_API_RESPONSE_BYTES:
+                raise ValueError("API response was too large.")
+            raw = raw_bytes.decode("utf-8")
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
         try:
-            payload = json.loads(raw)
-            message = payload.get("message") or payload.get("error") or raw
-        except Exception:
-            message = raw or f"License server returned HTTP {exc.code}."
-        raise ValueError(message) from exc
+            raw = exc.read(MAX_API_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
+            if 300 <= exc.code < 400:
+                raise ValueError("API redirects are blocked to protect license credentials.") from exc
+            try:
+                payload = json.loads(raw)
+                message = payload.get("message") or payload.get("error") or raw
+            except Exception:
+                message = raw or f"API server returned HTTP {exc.code}."
+            raise ValueError(message) from exc
+        finally:
+            exc.close()
     except urllib.error.URLError as exc:
-        raise ValueError(f"Could not reach the license server.\n\n{exc.reason}") from exc
+        raise ValueError(f"Could not reach the API server.\n\n{exc.reason}") from exc
     try:
         payload = json.loads(raw) if raw else {}
     except Exception as exc:
-        raise ValueError("License server returned invalid JSON.") from exc
+        raise ValueError("API server returned invalid JSON.") from exc
     if not isinstance(payload, dict):
-        raise ValueError("License server returned an unexpected response.")
+        raise ValueError("API server returned an unexpected response.")
     if payload.get("ok") is False:
         raise ValueError(str(payload.get("message") or payload.get("error") or "License request failed."))
     return payload
+
+
+def issue_license_online(
+    server_url,
+    admin_token,
+    plan_id,
+    customer_label="",
+    customer_email="",
+    max_devices=1,
+    expires_at_utc="",
+):
+    token = str(admin_token or "").strip()
+    if not token:
+        raise ValueError("Enter the Railway LICENSE_ADMIN_TOKEN.")
+    if len(token) > 4096 or "\r" in token or "\n" in token:
+        raise ValueError("Admin token format is invalid.")
+    selected_plan = str(plan_id or "").strip().lower()
+    if selected_plan not in {"starter", "plus", "pro", "signature"}:
+        raise ValueError("Choose Starter, Plus, Pro, or Signature.")
+    try:
+        device_limit = int(max_devices)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Max devices must be a whole number.") from exc
+    if not 1 <= device_limit <= 1000:
+        raise ValueError("Max devices must be between 1 and 1000.")
+    label = str(customer_label or "").strip()
+    email = str(customer_email or "").strip()
+    if len(label) > 160:
+        raise ValueError("Customer label must be 160 characters or fewer.")
+    if len(email) > 254:
+        raise ValueError("Customer email must be 254 characters or fewer.")
+    payload = {
+        "plan_id": selected_plan,
+        "customer_label": label,
+        "customer_email": email,
+        "max_devices": device_limit,
+    }
+    expiry = str(expires_at_utc or "").strip()
+    if expiry:
+        payload["expires_at_utc"] = expiry
+    return license_api_post_json(
+        server_url,
+        "/api/v1/licenses/issue",
+        payload,
+        extra_headers={"X-License-Admin-Token": token},
+    )
 
 
 def apply_license_response(state, payload):
@@ -1674,8 +1789,7 @@ def build_license_failure_state(state, message):
 
 def activate_license_online(state):
     current = normalize_license_state(state)
-    if not current.get("license_key"):
-        raise ValueError("Paste a license key first.")
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
     payload = license_api_post_json(
         current.get("server_url"),
         "/api/v1/licenses/activate",
@@ -1691,8 +1805,7 @@ def activate_license_online(state):
 
 def verify_license_online(state):
     current = normalize_license_state(state)
-    if not current.get("license_key"):
-        raise ValueError("Paste a license key first.")
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
     payload = license_api_post_json(
         current.get("server_url"),
         "/api/v1/licenses/verify",
@@ -1708,6 +1821,7 @@ def verify_license_online(state):
 
 def upload_audit_report_online(state):
     current = normalize_license_state(state)
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
     if not license_is_active(current):
         raise ValueError("Activate this PC in License Center before using API audit export.")
     if not license_feature_allowed("audit-log-viewer", state=current):
@@ -1737,7 +1851,7 @@ def download_audit_export_online(state, upload_response, destination):
         or not download_token.startswith("vla1.")
     ):
         raise ValueError("The API returned invalid audit download details.")
-    url = normalize_license_server_url(current.get("server_url")) + download_path
+    url = validated_license_server_url(current.get("server_url")) + download_path
     request = urllib.request.Request(
         url,
         headers={
@@ -1747,16 +1861,21 @@ def download_audit_export_online(state, upload_response, destination):
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with API_URL_OPENER.open(request, timeout=30) as response:
             raw = response.read(MAX_AUDIT_API_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
         try:
-            error_payload = json.loads(error_body)
-            message = error_payload.get("message") or error_payload.get("error") or error_body
-        except Exception:
-            message = error_body or f"Audit API returned HTTP {exc.code}."
-        raise ValueError(message) from exc
+            error_body = exc.read(MAX_API_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
+            if 300 <= exc.code < 400:
+                raise ValueError("API redirects are blocked to protect the audit download token.") from exc
+            try:
+                error_payload = json.loads(error_body)
+                message = error_payload.get("message") or error_payload.get("error") or error_body
+            except Exception:
+                message = error_body or f"Audit API returned HTTP {exc.code}."
+            raise ValueError(message) from exc
+        finally:
+            exc.close()
     except urllib.error.URLError as exc:
         raise ValueError(f"Could not download the audit report.\n\n{exc.reason}") from exc
     if len(raw) > MAX_AUDIT_API_DOWNLOAD_BYTES:
@@ -2860,6 +2979,8 @@ class USBFileLocker(tk.Tk):
         self.breach_status = tk.StringVar(value="Breach detection ready.")
         self.license_state = load_license_state(self.settings)
         self.license_status = tk.StringVar(value=license_status_text(self.license_state))
+        self.license_refresh_results = queue.Queue()
+        self.license_refresh_in_progress = False
         self.pin_visible = tk.BooleanVar(value=False)
         self.pin_mode = tk.StringVar(value="USB KEY ONLY")
         self.progress_value = tk.DoubleVar(value=0)
@@ -3157,7 +3278,20 @@ class USBFileLocker(tk.Tk):
         self.owner_disable_button.configure(state="disabled" if disable_owner_off else "normal")
         self.owner_verify_button.configure(state="normal" if self.owner_policy else "disabled")
         for button, feature_id in self.license_gated_buttons.items():
-            if button.cget("state") != "disabled" and not license_feature_allowed(feature_id, state=self.license_state):
+            allowed = license_feature_allowed(feature_id, state=self.license_state)
+            if not allowed:
+                button.configure(state="disabled")
+            elif (
+                button not in self.key_required_buttons
+                and button not in {
+                    self.owner_enable_button,
+                    self.owner_disable_button,
+                    self.owner_verify_button,
+                }
+            ):
+                button.configure(state="normal")
+        if getattr(self, "busy", False):
+            for button in self.busy_buttons:
                 button.configure(state="disabled")
 
     def unload_session(self, reason, action_name, result):
@@ -3223,23 +3357,35 @@ class USBFileLocker(tk.Tk):
             messagebox.showerror("Could not open Apps Hub", str(exc))
 
     def refresh_license_state_silent(self):
+        if self.license_refresh_in_progress:
+            return
         state = load_license_state(self.settings)
         if not state.get("license_key") or not state.get("receipt"):
             self.update_license_state_ui(state)
             self.apply_access_state()
             return
 
+        self.license_refresh_in_progress = True
+
         def worker():
             try:
                 updated = verify_license_online(state)
             except Exception as exc:
                 updated = build_license_failure_state(state, exc)
-            try:
-                self.after(0, lambda: self.winfo_exists() and self.finish_license_refresh(updated))
-            except Exception:
-                pass
+            self.license_refresh_results.put(updated)
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, name="LicenseRefresh", daemon=True).start()
+        self.after(50, self.poll_license_refresh)
+
+    def poll_license_refresh(self):
+        try:
+            state = self.license_refresh_results.get_nowait()
+        except queue.Empty:
+            if self.license_refresh_in_progress and self.winfo_exists():
+                self.after(50, self.poll_license_refresh)
+            return
+        self.license_refresh_in_progress = False
+        self.finish_license_refresh(state)
 
     def finish_license_refresh(self, state):
         self.update_license_state_ui(state, save=True)
@@ -3291,6 +3437,9 @@ class USBFileLocker(tk.Tk):
 
         action_row = tk.Frame(panel, bg=PANEL)
         action_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(16, 0))
+        request_results = queue.Queue()
+        request_busy = False
+        request_buttons = {}
 
         def refresh_dialog(new_state=None):
             current = normalize_license_state(new_state if new_state is not None else self.license_state)
@@ -3306,54 +3455,106 @@ class USBFileLocker(tk.Tk):
             refresh_dialog(self.license_state)
 
         def collect_state():
-            fresh = normalize_license_state(self.license_state)
-            fresh["server_url"] = normalize_license_server_url(server_var.get())
-            fresh["license_key"] = license_var.get().strip()
+            fresh = license_state_with_key(
+                self.license_state,
+                license_var.get(),
+                server_var.get(),
+            )
             fresh["machine_id"] = current_machine_fingerprint()
             fresh["machine_name"] = current_machine_name()
             return fresh
 
-        def activate_now():
-            try:
-                updated = activate_license_online(collect_state())
-                persist_and_refresh(updated)
-                if license_is_active(updated):
+        def set_request_busy(busy, mode=""):
+            nonlocal request_busy
+            request_busy = busy
+            for button in request_buttons.values():
+                button.configure(state="disabled" if busy else "normal")
+            if busy:
+                verb = "Activating" if mode == "activate" else "Verifying"
+                status_var.set(f"{verb} license with the API...")
+
+        def finish_license_request(mode, source_state, updated, error):
+            set_request_busy(False)
+            if error is not None:
+                failed = build_license_failure_state(source_state, error)
+                persist_and_refresh(failed)
+                self.status.set(f"License {mode} failed.")
+                messagebox.showerror(f"License {mode} failed", str(error), parent=dialog)
+                return
+            persist_and_refresh(updated)
+            if license_is_active(updated):
+                if mode == "activation":
                     self.status.set(f"License activated for {updated.get('plan_name') or updated.get('plan_id', '').title()}.")
-                    messagebox.showinfo("License activated", "This PC is now activated and the app unlocked the matching plan.", parent=dialog)
-                else:
-                    self.status.set("License activation finished, but the plan is not active yet.")
-                    messagebox.showwarning(
-                        "Activation needs attention",
-                        updated.get("last_error") or license_status_text(updated),
+                    messagebox.showinfo(
+                        "License activated",
+                        "This PC is now activated and the matching plan controls are available.",
                         parent=dialog,
                     )
+                else:
+                    self.status.set("License verification complete.")
+                    messagebox.showinfo(
+                        "License verified",
+                        "The saved license and receipt are valid on this PC.",
+                        parent=dialog,
+                    )
+                return
+            self.status.set(f"License {mode} finished, but the plan is not active.")
+            messagebox.showwarning(
+                "License not active",
+                updated.get("last_error") or license_status_text(updated),
+                parent=dialog,
+            )
+
+        def poll_license_request():
+            try:
+                mode, source_state, updated, error = request_results.get_nowait()
+            except queue.Empty:
+                if request_busy and dialog.winfo_exists():
+                    dialog.after(50, poll_license_request)
+                return
+            finish_license_request(mode, source_state, updated, error)
+
+        def start_license_request(mode):
+            if request_busy:
+                return
+            source_state = collect_state()
+            try:
+                source_state["license_key"] = require_valid_api_license_key(source_state.get("license_key"))
+                source_state["server_url"] = validated_license_server_url(source_state.get("server_url"))
             except Exception as exc:
-                failed = build_license_failure_state(collect_state(), exc)
+                failed = build_license_failure_state(source_state, exc)
                 persist_and_refresh(failed)
-                self.status.set("License activation failed.")
-                messagebox.showerror("License activation failed", str(exc), parent=dialog)
+                messagebox.showerror("License key needs attention", str(exc), parent=dialog)
+                return
+            set_request_busy(True, mode)
+
+            def worker():
+                try:
+                    if mode == "activate":
+                        updated = activate_license_online(source_state)
+                        label = "activation"
+                    else:
+                        updated = verify_license_online(source_state)
+                        label = "verification"
+                    error = None
+                except Exception as exc:
+                    updated = None
+                    error = exc
+                    label = "activation" if mode == "activate" else "verification"
+                request_results.put((label, source_state, updated, error))
+
+            threading.Thread(target=worker, name=f"License-{mode}", daemon=True).start()
+            dialog.after(50, poll_license_request)
+
+        def activate_now():
+            start_license_request("activate")
 
         def verify_now():
-            try:
-                updated = verify_license_online(collect_state())
-                persist_and_refresh(updated)
-                if license_is_active(updated):
-                    self.status.set("License verification complete.")
-                    messagebox.showinfo("License verified", "The saved license and receipt are valid on this PC.", parent=dialog)
-                else:
-                    self.status.set("License verification finished, but the plan is not active.")
-                    messagebox.showwarning(
-                        "License not active",
-                        updated.get("last_error") or license_status_text(updated),
-                        parent=dialog,
-                    )
-            except Exception as exc:
-                failed = build_license_failure_state(collect_state(), exc)
-                persist_and_refresh(failed)
-                self.status.set("License verification failed.")
-                messagebox.showerror("License verification failed", str(exc), parent=dialog)
+            start_license_request("verify")
 
         def clear_now():
+            if request_busy:
+                return
             if not messagebox.askyesno("Clear saved license", "Remove the saved license key and activation receipt from this PC?", parent=dialog):
                 return
             cleared = clear_license_state(self.settings, server_var.get())
@@ -3371,11 +3572,22 @@ class USBFileLocker(tk.Tk):
             dialog.clipboard_append(machine_var.get())
             self.status.set("Copied this PC's machine ID.")
 
-        tk.Button(action_row, text="ACTIVATE", command=activate_now, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=16, ipady=8)
-        tk.Button(action_row, text="VERIFY", command=verify_now, bg=WHITE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=16, ipady=8)
+        def open_issuer_app():
+            try:
+                launch_companion_script("license_issuer.py")
+                self.status.set("Opened VaultLink License Issuer.")
+            except Exception as exc:
+                messagebox.showerror("Could not open License Issuer", str(exc), parent=dialog)
+
+        request_buttons["activate"] = tk.Button(action_row, text="ACTIVATE", command=activate_now, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        request_buttons["activate"].pack(side="left", ipadx=16, ipady=8)
+        request_buttons["verify"] = tk.Button(action_row, text="VERIFY", command=verify_now, bg=WHITE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        request_buttons["verify"].pack(side="left", padx=(10, 0), ipadx=16, ipady=8)
         tk.Button(action_row, text="DEFAULT API", command=use_default_server, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="COPY MACHINE ID", command=copy_machine_id, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
-        tk.Button(action_row, text="CLEAR", command=clear_now, bg=RED, fg=WHITE, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=16, ipady=8)
+        tk.Button(action_row, text="ISSUER APP", command=open_issuer_app, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
+        request_buttons["clear"] = tk.Button(action_row, text="CLEAR", command=clear_now, bg=RED, fg=WHITE, relief="flat", font=("Segoe UI", 9, "bold"))
+        request_buttons["clear"].pack(side="right", ipadx=16, ipady=8)
 
         status_panel = tk.Frame(panel, bg="#181c24")
         status_panel.grid(row=7, column=0, sticky="nsew", padx=18, pady=(16, 12))

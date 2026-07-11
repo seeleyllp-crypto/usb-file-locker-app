@@ -1,4 +1,5 @@
 import os
+import queue
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -37,6 +38,7 @@ class AuditLogViewer(tk.Tk):
         self.filtered_records = []
         self.latest_verification = (True, 0, "No audit events have been recorded yet.")
         self.api_export_busy = False
+        self.api_export_results = queue.Queue()
         self.api_export_button = None
         self.tree = None
         self.details = None
@@ -399,36 +401,33 @@ class AuditLogViewer(tk.Tk):
         worker = threading.Thread(
             target=self._run_api_export,
             args=(state, destination),
+            name="AuditApiExport",
             daemon=True,
         )
         worker.start()
+        self.after(50, self._poll_api_export)
 
     def _run_api_export(self, state, destination):
         try:
             upload = locker.upload_audit_report_online(state)
             out_path = locker.download_audit_export_online(state, upload, destination)
-            self.after(
-                0,
-                lambda response=upload, path=str(out_path): self._finish_api_export(
-                    True,
-                    path,
-                    response,
-                ),
-            )
+            self.api_export_results.put((True, str(out_path), upload))
         except Exception as exc:
-            message = str(exc)
-            self.after(
-                0,
-                lambda error=message, path=destination: self._finish_api_export(
-                    False,
-                    path,
-                    {"message": error},
-                ),
-            )
+            self.api_export_results.put((False, destination, {"message": str(exc)}))
+
+    def _poll_api_export(self):
+        try:
+            success, destination, response = self.api_export_results.get_nowait()
+        except queue.Empty:
+            if self.api_export_busy and self.winfo_exists():
+                self.after(50, self._poll_api_export)
+            return
+        self._finish_api_export(success, destination, response)
 
     def _finish_api_export(self, success, destination, response):
         self.api_export_busy = False
-        self.api_export_button.configure(state="normal", text="UPLOAD + DOWNLOAD API COPY")
+        if self.api_export_button is not None and self.api_export_button.winfo_exists():
+            self.api_export_button.configure(state="normal", text="UPLOAD + DOWNLOAD API COPY")
         if not success:
             error = str(response.get("message") or "The API export failed.")
             locker.log_event("audit_api_export", destination, "failed", error)

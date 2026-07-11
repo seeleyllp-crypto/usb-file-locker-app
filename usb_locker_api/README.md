@@ -27,6 +27,8 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 
 For restart-safe audit-export retention, mount a Railway Volume and set `AUDIT_EXPORT_DIR` to its folder, such as `/data/audit_exports`. You can also set `AUDIT_EXPORT_RETENTION_HOURS` from 1 to 168; the default is 24 hours. Without a Volume, immediate upload-and-download still works, but Railway can remove pending exports when the service restarts.
 
+License issuance requires the Railway admin token in the `X-License-Admin-Token` header. The API never accepts that token inside a JSON request body.
+
 Railway will start the service with:
 
 `python main.py`

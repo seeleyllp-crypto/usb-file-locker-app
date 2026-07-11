@@ -10,6 +10,7 @@ The Audit Log Viewer can upload its approved privacy-safe report fields to the l
 - `privacy_safety_hub.py` - dashboard and safety controls
 - `personal_vault_pad.py` - simpler personal vault window
 - `audit_log_viewer.py` - signed audit trail viewer
+- `license_issuer.py` - owner-only API license issuer; the admin token is masked and never saved
 - `global_breach_guard.py` - topmost watcher for repeated risky events
 - `text_log_processor.py` - cleans up pasted text-style logs
 - `locked_file_browser.py` - finds locked files fast
@@ -24,6 +25,10 @@ The public Railway-ready API lives in:
 - `usb_locker_api/`
 
 That folder is also safe to copy into its own separate repo if you want a standalone API project.
+
+## Issuing licenses
+
+Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose a plan, and issue the key. The admin token is masked, sent only in the `X-License-Admin-Token` header, and never written to settings, receipts, logs, or GitHub. Send the customer only the generated `vlk1...` license key.
 
 ## Repo safety notes
 

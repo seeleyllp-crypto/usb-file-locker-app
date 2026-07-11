@@ -12,15 +12,77 @@ from urllib.parse import urlparse
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.3.0"
+API_VERSION = "0.3.1"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
 AUDIT_DOWNLOAD_PREFIX = "vla1"
 DEFAULT_SIGNING_SECRET = "vaultlink-dev-signing-secret-change-me"
-MAX_JSON_BODY_BYTES = 4 * 1024 * 1024
+MAX_LICENSE_JSON_BODY_BYTES = 64 * 1024
+MAX_AUDIT_JSON_BODY_BYTES = 4 * 1024 * 1024
 MAX_AUDIT_REPORT_BYTES = 3 * 1024 * 1024
 MAX_AUDIT_EVENTS = 20000
+MAX_SIGNED_TOKEN_CHARS = 32 * 1024
+ALLOWED_AUDIT_ACTIONS = frozenset(
+    {
+        "add_perm_unlock_items",
+        "audit_api_export",
+        "audit_log_export",
+        "audit_log_view",
+        "audit_viewer_export_locked",
+        "audit_viewer_export_raw",
+        "audit_viewer_open",
+        "backup_app_data",
+        "backup_master_key",
+        "check_lock_format",
+        "compare_backup_key",
+        "configuration_change",
+        "create_key",
+        "delete_unlocked_temp",
+        "delete_unlocked_temp_after_view",
+        "delete_unlocked_temp_retry",
+        "delete_unlocked_temp_window",
+        "export_locked_audit_report",
+        "failed_access",
+        "find_locked_files",
+        "license_issue",
+        "load_key",
+        "load_recent_key",
+        "lock",
+        "lock_note",
+        "lock_remove_original",
+        "locked_file_browser_scan",
+        "login",
+        "open_temp_unlocked_file",
+        "open_temp_unlocked_text",
+        "owner_usb_removed",
+        "panic_lock",
+        "perm_unlock_workbench_relock",
+        "perm_unlock_workbench_relock_copy",
+        "perm_unlock_workbench_relock_remove",
+        "quick_lock_note",
+        "recovery_self_test",
+        "restore_app_data",
+        "save_personal_vault",
+        "scan_personal_files",
+        "unlock",
+        "unlock_double_click",
+        "upgrade_legacy_lock",
+        "usb_key_removed",
+        "vault_delete_item",
+        "vault_duplicate_item",
+        "vault_export_locked",
+        "vault_import_text",
+        "vault_open",
+        "vault_pad_delete",
+        "vault_pad_duplicate",
+        "vault_pad_export_locked",
+        "vault_pad_import_text",
+        "vault_pad_open",
+        "vault_pad_save",
+        "verify_locked_health",
+    }
+)
 try:
     AUDIT_EXPORT_RETENTION_HOURS = min(
         max(int(os.getenv("AUDIT_EXPORT_RETENTION_HOURS", "24")), 1),
@@ -31,6 +93,14 @@ except ValueError:
 AUDIT_EXPORT_DIR = Path(
     os.getenv("AUDIT_EXPORT_DIR", str(ROOT_DIR / "data" / "audit_exports"))
 ).expanduser()
+
+
+class RequestTooLarge(ValueError):
+    pass
+
+
+class UnsupportedMediaType(ValueError):
+    pass
 
 
 FEATURES = [
@@ -111,6 +181,7 @@ COMPANION_APPS = [
     {"name": "PERM UNLOCK Workbench", "script": "perm_unlock_workbench.py", "purpose": "Manage edit-and-relock items in the PERM UNLOCK folder."},
     {"name": "Personal Vault Pad", "script": "personal_vault_pad.py", "purpose": "Use the vault in a simpler note-style window."},
     {"name": "Audit Log Viewer", "script": "audit_log_viewer.py", "purpose": "Read and export the privacy-safe signed audit trail."},
+    {"name": "VaultLink License Issuer", "script": "license_issuer.py", "purpose": "Issue customer licenses through the admin-protected API."},
     {"name": "Text Log Processor", "script": "text_log_processor.py", "purpose": "Parse table-style text logs into a cleaner summary."},
     {"name": "Global Breach Guard", "script": "global_breach_guard.py", "purpose": "Run a topmost global breach watcher."},
 ]
@@ -285,7 +356,10 @@ def sign_token(prefix, payload):
 
 
 def verify_token(token, prefix):
-    parts = str(token or "").strip().split(".")
+    token_text = str(token or "").strip()
+    if len(token_text) > MAX_SIGNED_TOKEN_CHARS:
+        raise ValueError("Token is too large.")
+    parts = token_text.split(".")
     if len(parts) != 3 or parts[0] != prefix:
         raise ValueError("Wrong token format.")
     payload_text = parts[1]
@@ -329,6 +403,7 @@ def product_payload():
             "privacy_safety_hub.py",
             "personal_vault_pad.py",
             "audit_log_viewer.py",
+            "license_issuer.py",
             "global_breach_guard.py",
             "text_log_processor.py",
             "locked_file_browser.py",
@@ -375,6 +450,11 @@ def docs_payload():
             {"name": "AUDIT_EXPORT_DIR", "required": False, "purpose": "Persistent audit-export folder; mount a Railway Volume here for durable retention"},
             {"name": "AUDIT_EXPORT_RETENTION_HOURS", "required": False, "purpose": "Signed export lifetime from 1 to 168 hours; default 24"},
         ],
+        "request_limits": {
+            "license_routes_bytes": MAX_LICENSE_JSON_BODY_BYTES,
+            "audit_export_route_bytes": MAX_AUDIT_JSON_BODY_BYTES,
+            "audit_events": MAX_AUDIT_EVENTS,
+        },
     }
 
 
@@ -552,14 +632,20 @@ def issue_license(payload):
     if max_devices < 1 or max_devices > 1000:
         raise ValueError("max_devices must be between 1 and 1000.")
     plan = PLAN_INDEX[plan_id]
+    customer_label = str(payload.get("customer_label", "")).strip()
+    customer_email = str(payload.get("customer_email", "")).strip()
+    if len(customer_label) > 160:
+        raise ValueError("customer_label must be 160 characters or fewer.")
+    if len(customer_email) > 254:
+        raise ValueError("customer_email must be 254 characters or fewer.")
     license_payload = {
         "license_id": payload.get("license_id") or f"LIC-{secrets.token_hex(8).upper()}",
         "product": "USB File Locker",
         "plan_id": plan["id"],
         "plan_name": plan["name"],
         "entitlements": plan_entitlements(plan["id"]),
-        "customer_label": str(payload.get("customer_label", "")).strip(),
-        "customer_email": str(payload.get("customer_email", "")).strip(),
+        "customer_label": customer_label,
+        "customer_email": customer_email,
         "issued_at_utc": utc_now(),
         "expires_at_utc": format_utc(expires_at) if expires_at else "",
         "max_devices": max_devices,
@@ -588,6 +674,10 @@ def activate_license(payload):
         raise ValueError("license_key is required.")
     if not machine_id:
         raise ValueError("machine_id is required.")
+    if len(machine_id) > 256:
+        raise ValueError("machine_id must be 256 characters or fewer.")
+    if len(machine_name) > 160:
+        raise ValueError("machine_name must be 160 characters or fewer.")
     license_payload = verify_token(license_key, LICENSE_KEY_PREFIX)
     if license_is_expired(license_payload):
         plan = current_plan_for_license(license_payload)
@@ -646,6 +736,8 @@ def verify_license(payload):
         raise ValueError("license_key is required.")
     if not machine_id:
         raise ValueError("machine_id is required.")
+    if len(machine_id) > 256:
+        raise ValueError("machine_id must be 256 characters or fewer.")
     license_payload = verify_token(license_key, LICENSE_KEY_PREFIX)
     plan = current_plan_for_license(license_payload)
     license_view = {
@@ -720,8 +812,28 @@ def verify_license(payload):
 
 
 def clean_audit_text(value, limit):
-    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    text = "".join(
+        character if ord(character) >= 32 and ord(character) != 127 else " "
+        for character in str(value or "")
+    ).strip()
     return " ".join(text.split())[:limit]
+
+
+def clean_audit_identifier(value, limit):
+    text = clean_audit_text(value, limit)
+    return "".join(
+        character for character in text
+        if character.isalnum() or character in {"-", "_", "."}
+    )[:limit]
+
+
+def clean_audit_time(value):
+    text = clean_audit_text(value, 40)
+    try:
+        parsed = parse_utc(text)
+    except (TypeError, ValueError):
+        return ""
+    return format_utc(parsed) if parsed else ""
 
 
 def clean_audit_hash(value):
@@ -741,11 +853,17 @@ def clean_audit_event(record):
     result = clean_audit_text(record.get("result"), 16).lower()
     if result not in {"success", "failure"}:
         result = "unknown"
+    event_id = clean_audit_identifier(record.get("event_id"), 64).lower()
+    if len(event_id) != 16 or any(character not in "0123456789abcdef" for character in event_id):
+        event_id = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:16] if event_id else ""
+    action = clean_audit_identifier(record.get("action"), 80).lower()
+    if action not in ALLOWED_AUDIT_ACTIONS:
+        action = "unknown_action"
     return {
         "sequence": sequence,
-        "time_utc": clean_audit_text(record.get("time_utc"), 32),
-        "event_id": clean_audit_text(record.get("event_id"), 64),
-        "action": clean_audit_text(record.get("action"), 80),
+        "time_utc": clean_audit_time(record.get("time_utc")),
+        "event_id": event_id,
+        "action": action,
         "result": result,
         "hash": clean_audit_hash(record.get("hash")),
         "previous_hash": clean_audit_hash(record.get("previous_hash")),
@@ -761,10 +879,15 @@ def clean_audit_section(section, remaining_events):
     if len(events) > remaining_events:
         raise ValueError(f"Audit report exceeds the {MAX_AUDIT_EVENTS} event limit.")
     safe_events = [clean_audit_event(record) for record in events]
+    valid = bool(section.get("valid"))
     return {
-        "valid": bool(section.get("valid")),
+        "valid": valid,
         "event_count": len(safe_events),
-        "verification": clean_audit_text(section.get("verification"), 300),
+        "verification": (
+            "Client reported that audit verification passed."
+            if valid
+            else "Client reported that audit verification failed or was unavailable."
+        ),
         "events": safe_events,
     }
 
@@ -782,15 +905,24 @@ def clean_defender_status(status):
     ):
         if name in status:
             safe[name] = bool(status.get(name))
-    for name in (
-        "AntivirusSignatureLastUpdated",
-        "QuickScanAge",
-        "FullScanAge",
-        "LastQuickScanSource",
-        "LastFullScanSource",
-    ):
+    if "AntivirusSignatureLastUpdated" in status:
+        safe["AntivirusSignatureLastUpdated"] = clean_audit_time(
+            status.get("AntivirusSignatureLastUpdated")
+        )
+    for name in ("QuickScanAge", "FullScanAge"):
         if name in status:
-            safe[name] = clean_audit_text(status.get(name), 80)
+            try:
+                age = int(status.get(name))
+            except (TypeError, ValueError):
+                age = -1
+            safe[name] = age if 0 <= age <= 100000 else "unknown"
+    for name in ("LastQuickScanSource", "LastFullScanSource"):
+        if name in status:
+            try:
+                source = int(status.get(name))
+            except (TypeError, ValueError):
+                source = -1
+            safe[name] = source if 0 <= source <= 20 else "unknown"
     return safe
 
 
@@ -800,12 +932,9 @@ def clean_audit_report(report):
     usb_section = clean_audit_section(report.get("usb_file_locker_audit"), MAX_AUDIT_EVENTS)
     remaining = MAX_AUDIT_EVENTS - len(usb_section["events"])
     safety_section = clean_audit_section(report.get("pc_safety_check_audit"), remaining)
-    limitations = report.get("limitations", [])
-    if not isinstance(limitations, list):
-        limitations = []
     return {
         "report_type": "Privacy Safety Audit Report",
-        "exported_at_utc": clean_audit_text(report.get("exported_at_utc"), 32),
+        "exported_at_utc": clean_audit_time(report.get("exported_at_utc")),
         "privacy_notice": (
             "This report contains no keystrokes, passwords, PINs, USB secrets, "
             "file contents, client names, or full file paths."
@@ -813,7 +942,11 @@ def clean_audit_report(report):
         "defender_status": clean_defender_status(report.get("defender_status")),
         "usb_file_locker_audit": usb_section,
         "pc_safety_check_audit": safety_section,
-        "limitations": [clean_audit_text(item, 240) for item in limitations[:10]],
+        "limitations": [
+            "A clean audit report does not prove that the computer is malware-free.",
+            "Use Microsoft Defender or another trusted antivirus for malware scanning.",
+            "This report is not a HIPAA certification or legal-compliance determination.",
+        ],
     }
 
 
@@ -966,6 +1099,18 @@ def load_audit_export_download(export_id, token):
     body = path.read_bytes()
     if len(body) > MAX_AUDIT_REPORT_BYTES:
         raise ValueError("Stored audit export is too large.")
+    try:
+        stored = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Stored audit export is damaged.") from exc
+    if not isinstance(stored, dict) or stored.get("export_id") != export_id:
+        raise ValueError("Stored audit export identity did not verify.")
+    stored_machine_hash = ((stored.get("source") or {}).get("machine_hash", ""))
+    if not hmac.compare_digest(
+        str(stored_machine_hash),
+        str(token_payload.get("machine_hash", "")),
+    ):
+        raise PermissionError("Audit download token does not match the stored machine receipt.")
     return body, f"vaultlink-audit-{export_id}.json"
 
 
@@ -999,10 +1144,20 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_json(self):
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        if length < 0 or length > MAX_JSON_BODY_BYTES:
-            raise ValueError("Request body is too large.")
+    def read_json(self, max_bytes):
+        if self.headers.get("Transfer-Encoding", "").strip():
+            raise ValueError("Chunked request bodies are not supported.")
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError as exc:
+            raise ValueError("Content-Length must be a whole number.") from exc
+        if length < 0:
+            raise ValueError("Content-Length cannot be negative.")
+        if length > max_bytes:
+            raise RequestTooLarge(f"Request body exceeds the {max_bytes}-byte limit for this route.")
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if length and content_type != "application/json":
+            raise UnsupportedMediaType("Content-Type must be application/json.")
         raw = self.rfile.read(length) if length else b"{}"
         try:
             return require_json_object(json.loads(raw.decode("utf-8")))
@@ -1011,14 +1166,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise ValueError("Body must be valid JSON.") from exc
 
-    def require_admin_token(self, payload):
+    def require_admin_token(self):
         configured = os.getenv("LICENSE_ADMIN_TOKEN", "").strip()
         if not configured:
             raise PermissionError("LICENSE_ADMIN_TOKEN is not configured on this server.")
-        provided = (
-            self.headers.get("X-License-Admin-Token", "").strip()
-            or str(payload.get("admin_token", "")).strip()
-        )
+        provided = self.headers.get("X-License-Admin-Token", "").strip()
         if not provided or not hmac.compare_digest(provided, configured):
             raise PermissionError("Admin token was missing or incorrect.")
 
@@ -1084,6 +1236,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "Receipt signing works without a database.",
                         "Strict seat counting and revocation lists need persistent storage later.",
                     ],
+                    "admin_authentication": "X-License-Admin-Token header only; never accepted in a JSON body.",
                     "audit_export_controls": [
                         "Only approved privacy-safe fields are retained.",
                         "Upload requires an active machine-bound license with Audit Log Viewer access.",
@@ -1137,6 +1290,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "bad_request", "message": str(exc)},
                     status=HTTPStatus.BAD_REQUEST,
                 )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
             return
 
         self.send_json(
@@ -1151,10 +1309,26 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        route_limits = {
+            "/api/v1/licenses/issue": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/activate": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/verify": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
+        }
+        if path not in route_limits:
+            self.send_json(
+                {
+                    "error": "not_found",
+                    "message": "Route not found.",
+                    "docs": "/docs",
+                },
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
         try:
-            payload = self.read_json()
+            payload = self.read_json(route_limits[path])
             if path == "/api/v1/licenses/issue":
-                self.require_admin_token(payload)
+                self.require_admin_token()
                 self.send_json(issue_license(payload), status=HTTPStatus.CREATED)
                 return
             if path == "/api/v1/licenses/activate":
@@ -1166,13 +1340,23 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/audit-exports":
                 self.send_json(create_audit_export(payload), status=HTTPStatus.CREATED)
                 return
+        except RequestTooLarge as exc:
             self.send_json(
                 {
-                    "error": "not_found",
-                    "message": "Route not found.",
-                    "docs": "/docs",
+                    "ok": False,
+                    "error": "request_too_large",
+                    "message": str(exc),
                 },
-                status=HTTPStatus.NOT_FOUND,
+                status=413,
+            )
+        except UnsupportedMediaType as exc:
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": "unsupported_media_type",
+                    "message": str(exc),
+                },
+                status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             )
         except PermissionError as exc:
             self.send_json(
@@ -1192,12 +1376,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 },
                 status=HTTPStatus.BAD_REQUEST,
             )
-        except Exception as exc:
+        except Exception:
             self.send_json(
                 {
                     "ok": False,
                     "error": "server_error",
-                    "message": str(exc),
+                    "message": "Internal server error.",
                 },
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )

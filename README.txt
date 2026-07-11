@@ -134,6 +134,8 @@ Companion apps:
   Opens the personal vault in a simpler note-style helper app.
 - Run Audit Log Viewer.bat
   Opens the audit chain in a dedicated viewer with verification and export tools.
+- Run License Issuer.bat
+  Issues Starter, Plus, Pro, or Signature API licenses. The Railway admin token is masked and never saved.
 - Run Text Log Processor.bat
   Pastes or loads table-style text logs, counts actions, spots failures and duplicate sequence numbers, and exports a cleaner report.
 - Run Global Breach Guard.bat
