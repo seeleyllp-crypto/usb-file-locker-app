@@ -11,12 +11,52 @@ from tkinter import filedialog, messagebox, ttk
 import usb_file_locker as locker
 
 
-PLAN_CHOICES = {
-    "$5 Starter": "starter",
-    "$50 Plus": "plus",
-    "$100 Pro": "pro",
-    "$200 Signature": "signature",
-}
+RANKS = [
+    {
+        "label": "$5 Starter",
+        "id": "starter",
+        "best_for": "One Windows PC and basic locking instructions",
+        "highlight": "Locking, quick notes, Defender package scan, PIN, recovery, and audit basics",
+    },
+    {
+        "label": "$10-$25 Home",
+        "id": "home",
+        "best_for": "A home that needs clearer setup and recovery guidance",
+        "highlight": "Starter plus home safety, USB-key custody, recovery, and setup guides",
+    },
+    {
+        "label": "$50 Personal Plus",
+        "id": "personal-plus",
+        "best_for": "Personal records and anonymous Windows safety reporting",
+        "highlight": "Personal Vault, file browser, audit viewer, PERM UNLOCK, and personal report",
+    },
+    {
+        "label": "$100 Family Safety",
+        "id": "family-safety",
+        "best_for": "Families managing anonymous safety records across devices",
+        "highlight": "Family reports, Safety Hub, Breach Guard, log processor, and Owner USB mode",
+    },
+    {
+        "label": "$200 Small Office",
+        "id": "small-office",
+        "best_for": "Small offices needing readiness and evidence workflows",
+        "highlight": "Office readiness report, SHA-256 manifest, policies, onboarding, and incident docs",
+    },
+    {
+        "label": "$500-$3,000 Family Office",
+        "id": "family-office",
+        "best_for": "Multi-PC family offices needing guided setup and records",
+        "highlight": "Multi-PC index, evidence bundle, policy pack, records, and adult-led setup",
+    },
+    {
+        "label": "$20,000+ Pro Baseline",
+        "id": "pro-baseline",
+        "best_for": "A professionally reviewed security baseline",
+        "highlight": "Signed release evidence, USB-bound option, review pack, and HIPAA-readiness workspace",
+    },
+]
+PLAN_CHOICES = {item["label"]: item["id"] for item in RANKS}
+RANK_BY_LABEL = {item["label"]: item for item in RANKS}
 
 EXPIRY_CHOICES = {
     "Never expires": 0,
@@ -30,13 +70,14 @@ class LicenseIssuer(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink License Issuer")
-        self.geometry("900x850")
-        self.minsize(820, 800)
+        self.geometry("1040x940")
+        self.minsize(900, 840)
         self.configure(bg=locker.BG)
         self.server_var = tk.StringVar(value=locker.DEFAULT_LICENSE_SERVER)
         self.admin_token_var = tk.StringVar(value="")
         self.show_token_var = tk.BooleanVar(value=False)
-        self.plan_var = tk.StringVar(value="$100 Pro")
+        self.plan_var = tk.StringVar(value="$20,000+ Pro Baseline")
+        self.rank_detail_var = tk.StringVar(value="")
         self.customer_var = tk.StringVar(value="")
         self.email_var = tk.StringVar(value="")
         self.max_devices_var = tk.StringVar(value="1")
@@ -47,9 +88,11 @@ class LicenseIssuer(tk.Tk):
         self.latest_response = None
         self.issue_button = None
         self.copy_button = None
+        self.handoff_button = None
         self.save_button = None
         self.result_text = None
         self.token_entry = None
+        self.rank_buttons = {}
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
 
@@ -135,15 +178,49 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).grid(row=0, column=1, padx=(10, 0))
 
-        self.add_label(form, "PLAN", 4, 0)
-        self.add_label(form, "MAX DEVICES", 4, 1)
-        ttk.Combobox(
+        self.add_label(form, "ALL 7 LICENSE RANKS", 4, 0, columnspan=2)
+        rank_frame = tk.Frame(form, bg=locker.PANEL)
+        rank_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=18)
+        for column in range(4):
+            rank_frame.columnconfigure(column, weight=1, uniform="rank")
+        for index, rank in enumerate(RANKS):
+            label = rank["label"]
+            button = tk.Button(
+                rank_frame,
+                text=f"RANK {index + 1}\n{label}",
+                command=lambda selected=label: self.select_rank(selected),
+                bg="#252936",
+                fg=locker.TEXT,
+                activebackground=locker.GREEN,
+                activeforeground=locker.BLACK,
+                relief="flat",
+                borderwidth=0,
+                height=2,
+                wraplength=210,
+                font=("Segoe UI", 9, "bold"),
+            )
+            button.grid(
+                row=index // 4,
+                column=index % 4,
+                sticky="nsew",
+                padx=(0 if index % 4 == 0 else 5, 0),
+                pady=(0 if index < 4 else 6, 0),
+                ipady=4,
+            )
+            self.rank_buttons[label] = button
+        self.select_rank(self.plan_var.get())
+        tk.Label(
             form,
-            textvariable=self.plan_var,
-            values=list(PLAN_CHOICES),
-            state="readonly",
-            font=("Segoe UI", 10),
-        ).grid(row=5, column=0, sticky="ew", padx=(18, 8), ipady=5)
+            textvariable=self.rank_detail_var,
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            justify="left",
+            wraplength=960,
+            font=("Segoe UI", 9),
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=18, pady=(8, 0))
+
+        self.add_label(form, "MAX DEVICES", 7, 0)
+        self.add_label(form, "EXPIRATION", 7, 1)
         tk.Spinbox(
             form,
             from_=1,
@@ -155,10 +232,17 @@ class LicenseIssuer(tk.Tk):
             insertbackground=locker.TEXT,
             relief="flat",
             font=("Segoe UI", 10),
-        ).grid(row=5, column=1, sticky="ew", padx=(8, 18), ipady=5)
+        ).grid(row=8, column=0, sticky="ew", padx=(18, 8), ipady=5)
+        ttk.Combobox(
+            form,
+            textvariable=self.expiry_var,
+            values=list(EXPIRY_CHOICES),
+            state="readonly",
+            font=("Segoe UI", 10),
+        ).grid(row=8, column=1, sticky="ew", padx=(8, 18), ipady=5)
 
-        self.add_label(form, "CUSTOMER LABEL, OPTIONAL", 6, 0)
-        self.add_label(form, "CUSTOMER EMAIL, OPTIONAL", 6, 1)
+        self.add_label(form, "CUSTOMER LABEL, OPTIONAL", 9, 0)
+        self.add_label(form, "CUSTOMER EMAIL, OPTIONAL", 9, 1)
         tk.Entry(
             form,
             textvariable=self.customer_var,
@@ -167,7 +251,7 @@ class LicenseIssuer(tk.Tk):
             insertbackground=locker.TEXT,
             relief="flat",
             font=("Segoe UI", 10),
-        ).grid(row=7, column=0, sticky="ew", padx=(18, 8), ipady=7)
+        ).grid(row=10, column=0, sticky="ew", padx=(18, 8), ipady=7)
         tk.Entry(
             form,
             textvariable=self.email_var,
@@ -176,19 +260,10 @@ class LicenseIssuer(tk.Tk):
             insertbackground=locker.TEXT,
             relief="flat",
             font=("Segoe UI", 10),
-        ).grid(row=7, column=1, sticky="ew", padx=(8, 18), ipady=7)
-
-        self.add_label(form, "EXPIRATION", 8, 0)
-        ttk.Combobox(
-            form,
-            textvariable=self.expiry_var,
-            values=list(EXPIRY_CHOICES),
-            state="readonly",
-            font=("Segoe UI", 10),
-        ).grid(row=9, column=0, sticky="ew", padx=(18, 8), pady=(0, 18), ipady=5)
+        ).grid(row=10, column=1, sticky="ew", padx=(8, 18), ipady=7)
 
         action_row = tk.Frame(form, bg=locker.PANEL)
-        action_row.grid(row=9, column=1, sticky="e", padx=(8, 18), pady=(0, 18))
+        action_row.grid(row=11, column=0, columnspan=2, sticky="e", padx=18, pady=(14, 18))
         self.issue_button = tk.Button(
             action_row,
             text="ISSUE LICENSE",
@@ -220,7 +295,7 @@ class LicenseIssuer(tk.Tk):
         ).pack(anchor="w", padx=18, pady=(16, 6))
         self.result_text = tk.Text(
             result_panel,
-            height=8,
+            height=6,
             bg=locker.FIELD,
             fg=locker.TEXT,
             insertbackground=locker.TEXT,
@@ -244,6 +319,17 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         )
         self.copy_button.pack(side="left", ipadx=14, ipady=8)
+        self.handoff_button = tk.Button(
+            result_actions,
+            text="COPY CUSTOMER SETUP",
+            command=self.copy_customer_handoff,
+            state="disabled",
+            bg="#58b7e8",
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.handoff_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
         self.save_button = tk.Button(
             result_actions,
             text="SAVE RECEIPT JSON",
@@ -293,6 +379,22 @@ class LicenseIssuer(tk.Tk):
 
     def toggle_token(self):
         self.token_entry.configure(show="" if self.show_token_var.get() else "*")
+
+    def select_rank(self, label):
+        if label not in RANK_BY_LABEL:
+            return
+        self.plan_var.set(label)
+        rank = RANK_BY_LABEL[label]
+        rank_number = RANKS.index(rank) + 1
+        self.rank_detail_var.set(
+            f"Rank {rank_number} | Best for: {rank['best_for']} | Includes: {rank['highlight']}"
+        )
+        for button_label, button in self.rank_buttons.items():
+            selected = button_label == label
+            button.configure(
+                bg=locker.GREEN if selected else "#252936",
+                fg=locker.BLACK if selected else locker.TEXT,
+            )
 
     def clear_token(self):
         self.admin_token_var.set("")
@@ -364,6 +466,7 @@ class LicenseIssuer(tk.Tk):
         self.latest_response = response
         self.show_response(response)
         self.copy_button.configure(state="normal")
+        self.handoff_button.configure(state="normal")
         self.save_button.configure(state="normal")
         locker.log_event("license_issue", "api", "ok")
         self.status_var.set("License issued. Send only the license key to the customer.")
@@ -371,11 +474,14 @@ class LicenseIssuer(tk.Tk):
     def show_response(self, response):
         license_info = response.get("license") or {}
         plan = response.get("plan") or {}
+        entitlements = plan.get("entitlements") or license_info.get("entitlements") or []
+        entitlement_names = [locker.feature_title(item) for item in entitlements]
         lines = [
             f"License ID: {license_info.get('license_id', '')}",
-            f"Plan: {plan.get('name', license_info.get('plan_name', ''))}",
+            f"Rank: {plan.get('rank_label', '')} | {plan.get('name', license_info.get('plan_name', ''))}",
             f"Expires: {license_info.get('expires_at_utc') or 'Never'}",
             f"Max devices claim: {license_info.get('max_devices', '')}",
+            f"Entitlements ({len(entitlement_names)}): {', '.join(entitlement_names)}",
             "",
             "LICENSE KEY",
             str(response.get("license_key", "")),
@@ -395,6 +501,36 @@ class LicenseIssuer(tk.Tk):
         self.clipboard_append(key)
         self.update()
         self.status_var.set("License key copied to the clipboard.")
+
+    def copy_customer_handoff(self):
+        response = self.latest_response or {}
+        key = str(response.get("license_key", "")).strip()
+        if not key:
+            return
+        license_info = response.get("license") or {}
+        plan = response.get("plan") or {}
+        setup = "\n".join(
+            [
+                "VaultLink USB File Locker customer setup",
+                f"Rank: {plan.get('name', license_info.get('plan_name', ''))}",
+                f"License ID: {license_info.get('license_id', '')}",
+                f"API: {self.server_var.get().strip()}",
+                "",
+                "1. Open USB File Locker.",
+                "2. Open License and API settings.",
+                "3. Paste the license key and choose Activate.",
+                "4. Keep the USB master key and recovery copy in separate safe places.",
+                "",
+                "LICENSE KEY",
+                key,
+                "",
+                "Treat the license key like a password. This note never includes the admin token.",
+            ]
+        )
+        self.clipboard_clear()
+        self.clipboard_append(setup)
+        self.update()
+        self.status_var.set("Customer setup instructions copied without the admin token.")
 
     def save_receipt(self):
         if not self.latest_response:

@@ -38,7 +38,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.10"
+DESKTOP_APP_VERSION = "2026.07.11"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
@@ -47,28 +47,49 @@ MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
     "portable-locking": "Portable locking tools",
     "quick-lock-note": "Quick lock notes",
+    "home-guides": "Home safety guides",
     "personal-vault": "Personal Vault",
     "locked-file-browser": "Locked File Browser",
     "audit-log-viewer": "Audit Log Viewer",
     "perm-unlock": "PERM UNLOCK workflow",
+    "personal-safety-report": "Personal Safety Report",
     "privacy-safety-hub": "Privacy Safety Hub",
     "global-breach-guard": "Global Breach Guard",
     "text-log-processor": "Text Log Processor",
     "owner-usb-mode": "Owner USB mode",
-    "signature-bundle": "Signature bundle extras",
+    "family-device-reports": "Family device reports",
+    "office-readiness": "Small Office readiness pack",
+    "family-office-bundle": "Family Office evidence bundle",
+    "signature-bundle": "Owner-signed release bundle",
+    "pro-baseline-pack": "Pro Baseline review pack",
 }
 PLAN_FEATURE_REQUIREMENTS = {
     "portable-locking": "$5 Starter",
     "quick-lock-note": "$5 Starter",
-    "personal-vault": "$50 Plus",
-    "locked-file-browser": "$50 Plus",
-    "audit-log-viewer": "$50 Plus",
-    "perm-unlock": "$50 Plus",
-    "privacy-safety-hub": "$100 Pro",
-    "global-breach-guard": "$100 Pro",
-    "text-log-processor": "$100 Pro",
-    "owner-usb-mode": "$100 Pro",
-    "signature-bundle": "$200 Signature",
+    "home-guides": "$10-$25 Home",
+    "personal-vault": "$50 Personal Plus",
+    "locked-file-browser": "$50 Personal Plus",
+    "audit-log-viewer": "$50 Personal Plus",
+    "perm-unlock": "$50 Personal Plus",
+    "personal-safety-report": "$50 Personal Plus",
+    "privacy-safety-hub": "$100 Family Safety",
+    "global-breach-guard": "$100 Family Safety",
+    "text-log-processor": "$100 Family Safety",
+    "owner-usb-mode": "$100 Family Safety",
+    "family-device-reports": "$100 Family Safety",
+    "office-readiness": "$200 Small Office",
+    "family-office-bundle": "$500-$3,000 Family Office",
+    "signature-bundle": "$20,000+ Pro Baseline",
+    "pro-baseline-pack": "$20,000+ Pro Baseline",
+}
+LICENSE_PLAN_IDS = {
+    "starter",
+    "home",
+    "personal-plus",
+    "family-safety",
+    "small-office",
+    "family-office",
+    "pro-baseline",
 }
 SCRIPT_LICENSE_FEATURES = {
     "privacy_safety_hub.py": "privacy-safety-hub",
@@ -1721,8 +1742,8 @@ def issue_license_online(
     if len(token) > 4096 or "\r" in token or "\n" in token:
         raise ValueError("Admin token format is invalid.")
     selected_plan = str(plan_id or "").strip().lower()
-    if selected_plan not in {"starter", "plus", "pro", "signature"}:
-        raise ValueError("Choose Starter, Plus, Pro, or Signature.")
+    if selected_plan not in LICENSE_PLAN_IDS:
+        raise ValueError("Choose one of the seven available license ranks.")
     try:
         device_limit = int(max_devices)
     except (TypeError, ValueError) as exc:

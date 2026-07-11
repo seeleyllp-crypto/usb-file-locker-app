@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import audit_log_viewer
+import license_issuer
 import usb_file_locker as locker
 
 
@@ -46,7 +47,7 @@ class DesktopHelperTests(unittest.TestCase):
                 "license_key": VALID_TEST_LICENSE,
                 "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
                 "status": "active",
-                "plan_id": "pro",
+                "plan_id": "family-safety",
                 "features": ["privacy-safety-hub"],
             }
         )
@@ -84,7 +85,7 @@ class DesktopHelperTests(unittest.TestCase):
             result = locker.issue_license_online(
                 locker.DEFAULT_LICENSE_SERVER,
                 "admin-secret",
-                "pro",
+                "family-safety",
                 customer_label="Customer",
                 max_devices=2,
             )
@@ -96,6 +97,22 @@ class DesktopHelperTests(unittest.TestCase):
             post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
             "admin-secret",
         )
+
+    def test_license_issuer_exposes_all_seven_ranks(self):
+        self.assertEqual(
+            list(license_issuer.PLAN_CHOICES.values()),
+            [
+                "starter",
+                "home",
+                "personal-plus",
+                "family-safety",
+                "small-office",
+                "family-office",
+                "pro-baseline",
+            ],
+        )
+        self.assertEqual(set(license_issuer.PLAN_CHOICES.values()), locker.LICENSE_PLAN_IDS)
+        self.assertIn("$20,000+ Pro Baseline", license_issuer.PLAN_CHOICES)
 
     def test_license_activation_reenables_buttons_without_overriding_usb_lock(self):
         apps_button = FakeButton(state="disabled")

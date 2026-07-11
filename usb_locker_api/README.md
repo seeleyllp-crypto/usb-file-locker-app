@@ -5,10 +5,11 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 ## What it is
 
 - A small public API for product info, features, companion apps, and security notes
-- A public plan catalog for your USB locker pricing tiers
+- A public catalog and homepage comparison for all seven USB locker ranks
 - A homepage at `/`
 - A route index at `/docs`
 - A health endpoint at `/health`
+- Ordered rank JSON at `/api/v1/ranks`
 - Licensed privacy-safe audit uploads with signed, expiring JSON downloads
 
 ## What it is not
@@ -28,6 +29,8 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 For restart-safe audit-export retention, mount a Railway Volume and set `AUDIT_EXPORT_DIR` to its folder, such as `/data/audit_exports`. You can also set `AUDIT_EXPORT_RETENTION_HOURS` from 1 to 168; the default is 24 hours. Without a Volume, immediate upload-and-download still works, but Railway can remove pending exports when the service restarts.
 
 License issuance requires the Railway admin token in the `X-License-Admin-Token` header. The API never accepts that token inside a JSON request body.
+
+The seven ranks run from `$5 Starter` through `$20,000+ Pro Baseline`. Legacy `plus`, `pro`, and `signature` issue requests map to matching current ranks so older issuer builds keep working. Rank descriptions do not claim HIPAA certification, legal approval, guaranteed protection, or completed professional review.
 
 Railway will start the service with:
 

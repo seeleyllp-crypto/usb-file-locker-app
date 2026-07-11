@@ -28,7 +28,9 @@ That folder is also safe to copy into its own separate repo if you want a standa
 
 ## Issuing licenses
 
-Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose a plan, and issue the key. The admin token is masked, sent only in the `X-License-Admin-Token` header, and never written to settings, receipts, logs, or GitHub. Send the customer only the generated `vlk1...` license key.
+Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, and issue the key. The ranks run from `$5 Starter` through `$20,000+ Pro Baseline`; old `plus`, `pro`, and `signature` keys remain compatible. The admin token is masked, sent only in the `X-License-Admin-Token` header, and never written to settings, receipts, logs, or GitHub. Send the customer only the generated `vlk1...` license key or use `COPY CUSTOMER SETUP` for a token-free handoff note.
+
+Rank names describe software and service packages. The app does not claim HIPAA certification, legal approval, guaranteed protection, or completed professional review.
 
 ## Repo safety notes
 

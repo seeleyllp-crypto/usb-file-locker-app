@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.3.1"
+API_VERSION = "0.4.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -117,58 +117,94 @@ FEATURES = [
         "category": "starter",
     },
     {
+        "id": "home-guides",
+        "title": "Home safety guides",
+        "summary": "Use the home safety checklist, key-custody plan, recovery plan, and fuller home instructions.",
+        "category": "home",
+    },
+    {
         "id": "personal-vault",
         "title": "Personal vault",
         "summary": "Store passcodes, recovery codes, account notes, and private records inside a separate encrypted vault.",
-        "category": "plus",
+        "category": "personal-plus",
     },
     {
         "id": "locked-file-browser",
         "title": "Locked File Browser",
         "summary": "Browse and launch .locked files from a dedicated companion app.",
-        "category": "plus",
+        "category": "personal-plus",
     },
     {
         "id": "audit-log-viewer",
         "title": "Audit Log Viewer",
         "summary": "Read, export, and verify the privacy-safe audit trail from the richer companion app.",
-        "category": "plus",
+        "category": "personal-plus",
     },
     {
         "id": "perm-unlock",
         "title": "PERM UNLOCK workflow",
         "summary": "Edit readable working copies and relock them safely with the dedicated workflow.",
-        "category": "plus",
+        "category": "personal-plus",
+    },
+    {
+        "id": "personal-safety-report",
+        "title": "Personal Safety Report",
+        "summary": "Create an anonymous personal report covering Defender, firewall, BitLocker, and update-recency checks.",
+        "category": "personal-plus",
     },
     {
         "id": "privacy-safety-hub",
         "title": "Privacy Safety Hub",
         "summary": "Open the dashboard that ties the locker toolkit together.",
-        "category": "pro",
+        "category": "family-safety",
     },
     {
         "id": "global-breach-guard",
         "title": "Global Breach Guard",
         "summary": "Run the topmost watcher that checks the signed audit trail and raises alerts.",
-        "category": "pro",
+        "category": "family-safety",
     },
     {
         "id": "text-log-processor",
         "title": "Text Log Processor",
         "summary": "Turn pasted audit-style text logs into cleaner summaries and counts.",
-        "category": "pro",
+        "category": "family-safety",
     },
     {
         "id": "owner-usb-mode",
         "title": "Owner USB mode",
         "summary": "Tie a PC session to one registered owner USB and relock if that drive disappears.",
-        "category": "pro",
+        "category": "family-safety",
+    },
+    {
+        "id": "family-device-reports",
+        "title": "Family device reports",
+        "summary": "Create anonymous family device reports and a family report index without storing account names.",
+        "category": "family-safety",
+    },
+    {
+        "id": "office-readiness",
+        "title": "Small Office readiness pack",
+        "summary": "Build an office readiness report, evidence manifest, policy templates, and operational checklists.",
+        "category": "small-office",
+    },
+    {
+        "id": "family-office-bundle",
+        "title": "Family Office evidence bundle",
+        "summary": "Create multi-PC indexes, anonymous device reports, policy packs, and operational record templates.",
+        "category": "family-office",
     },
     {
         "id": "signature-bundle",
-        "title": "Signature bundle extras",
-        "summary": "Reserved for the highest tier so the app can expose future white-glove bundle extras.",
-        "category": "signature",
+        "title": "Owner-signed release bundle",
+        "summary": "Verify the complete release manifest and integrity records for a professionally reviewed deployment.",
+        "category": "pro-baseline",
+    },
+    {
+        "id": "pro-baseline-pack",
+        "title": "Pro Baseline review pack",
+        "summary": "Use security templates, a HIPAA-readiness workspace, and professional review materials without claiming certification.",
+        "category": "pro-baseline",
     },
 ]
 
@@ -192,6 +228,7 @@ SECURITY_NOTES = [
     "Desktop encryption and USB-key logic stay in the Windows app instead of moving onto the internet-facing service.",
     "Licensing is stateless right now: the server signs license keys and machine receipts, but strict seat counting needs a real database later.",
     "Audit exports are reduced to privacy-safe fields, require an active licensed machine, and use short-lived signed download links.",
+    "Ranks are software and service package descriptions, not HIPAA certification, legal approval, guaranteed protection, or proof of professional review.",
 ]
 
 
@@ -199,13 +236,17 @@ PLAN_TIERS = [
     {
         "id": "starter",
         "name": "$5 Starter",
-        "best_for": "Simple personal locking with note support",
+        "price_label": "$5",
+        "price_min_usd": 5,
+        "price_max_usd": 5,
+        "best_for": "One Windows PC and basic locking instructions",
         "rank": 1,
         "includes": [
             "Portable locking tools",
             "Quick lock notes",
-            "Create new .locked files",
-            "Use the main lock queue",
+            "Microsoft Defender package scan",
+            "Signed purchase verification",
+            "Core PIN, recovery, and audit tools",
         ],
         "features": [
             "portable-locking",
@@ -213,31 +254,61 @@ PLAN_TIERS = [
         ],
     },
     {
-        "id": "plus",
-        "name": "$50 Plus",
-        "best_for": "Families and everyday private records",
+        "id": "home",
+        "name": "$10-$25 Home",
+        "price_label": "$10-$25",
+        "price_min_usd": 10,
+        "price_max_usd": 25,
+        "best_for": "A home that needs clearer setup, custody, and recovery guidance",
         "rank": 2,
         "includes": [
             "Everything in Starter",
+            "Home safety checklist",
+            "Home key-custody plan",
+            "Home recovery plan",
+            "Fuller home instructions",
+        ],
+        "features": [
+            "home-guides",
+        ],
+    },
+    {
+        "id": "personal-plus",
+        "name": "$50 Personal Plus",
+        "price_label": "$50",
+        "price_min_usd": 50,
+        "price_max_usd": 50,
+        "best_for": "Personal records plus anonymous Windows safety reporting",
+        "rank": 3,
+        "includes": [
+            "Everything in Home",
             "Personal Vault tools",
             "Audit Log Viewer",
             "Locked File Browser",
             "PERM UNLOCK workflow",
+            "Anonymous Personal Safety Report",
         ],
         "features": [
             "personal-vault",
             "audit-log-viewer",
             "locked-file-browser",
             "perm-unlock",
+            "personal-safety-report",
         ],
     },
     {
-        "id": "pro",
-        "name": "$100 Pro",
-        "best_for": "Power users who want broader desktop control",
-        "rank": 3,
+        "id": "family-safety",
+        "name": "$100 Family Safety",
+        "price_label": "$100",
+        "price_min_usd": 100,
+        "price_max_usd": 100,
+        "best_for": "Families managing anonymous safety records across devices",
+        "rank": 4,
         "includes": [
-            "Everything in Plus",
+            "Everything in Personal Plus",
+            "Anonymous Family Device Reports",
+            "Family Report Index",
+            "Family backup and weekly procedures",
             "Privacy Safety Hub",
             "Global Breach Guard",
             "Text Log Processor",
@@ -248,28 +319,78 @@ PLAN_TIERS = [
             "global-breach-guard",
             "text-log-processor",
             "owner-usb-mode",
+            "family-device-reports",
         ],
     },
     {
-        "id": "signature",
-        "name": "$200 Signature",
-        "best_for": "Full toolkit bundles and future premium extras",
-        "rank": 4,
+        "id": "small-office",
+        "name": "$200 Small Office",
+        "price_label": "$200",
+        "price_min_usd": 200,
+        "price_max_usd": 200,
+        "best_for": "Small offices that need repeatable readiness and evidence workflows",
+        "rank": 5,
         "includes": [
-            "Everything in Pro",
-            "Priority setup profile",
-            "Expanded companion-app set",
-            "Export-ready audit workflow",
-            "Best overall locker bundle",
+            "Everything in Family Safety",
+            "Office Readiness Report",
+            "SHA-256 evidence manifest",
+            "Seven office policy templates",
+            "Onboarding, backup, audit, and incident docs",
+        ],
+        "features": [
+            "office-readiness",
+        ],
+    },
+    {
+        "id": "family-office",
+        "name": "$500-$3,000 Family Office",
+        "price_label": "$500-$3,000",
+        "price_min_usd": 500,
+        "price_max_usd": 3000,
+        "best_for": "Multi-PC family offices needing guided setup and records",
+        "rank": 6,
+        "includes": [
+            "Everything in Small Office",
+            "Anonymous Office Device Reports",
+            "Multi-PC Office Index",
+            "Family Office Evidence Bundle",
+            "Policy and operational record templates",
+            "Adult-led setup and testing as agreed",
+        ],
+        "features": [
+            "family-office-bundle",
+        ],
+    },
+    {
+        "id": "pro-baseline",
+        "name": "$20,000+ Pro Baseline",
+        "price_label": "$20,000+",
+        "price_min_usd": 20000,
+        "price_max_usd": None,
+        "best_for": "A professionally reviewed baseline with formal evidence and policy materials",
+        "rank": 7,
+        "includes": [
+            "Everything in Family Office",
+            "Pro security and evidence reports",
+            "Owner-signed release manifest",
+            "Optional physical USB-bound licensing",
+            "HIPAA-readiness workspace, not certification",
+            "Professional and legal review materials",
         ],
         "features": [
             "signature-bundle",
+            "pro-baseline-pack",
         ],
     },
 ]
 
 
 PLAN_INDEX = {item["id"]: item for item in PLAN_TIERS}
+LEGACY_PLAN_ALIASES = {
+    "plus": "personal-plus",
+    "pro": "family-safety",
+    "signature": "small-office",
+}
 
 
 def utc_now():
@@ -291,8 +412,13 @@ def parse_utc(value):
     return datetime.fromisoformat(text).astimezone(timezone.utc)
 
 
+def canonical_plan_id(plan_id):
+    normalized = str(plan_id or "").strip().lower()
+    return LEGACY_PLAN_ALIASES.get(normalized, normalized)
+
+
 def plan_entitlements(plan_id):
-    plan = PLAN_INDEX.get(plan_id)
+    plan = PLAN_INDEX.get(canonical_plan_id(plan_id))
     if not plan:
         raise ValueError(f"Unknown plan id: {plan_id}")
     unlocked = []
@@ -312,6 +438,10 @@ def public_plan_payload(plan):
     return {
         "id": plan["id"],
         "name": plan["name"],
+        "price_label": plan["price_label"],
+        "price_min_usd": plan["price_min_usd"],
+        "price_max_usd": plan["price_max_usd"],
+        "rank_label": f"Rank {plan['rank']}",
         "best_for": plan["best_for"],
         "rank": plan["rank"],
         "includes": list(plan["includes"]),
@@ -375,7 +505,7 @@ def verify_token(token, prefix):
 
 
 def current_plan_for_license(license_payload):
-    plan_id = license_payload.get("plan_id", "")
+    plan_id = canonical_plan_id(license_payload.get("plan_id", ""))
     plan = PLAN_INDEX.get(plan_id)
     if not plan:
         raise ValueError("License refers to an unknown plan.")
@@ -435,6 +565,7 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/features", "purpose": "Feature catalog"},
             {"method": "GET", "path": "/api/v1/companions", "purpose": "Companion app catalog"},
             {"method": "GET", "path": "/api/v1/plans", "purpose": "Plan and entitlement catalog"},
+            {"method": "GET", "path": "/api/v1/ranks", "purpose": "Complete ordered license-rank comparison"},
             {"method": "GET", "path": "/api/v1/security", "purpose": "Public security and licensing notes"},
             {"method": "GET", "path": "/api/v1/deploy", "purpose": "Railway deploy hints"},
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
@@ -470,7 +601,15 @@ def homepage_html():
     )
     security_html = "".join(f"<li>{line}</li>" for line in SECURITY_NOTES)
     plan_html = "".join(
-        f"<li><strong>{item['name']}</strong><br>{item['best_for']}</li>"
+        (
+            f"<article class=\"rank-card rank-{item['rank']}\">"
+            f"<div class=\"rank-number\">RANK {item['rank']}</div>"
+            f"<h3>{item['name']}</h3>"
+            f"<p>{item['best_for']}</p>"
+            f"<ul>{''.join(f'<li>{included}</li>' for included in item['includes'])}</ul>"
+            f"<div class=\"rank-total\">{len(item['entitlements'])} total entitlements</div>"
+            "</article>"
+        )
         for item in public_plans()
     )
     return f"""<!doctype html>
@@ -493,10 +632,7 @@ def homepage_html():
     body {{
       margin: 0;
       font-family: "Segoe UI", Arial, sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(116, 226, 127, 0.12), transparent 32%),
-        radial-gradient(circle at top right, rgba(255, 209, 102, 0.12), transparent 28%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
     }}
     .wrap {{
@@ -510,7 +646,7 @@ def homepage_html():
       padding: 28px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      background: #161a20;
     }}
     h1 {{
       margin: 0;
@@ -550,6 +686,62 @@ def homepage_html():
       gap: 16px;
       margin-top: 20px;
     }}
+    .rank-section {{
+      margin-top: 24px;
+      padding: 22px 0 2px;
+    }}
+    .rank-section h2 {{
+      margin: 0 0 6px;
+      font-size: 1.45rem;
+    }}
+    .rank-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }}
+    .rank-card {{
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-top: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 18px;
+    }}
+    .rank-card.rank-2 {{ border-top-color: #58b7e8; }}
+    .rank-card.rank-3 {{ border-top-color: var(--accent-2); }}
+    .rank-card.rank-4 {{ border-top-color: #e58bb8; }}
+    .rank-card.rank-5 {{ border-top-color: #ff7b72; }}
+    .rank-card.rank-6 {{ border-top-color: #b89cff; }}
+    .rank-card.rank-7 {{ border-top-color: #f1f3f5; }}
+    .rank-number {{
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 800;
+      margin-bottom: 7px;
+    }}
+    .rank-card h3 {{
+      margin: 0;
+      font-size: 1.15rem;
+    }}
+    .rank-card p {{
+      min-height: 76px;
+      margin-top: 8px;
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }}
+    .rank-card ul {{
+      margin-top: 14px;
+      font-size: 0.9rem;
+    }}
+    .rank-total {{
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--text);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -571,6 +763,15 @@ def homepage_html():
       color: var(--muted);
       font-size: 0.95rem;
     }}
+    @media (max-width: 900px) {{
+      .rank-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .rank-card p {{ min-height: 0; }}
+    }}
+    @media (max-width: 560px) {{
+      .wrap {{ padding: 20px 14px 40px; }}
+      .hero {{ padding: 20px; }}
+      .rank-grid {{ grid-template-columns: 1fr; }}
+    }}
   </style>
 </head>
 <body>
@@ -584,9 +785,14 @@ def homepage_html():
       <div class="cta">
         <a class="primary" href="/docs">Open Route Index</a>
         <a href="/api/v1/product">Product JSON</a>
-        <a href="/api/v1/plans">Plans JSON</a>
+        <a href="/api/v1/ranks">All Ranks JSON</a>
       </div>
       <div class="meta">API version {API_VERSION} - Updated {product['updated_at_utc']}</div>
+    </section>
+    <section class="rank-section">
+      <h2>All License Ranks</h2>
+      <p>Every rank is shown below in order, including its price, audience, included tools, and cumulative entitlement count.</p>
+      <div class="rank-grid">{plan_html}</div>
     </section>
     <section class="grid">
       <div class="card">
@@ -600,10 +806,6 @@ def homepage_html():
       <div class="card">
         <h2>Security Shape</h2>
         <ul>{security_html}</ul>
-      </div>
-      <div class="card">
-        <h2>Plan Tiers</h2>
-        <ul>{plan_html}</ul>
       </div>
     </section>
   </div>
@@ -622,7 +824,7 @@ def require_json_object(payload):
 
 
 def issue_license(payload):
-    plan_id = str(payload.get("plan_id", "")).strip().lower()
+    plan_id = canonical_plan_id(payload.get("plan_id", ""))
     if plan_id not in PLAN_INDEX:
         raise ValueError("Choose a valid plan id.")
     expires_at = parse_utc(payload.get("expires_at_utc"))
@@ -1211,6 +1413,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json({"items": COMPANION_APPS, "count": len(COMPANION_APPS)})
             return
         if path == "/api/v1/plans":
+            self.send_json({"items": public_plans(), "count": len(PLAN_TIERS)})
+            return
+        if path == "/api/v1/ranks":
             self.send_json({"items": public_plans(), "count": len(PLAN_TIERS)})
             return
         if path == "/api/v1/security":
