@@ -35,6 +35,16 @@ class FakeButton:
 
 
 class DesktopHelperTests(unittest.TestCase):
+    def test_every_launcher_bootstraps_dependencies(self):
+        app_dir = Path(__file__).resolve().parent
+        launchers = sorted(app_dir.glob("Run *.bat"))
+        self.assertEqual(len(launchers), 11)
+        for launcher in launchers:
+            with self.subTest(launcher=launcher.name):
+                content = launcher.read_text(encoding="utf-8")
+                self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
+                self.assertIn("%PYTHON_CMD%", content)
+
     def test_license_key_validation_and_state_replacement(self):
         self.assertTrue(locker.valid_api_license_key(VALID_TEST_LICENSE))
         self.assertFalse(locker.valid_api_license_key("PSI-OLD-STYLE-KEY"))

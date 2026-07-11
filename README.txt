@@ -12,6 +12,11 @@ replace the app folder.
 New locks work on another Windows PC when you use the same master USB key and
 the exact same optional PIN.
 
+First run:
+- Double-click any "Run ... .bat" launcher.
+- The launcher checks Python and installs cryptography 49.0.0 if it is missing.
+- The first dependency setup needs an internet connection. Later starts reuse it.
+
 Important:
 - Keep the master USB key private.
 - Make a backup of the master USB key.

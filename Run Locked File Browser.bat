@@ -1,4 +1,11 @@
 @echo off
 cd /d "%~dp0"
-python "locked_file_browser.py"
+call "%~dp0Ensure Dependencies.cmd"
+if errorlevel 1 (
+  echo.
+  echo Locked File Browser could not start because setup failed.
+  pause
+  exit /b 1
+)
+%PYTHON_CMD% "locked_file_browser.py"
 pause

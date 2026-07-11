@@ -4,6 +4,10 @@ USB File Locker App is a Windows desktop toolkit for locking files and folders w
 
 The Audit Log Viewer can upload its approved privacy-safe report fields to the licensed Railway API and immediately download a signed JSON copy. The server never receives raw files, file contents, USB secrets, passwords, PINs, client names, or full paths.
 
+## First run
+
+Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for Python 3.9 or newer and imports the pinned `cryptography` package. If that package is missing, the launcher installs it from `requirements.txt`, verifies the import, and then opens the selected app. The first setup needs an internet connection; later starts do not reinstall it.
+
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window
