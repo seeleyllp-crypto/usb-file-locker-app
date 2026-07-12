@@ -1,5 +1,11 @@
+import base64
+import hashlib
+import json
+import os
 import queue
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -7,6 +13,8 @@ from unittest import mock
 import audit_log_viewer
 import license_issuer
 import usb_file_locker as locker
+import vaultlink_updater
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 VALID_TEST_LICENSE = "vlk1." + ("A" * 24) + "." + ("B" * 24)
@@ -68,6 +76,84 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(replaced["features"], [])
         self.assertEqual(replaced["status"], "saved")
 
+    def test_signed_update_manifest_rejects_tampering_and_checks_download_hash(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        package_bytes = b"PK-signed-vaultlink-update"
+        manifest = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.1",
+            "minimum_supported_version": "2026.07.10",
+            "published_at_utc": "2026-07-11T15:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.1.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": hashlib.sha256(package_bytes).hexdigest(),
+            "size_bytes": len(package_bytes),
+            "signing_key_id": key_id,
+            "notes": ["Signed regression update"],
+            "preserves_local_app_data": True,
+        }
+        manifest["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(locker.canonical_update_manifest_bytes(manifest))
+        ).rstrip(b"=").decode("ascii")
+        with (
+            mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
+            mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
+        ):
+            validated = locker.validate_windows_update_manifest(
+                {"api_version": "test", "update": manifest}
+            )
+            self.assertTrue(validated["update_available"])
+            self.assertEqual(validated["api_version"], "test")
+
+            tampered = dict(manifest)
+            tampered["notes"] = ["Tampered notes"]
+            with self.assertRaisesRegex(ValueError, "signature did not verify"):
+                locker.validate_windows_update_manifest({"update": tampered})
+
+            response = mock.MagicMock()
+            response.read.return_value = package_bytes
+            context = mock.MagicMock()
+            context.__enter__.return_value = response
+            context.__exit__.return_value = False
+            with tempfile.TemporaryDirectory(prefix="vaultlink_update_download_") as folder:
+                target = Path(folder) / manifest["package_filename"]
+                with mock.patch.object(locker.API_URL_OPENER, "open", return_value=context):
+                    saved = locker.download_windows_update_package(
+                        locker.DEFAULT_LICENSE_SERVER,
+                        validated,
+                        target,
+                    )
+                self.assertEqual(saved.read_bytes(), package_bytes)
+
+    def test_updater_rejects_zip_slip_and_preserves_local_app_data(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_updater_safety_") as folder:
+            root = Path(folder)
+            bad_zip = root / "bad.zip"
+            with zipfile.ZipFile(bad_zip, "w") as archive:
+                archive.writestr("../outside.txt", "unsafe")
+            with self.assertRaisesRegex(ValueError, "unsafe path"):
+                vaultlink_updater.extract_verified_package(bad_zip, root / "bad-output")
+
+            extracted = root / "extracted"
+            target = root / "target"
+            local_app_data = root / "local-app-data"
+            extracted.mkdir()
+            target.mkdir()
+            (extracted / "usb_file_locker.py").write_text("new app", encoding="utf-8")
+            (target / "usb_file_locker.py").write_text("old app", encoding="utf-8")
+            (target / "settings.json").write_text("private settings", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}):
+                backup, count = vaultlink_updater.apply_update(extracted, target.resolve(), "9999.1")
+            self.assertEqual(count, 1)
+            self.assertEqual((target / "usb_file_locker.py").read_text(encoding="utf-8"), "new app")
+            self.assertEqual((target / "settings.json").read_text(encoding="utf-8"), "private settings")
+            self.assertEqual((backup / "usb_file_locker.py").read_text(encoding="utf-8"), "old app")
+
     def test_api_url_requires_https_except_localhost(self):
         self.assertEqual(
             locker.validated_license_server_url("https://example.com/"),
@@ -97,16 +183,125 @@ class DesktopHelperTests(unittest.TestCase):
                 "admin-secret",
                 "family-safety",
                 customer_label="Customer",
+                license_note="Private renewal note",
                 max_devices=2,
             )
         self.assertTrue(result["ok"])
         _server, path, payload = post.call_args.args
         self.assertEqual(path, "/api/v1/licenses/issue")
         self.assertNotIn("admin_token", payload)
+        self.assertEqual(payload["license_note"], "Private renewal note")
         self.assertEqual(
             post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
             "admin-secret",
         )
+
+    def test_license_management_uses_admin_header_and_device_deactivation(self):
+        with mock.patch.object(
+            locker,
+            "license_api_get_json",
+            return_value={"ok": True, "items": [], "count": 0},
+        ) as get_json:
+            response = locker.list_admin_licenses_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+            )
+        self.assertEqual(response["count"], 0)
+        self.assertEqual(get_json.call_args.args[1], "/api/v1/admin/licenses")
+        self.assertEqual(
+            get_json.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={"ok": True, "revoked": True},
+        ) as post:
+            response = locker.revoke_license_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+                VALID_TEST_LICENSE,
+                "Customer requested removal",
+            )
+        self.assertTrue(response["revoked"])
+        _server, path, payload = post.call_args.args
+        self.assertEqual(path, "/api/v1/licenses/revoke")
+        self.assertNotIn("admin_token", payload)
+        self.assertEqual(payload["revocation_note"], "Customer requested removal")
+        self.assertEqual(
+            post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+        state = locker.normalize_license_state(
+            {
+                "server_url": locker.DEFAULT_LICENSE_SERVER,
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("A" * 20) + "." + ("B" * 20),
+            }
+        )
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={"ok": True, "deactivated": True, "status": "deactivated"},
+        ) as post:
+            response = locker.deactivate_license_online(state)
+        self.assertTrue(response["deactivated"])
+        _server, path, payload = post.call_args.args
+        self.assertEqual(path, "/api/v1/licenses/deactivate")
+        self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
+        self.assertTrue(payload["receipt"].startswith("vlr1."))
+
+    def test_admin_audit_listing_uses_admin_header_only(self):
+        with mock.patch.object(
+            locker,
+            "license_api_get_json",
+            return_value={"ok": True, "items": [], "count": 0},
+        ) as get_json:
+            response = locker.list_admin_audit_exports_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+            )
+        self.assertEqual(response["count"], 0)
+        _server, path = get_json.call_args.args
+        self.assertEqual(path, "/api/v1/admin/audit-exports")
+        self.assertNotIn("admin-secret", path)
+        self.assertEqual(
+            get_json.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+    def test_admin_audit_download_checks_identity_and_writes_json(self):
+        export_id = "AUD-0123456789ABCDEF"
+        raw = json.dumps({"export_id": export_id, "report": {"privacy_notice": "safe"}}).encode("utf-8")
+        response = mock.MagicMock()
+        response.read.return_value = raw
+        context = mock.MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = False
+        with tempfile.TemporaryDirectory(prefix="vaultlink_admin_download_") as folder:
+            target = Path(folder) / "download.json"
+            with mock.patch.object(locker.API_URL_OPENER, "open", return_value=context) as open_url:
+                saved = locker.download_admin_audit_export_online(
+                    locker.DEFAULT_LICENSE_SERVER,
+                    "admin-secret",
+                    export_id,
+                    target,
+                )
+            self.assertEqual(saved, target)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["export_id"], export_id)
+            request = open_url.call_args.args[0]
+            self.assertNotIn("admin-secret", request.full_url)
+            self.assertEqual(dict(request.header_items())["X-license-admin-token"], "admin-secret")
+
+        with self.assertRaisesRegex(ValueError, "valid API audit export"):
+            locker.download_admin_audit_export_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+                "../../secret",
+                "ignored.json",
+            )
 
     def test_license_issuer_exposes_all_seven_ranks(self):
         self.assertEqual(
@@ -203,6 +398,42 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertEqual(destination, "chosen.json")
         self.assertIn("network failed", response["message"])
+
+    def test_cloud_audit_fingerprint_ignores_its_own_upload_events(self):
+        report = {
+            "defender_status": {"available": True, "ProtectedNow": True},
+            "usb_file_locker_audit": {
+                "valid": True,
+                "events": [
+                    {
+                        "sequence": 1,
+                        "action": "lock",
+                        "result": "success",
+                        "hash": "a" * 64,
+                    }
+                ],
+            },
+            "pc_safety_check_audit": {"valid": True, "events": []},
+        }
+        original = locker.audit_report_snapshot_fingerprint(report)
+        report["usb_file_locker_audit"]["events"].append(
+            {
+                "sequence": 2,
+                "action": "audit_api_auto_upload",
+                "result": "success",
+                "hash": "b" * 64,
+            }
+        )
+        self.assertEqual(locker.audit_report_snapshot_fingerprint(report), original)
+        report["usb_file_locker_audit"]["events"].append(
+            {
+                "sequence": 3,
+                "action": "unlock",
+                "result": "success",
+                "hash": "c" * 64,
+            }
+        )
+        self.assertNotEqual(locker.audit_report_snapshot_fingerprint(report), original)
 
 
 if __name__ == "__main__":

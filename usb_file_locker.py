@@ -25,11 +25,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidSignature, InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -38,8 +39,14 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.11"
+DESKTOP_APP_VERSION = "2026.07.11.3"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
+UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
+UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
+MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
+MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
+MAX_UPDATE_ARCHIVE_FILES = 5000
+MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
 MAX_API_RESPONSE_BYTES = 1024 * 1024
@@ -1057,6 +1064,39 @@ def build_audit_report():
     }
 
 
+def audit_report_snapshot_fingerprint(report):
+    ignored_actions = {"audit_api_auto_upload", "audit_api_export"}
+    snapshot = {"sections": {}, "defender": {}}
+    for section_name in ("usb_file_locker_audit", "pc_safety_check_audit"):
+        section = report.get(section_name) or {}
+        events = [
+            event
+            for event in (section.get("events") or [])
+            if isinstance(event, dict) and event.get("action") not in ignored_actions
+        ]
+        latest = events[-1] if events else {}
+        snapshot["sections"][section_name] = {
+            "valid": bool(section.get("valid")),
+            "event_count": len(events),
+            "latest_sequence": latest.get("sequence"),
+            "latest_action": latest.get("action"),
+            "latest_result": latest.get("result"),
+            "latest_hash": latest.get("hash"),
+        }
+    defender = report.get("defender_status") or {}
+    for field in (
+        "available",
+        "AntivirusEnabled",
+        "RealTimeProtectionEnabled",
+        "BehaviorMonitorEnabled",
+        "IoavProtectionEnabled",
+        "ProtectedNow",
+    ):
+        snapshot["defender"][field] = bool(defender.get(field))
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def export_locked_audit_report(destination, key, pin):
     destination = ensure_directory_destination(destination, "locked audit export destination")
     report = build_audit_report()
@@ -1727,20 +1767,275 @@ def license_api_post_json(server_url, api_path, payload, extra_headers=None):
     return payload
 
 
+def license_api_get_json(server_url, api_path, extra_headers=None):
+    path = str(api_path or "").strip()
+    if not path.startswith("/api/v1/") or "://" in path or "\\" in path or "\r" in path or "\n" in path:
+        raise ValueError("API path format is invalid.")
+    url = validated_license_server_url(server_url) + path
+    headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with API_URL_OPENER.open(request, timeout=20) as response:
+            raw_bytes = response.read(MAX_API_RESPONSE_BYTES + 1)
+            if len(raw_bytes) > MAX_API_RESPONSE_BYTES:
+                raise ValueError("API response was too large.")
+            raw = raw_bytes.decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(MAX_API_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
+            if 300 <= exc.code < 400:
+                raise ValueError("API redirects are blocked to protect admin credentials.") from exc
+            try:
+                error_payload = json.loads(raw)
+                message = error_payload.get("message") or error_payload.get("error") or raw
+            except Exception:
+                message = raw or f"API server returned HTTP {exc.code}."
+            raise ValueError(message) from exc
+        finally:
+            exc.close()
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach the API server.\n\n{exc.reason}") from exc
+    try:
+        payload = json.loads(raw) if raw else {}
+    except Exception as exc:
+        raise ValueError("API server returned invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("API server returned an unexpected response.")
+    if payload.get("ok") is False:
+        raise ValueError(str(payload.get("message") or payload.get("error") or "API request failed."))
+    return payload
+
+
+def update_version_tuple(value):
+    text = str(value or "").strip()
+    parts = text.split(".")
+    if not text or len(parts) > 8 or any(not part.isdigit() for part in parts):
+        raise ValueError("Update version format is invalid.")
+    return tuple(int(part) for part in parts)
+
+
+def compare_update_versions(left, right):
+    left_parts = update_version_tuple(left)
+    right_parts = update_version_tuple(right)
+    length = max(len(left_parts), len(right_parts))
+    return (left_parts + (0,) * (length - len(left_parts))) > (right_parts + (0,) * (length - len(right_parts)))
+
+
+def decode_update_base64url(value):
+    text = str(value or "").strip()
+    if not text or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in text):
+        raise ValueError("Update signature encoding is invalid.")
+    try:
+        return base64.urlsafe_b64decode(text + "=" * ((4 - len(text) % 4) % 4))
+    except Exception as exc:
+        raise ValueError("Update signature encoding is invalid.") from exc
+
+
+def canonical_update_manifest_bytes(manifest):
+    payload = dict(manifest)
+    payload.pop("signature", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def signed_update_manifest_fields(manifest):
+    payload = dict(manifest)
+    payload.pop("update_available", None)
+    payload.pop("current_version_supported", None)
+    payload.pop("api_version", None)
+    return payload
+
+
+def validate_windows_update_manifest(response):
+    if not isinstance(response, dict):
+        raise ValueError("Update API returned an unexpected response.")
+    manifest = response.get("update")
+    if not isinstance(manifest, dict):
+        raise ValueError("Update API did not return a signed manifest.")
+    allowed_fields = {
+        "schema_version",
+        "product",
+        "platform",
+        "version",
+        "minimum_supported_version",
+        "published_at_utc",
+        "package_filename",
+        "download_path",
+        "sha256",
+        "size_bytes",
+        "signing_key_id",
+        "notes",
+        "preserves_local_app_data",
+        "signature",
+    }
+    if set(manifest) != allowed_fields:
+        raise ValueError("Update manifest fields are invalid.")
+    if manifest.get("schema_version") != 1:
+        raise ValueError("Update manifest schema is not supported.")
+    if manifest.get("product") != "USB File Locker" or manifest.get("platform") != "windows-source":
+        raise ValueError("Update manifest is for a different product or platform.")
+    update_version_tuple(manifest.get("version"))
+    update_version_tuple(manifest.get("minimum_supported_version"))
+    if parse_utc_text(manifest.get("published_at_utc")) is None:
+        raise ValueError("Update manifest timestamp is invalid.")
+    filename = str(manifest.get("package_filename", ""))
+    if not filename.endswith(".zip") or Path(filename).name != filename or len(filename) > 120:
+        raise ValueError("Update package filename is invalid.")
+    if manifest.get("download_path") != "/api/v1/updates/windows/download":
+        raise ValueError("Update package path is invalid.")
+    expected_hash = str(manifest.get("sha256", "")).lower()
+    if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
+        raise ValueError("Update package SHA-256 is invalid.")
+    try:
+        size_bytes = int(manifest.get("size_bytes", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Update package size is invalid.") from exc
+    if not 0 < size_bytes <= MAX_UPDATE_PACKAGE_BYTES:
+        raise ValueError("Update package size is outside the allowed limit.")
+    notes = manifest.get("notes")
+    if not isinstance(notes, list) or len(notes) > 12 or any(not isinstance(note, str) or len(note) > 240 for note in notes):
+        raise ValueError("Update release notes are invalid.")
+    if manifest.get("signing_key_id") != UPDATE_SIGNING_KEY_ID:
+        raise ValueError("Update was signed by an unknown release key.")
+    if manifest.get("preserves_local_app_data") is not True:
+        raise ValueError("Update does not promise to preserve app data.")
+    public_key_bytes = decode_update_base64url(UPDATE_SIGNING_PUBLIC_KEY_B64)
+    signature = decode_update_base64url(manifest.get("signature"))
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(
+            signature,
+            canonical_update_manifest_bytes(manifest),
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise ValueError("Update manifest signature did not verify.") from exc
+    validated = dict(manifest)
+    validated["size_bytes"] = size_bytes
+    validated["sha256"] = expected_hash
+    validated["update_available"] = compare_update_versions(validated["version"], DESKTOP_APP_VERSION)
+    validated["current_version_supported"] = not compare_update_versions(
+        validated["minimum_supported_version"],
+        DESKTOP_APP_VERSION,
+    )
+    validated["api_version"] = str(response.get("api_version", "") or "")
+    return validated
+
+
+def check_windows_update_online(server_url):
+    response = license_api_get_json(server_url, "/api/v1/updates/windows")
+    return validate_windows_update_manifest(response)
+
+
+def download_windows_update_package(server_url, manifest, destination):
+    validated = validate_windows_update_manifest({"update": signed_update_manifest_fields(manifest)})
+    url = validated_license_server_url(server_url) + validated["download_path"]
+    request = urllib.request.Request(url, headers={"Accept": "application/zip"}, method="GET")
+    try:
+        with API_URL_OPENER.open(request, timeout=60) as response:
+            raw = response.read(MAX_UPDATE_PACKAGE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        try:
+            message = exc.read(MAX_API_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
+            if 300 <= exc.code < 400:
+                raise ValueError("Update redirects are blocked.") from exc
+            try:
+                payload = json.loads(message)
+                message = payload.get("message") or payload.get("error") or message
+            except Exception:
+                pass
+            raise ValueError(message or f"Update API returned HTTP {exc.code}.") from exc
+        finally:
+            exc.close()
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not download the update package.\n\n{exc.reason}") from exc
+    if len(raw) != validated["size_bytes"]:
+        raise ValueError("Downloaded update size did not match the signed manifest.")
+    actual_hash = hashlib.sha256(raw).hexdigest()
+    if not hmac.compare_digest(actual_hash, validated["sha256"]):
+        raise ValueError("Downloaded update SHA-256 did not match the signed manifest.")
+    target = Path(destination)
+    write_bytes_atomic(target, raw)
+    return target
+
+
+def stage_windows_update(server_url, manifest):
+    signed_manifest = signed_update_manifest_fields(manifest)
+    validated = validate_windows_update_manifest({"update": signed_manifest})
+    stage_dir = secure_mkdtemp(prefix="vaultlink_update_")
+    package_path = stage_dir / validated["package_filename"]
+    manifest_path = stage_dir / "windows-manifest.json"
+    try:
+        download_windows_update_package(server_url, validated, package_path)
+        write_text_atomic(manifest_path, json.dumps(signed_manifest, indent=2))
+        return stage_dir, manifest_path, package_path
+    except Exception:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
+
+
+def launch_staged_windows_update(stage_dir, manifest_path, package_path, parent_pid=None):
+    stage_root = Path(stage_dir).resolve()
+    temp_root = TEMP_DIR.resolve()
+    try:
+        stage_root.relative_to(temp_root)
+    except ValueError as exc:
+        raise ValueError("Update staging folder is outside the protected app-data temp folder.") from exc
+    manifest_file = Path(manifest_path).resolve()
+    package_file = Path(package_path).resolve()
+    for candidate in (manifest_file, package_file):
+        try:
+            candidate.relative_to(stage_root)
+        except ValueError as exc:
+            raise ValueError("Update staging file is outside the protected staging folder.") from exc
+        if not candidate.is_file():
+            raise ValueError("A required staged update file is missing.")
+    target = RUNTIME_DIR.resolve()
+    if (target / ".git").exists():
+        raise ValueError(
+            "Automatic install is disabled inside a Git working folder. Use git pull there, or run the clean release folder."
+        )
+    updater = target / "vaultlink_updater.py"
+    if not updater.is_file():
+        raise ValueError("The signed updater helper is missing from the app folder.")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(updater),
+            "--manifest",
+            str(manifest_file),
+            "--package",
+            str(package_file),
+            "--target",
+            str(target),
+            "--parent-pid",
+            str(int(parent_pid or os.getpid())),
+        ],
+        cwd=str(target),
+        creationflags=0x08000000,
+    )
+    return process.pid
+
+
+def validated_admin_api_token(admin_token):
+    token = str(admin_token or "").strip()
+    if not token:
+        raise ValueError("Enter the Railway LICENSE_ADMIN_TOKEN.")
+    if len(token) > 4096 or "\r" in token or "\n" in token:
+        raise ValueError("Admin token format is invalid.")
+    return token
+
+
 def issue_license_online(
     server_url,
     admin_token,
     plan_id,
     customer_label="",
     customer_email="",
+    license_note="",
     max_devices=1,
     expires_at_utc="",
 ):
-    token = str(admin_token or "").strip()
-    if not token:
-        raise ValueError("Enter the Railway LICENSE_ADMIN_TOKEN.")
-    if len(token) > 4096 or "\r" in token or "\n" in token:
-        raise ValueError("Admin token format is invalid.")
+    token = validated_admin_api_token(admin_token)
     selected_plan = str(plan_id or "").strip().lower()
     if selected_plan not in LICENSE_PLAN_IDS:
         raise ValueError("Choose one of the seven available license ranks.")
@@ -1756,10 +2051,14 @@ def issue_license_online(
         raise ValueError("Customer label must be 160 characters or fewer.")
     if len(email) > 254:
         raise ValueError("Customer email must be 254 characters or fewer.")
+    note = " ".join(str(license_note or "").split())
+    if len(note) > 2000:
+        raise ValueError("License note must be 2000 characters or fewer.")
     payload = {
         "plan_id": selected_plan,
         "customer_label": label,
         "customer_email": email,
+        "license_note": note,
         "max_devices": device_limit,
     }
     expiry = str(expires_at_utc or "").strip()
@@ -1771,6 +2070,113 @@ def issue_license_online(
         payload,
         extra_headers={"X-License-Admin-Token": token},
     )
+
+
+def list_admin_licenses_online(server_url, admin_token):
+    token = validated_admin_api_token(admin_token)
+    return license_api_get_json(
+        server_url,
+        "/api/v1/admin/licenses",
+        extra_headers={"X-License-Admin-Token": token},
+    )
+
+
+def admin_license_action_online(server_url, admin_token, action, license_key, note=""):
+    token = validated_admin_api_token(admin_token)
+    selected_action = str(action or "").strip().lower()
+    if selected_action not in {"revoke", "restore", "note"}:
+        raise ValueError("Choose a valid license management action.")
+    payload = {"license_key": require_valid_api_license_key(license_key)}
+    if selected_action == "revoke":
+        payload["revocation_note"] = " ".join(str(note or "").split())[:2000]
+    elif selected_action == "note":
+        payload["license_note"] = " ".join(str(note or "").split())[:2000]
+    return license_api_post_json(
+        server_url,
+        f"/api/v1/licenses/{selected_action}",
+        payload,
+        extra_headers={"X-License-Admin-Token": token},
+    )
+
+
+def revoke_license_online(server_url, admin_token, license_key, note=""):
+    return admin_license_action_online(server_url, admin_token, "revoke", license_key, note)
+
+
+def restore_license_online(server_url, admin_token, license_key):
+    return admin_license_action_online(server_url, admin_token, "restore", license_key)
+
+
+def update_license_note_online(server_url, admin_token, license_key, note):
+    return admin_license_action_online(server_url, admin_token, "note", license_key, note)
+
+
+def list_admin_audit_exports_online(server_url, admin_token):
+    token = validated_admin_api_token(admin_token)
+    return license_api_get_json(
+        server_url,
+        "/api/v1/admin/audit-exports",
+        extra_headers={"X-License-Admin-Token": token},
+    )
+
+
+def valid_audit_export_id(export_id):
+    value = str(export_id or "").strip()
+    return (
+        value.startswith("AUD-")
+        and 8 <= len(value) <= 64
+        and all(character.isalnum() or character in {"-", "_"} for character in value)
+    )
+
+
+def download_admin_audit_export_online(server_url, admin_token, export_id, destination):
+    token = validated_admin_api_token(admin_token)
+    clean_export_id = str(export_id or "").strip()
+    if not valid_audit_export_id(clean_export_id):
+        raise ValueError("Choose a valid API audit export.")
+    path = f"/api/v1/admin/audit-exports/{clean_export_id}/download"
+    url = validated_license_server_url(server_url) + path
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-License-Admin-Token": token,
+        },
+        method="GET",
+    )
+    try:
+        with API_URL_OPENER.open(request, timeout=30) as response:
+            raw = response.read(MAX_AUDIT_API_DOWNLOAD_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = exc.read(MAX_API_RESPONSE_BYTES + 1).decode("utf-8", errors="replace")
+            if 300 <= exc.code < 400:
+                raise ValueError("API redirects are blocked to protect admin credentials.") from exc
+            try:
+                error_payload = json.loads(error_body)
+                message = error_payload.get("message") or error_payload.get("error") or error_body
+            except Exception:
+                message = error_body or f"Audit API returned HTTP {exc.code}."
+            raise ValueError(message) from exc
+        finally:
+            exc.close()
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not download the audit report.\n\n{exc.reason}") from exc
+    if len(raw) > MAX_AUDIT_API_DOWNLOAD_BYTES:
+        raise ValueError("The downloaded audit report is larger than the app allows.")
+    try:
+        downloaded = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("The API download was not a valid JSON audit report.") from exc
+    if not isinstance(downloaded, dict) or downloaded.get("export_id") != clean_export_id:
+        raise ValueError("The downloaded audit report did not match the selected export.")
+    target = Path(destination)
+    if target.exists() and target.is_dir():
+        target = target / f"vaultlink-audit-{clean_export_id}.json"
+    if target.suffix.lower() != ".json":
+        target = target.with_name(target.name + ".json")
+    write_bytes_atomic(target, raw)
+    return target
 
 
 def apply_license_response(state, payload):
@@ -1840,7 +2246,27 @@ def verify_license_online(state):
     return apply_license_response(current, payload)
 
 
-def upload_audit_report_online(state):
+def deactivate_license_online(state):
+    current = normalize_license_state(state)
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
+    if not current.get("receipt"):
+        raise ValueError("This PC does not have an activation receipt to remove.")
+    payload = license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/licenses/deactivate",
+        {
+            "license_key": current.get("license_key"),
+            "receipt": current.get("receipt"),
+            "machine_id": current_machine_fingerprint(),
+            "app_version": DESKTOP_APP_VERSION,
+        },
+    )
+    if not payload.get("deactivated") or payload.get("status") != "deactivated":
+        raise ValueError(payload.get("message") or "The API did not deactivate this PC.")
+    return payload
+
+
+def upload_audit_report_online(state, report=None):
     current = normalize_license_state(state)
     current["license_key"] = require_valid_api_license_key(current.get("license_key"))
     if not license_is_active(current):
@@ -1855,7 +2281,7 @@ def upload_audit_report_online(state):
             "receipt": current.get("receipt"),
             "machine_id": current_machine_fingerprint(),
             "app_version": DESKTOP_APP_VERSION,
-            "report": build_audit_report(),
+            "report": report if isinstance(report, dict) else build_audit_report(),
         },
     )
 
@@ -2983,6 +3409,174 @@ def save_personal_vault(entries, key, pin):
     return VAULT_FILE
 
 
+class UpdateCenterWindow(tk.Toplevel):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.title("VaultLink Update Center")
+        self.geometry("760x610")
+        self.minsize(680, 540)
+        self.configure(bg=BG)
+        self.current_var = tk.StringVar(value=f"Installed version: {DESKTOP_APP_VERSION}")
+        self.latest_var = tk.StringVar(value="Latest signed version: checking...")
+        self.api_var = tk.StringVar(value="API compatibility: checking...")
+        self.status_var = tk.StringVar(value="Ready to check for a signed update.")
+        self.auto_var = tk.BooleanVar(value=bool(owner.settings.get("auto_update_check", True)))
+        self.notes = None
+        self.check_button = None
+        self.install_button = None
+        self.build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.show_manifest(owner.latest_update_manifest)
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=22)
+        tk.Label(outer, text="Update Center", bg=BG, fg=TEXT, font=("Segoe UI", 25, "bold")).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="SIGNED RELEASE MANIFEST | SHA-256 PACKAGE CHECK | APP-DATA PRESERVED",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(4, 16))
+
+        status_panel = tk.Frame(outer, bg=PANEL)
+        status_panel.pack(fill="x")
+        for variable, color in (
+            (self.current_var, TEXT),
+            (self.latest_var, YELLOW),
+            (self.api_var, MUTED),
+        ):
+            tk.Label(
+                status_panel,
+                textvariable=variable,
+                bg=PANEL,
+                fg=color,
+                justify="left",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", padx=18, pady=(12 if variable is self.current_var else 2, 0))
+        tk.Label(
+            status_panel,
+            text="Updates replace app files only. Keys, licenses, vault data, settings, and audit logs stay in LocalAppData.",
+            bg=PANEL,
+            fg=MUTED,
+            justify="left",
+            wraplength=680,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=18, pady=(8, 14))
+
+        tk.Label(outer, text="RELEASE NOTES", bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(16, 6))
+        self.notes = tk.Text(
+            outer,
+            height=10,
+            bg=FIELD,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            wrap="word",
+            font=("Segoe UI", 10),
+            state="disabled",
+        )
+        self.notes.pack(fill="both", expand=True)
+
+        controls = tk.Frame(outer, bg=BG)
+        controls.pack(fill="x", pady=(14, 0))
+        self.check_button = tk.Button(
+            controls,
+            text="CHECK NOW",
+            command=lambda: self.owner.start_update_check(silent=False),
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.check_button.pack(side="left", ipadx=14, ipady=8)
+        self.install_button = tk.Button(
+            controls,
+            text="INSTALL VERIFIED UPDATE",
+            command=self.owner.install_latest_update,
+            state="disabled",
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.install_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
+        tk.Checkbutton(
+            controls,
+            text="AUTO-CHECK DAILY",
+            variable=self.auto_var,
+            command=lambda: self.owner.set_auto_update_check(self.auto_var.get()),
+            bg=BG,
+            fg=TEXT,
+            selectcolor=FIELD,
+            activebackground=BG,
+            activeforeground=TEXT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(14, 0))
+        tk.Button(
+            controls,
+            text="CLOSE",
+            command=self.destroy,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=14, ipady=8)
+        tk.Label(
+            outer,
+            textvariable=self.status_var,
+            bg=BG,
+            fg=MUTED,
+            justify="left",
+            wraplength=700,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(12, 0))
+
+    def set_notes(self, lines):
+        text = "\n".join(f"- {line}" for line in lines) if lines else "No release notes were supplied."
+        self.notes.configure(state="normal")
+        self.notes.delete("1.0", "end")
+        self.notes.insert("1.0", text)
+        self.notes.configure(state="disabled")
+
+    def show_manifest(self, manifest, error=""):
+        busy = self.owner.update_operation in {"check", "stage"}
+        self.check_button.configure(state="disabled" if busy else "normal")
+        if error:
+            self.latest_var.set("Latest signed version: unavailable")
+            self.api_var.set("API compatibility: check failed")
+            self.status_var.set(error)
+            self.install_button.configure(state="disabled")
+            self.set_notes([])
+            return
+        if not manifest:
+            self.latest_var.set("Latest signed version: not checked")
+            self.api_var.set("API compatibility: not checked")
+            self.status_var.set("Check the API for a signed release.")
+            self.install_button.configure(state="disabled")
+            self.set_notes([])
+            return
+        version = manifest.get("version", "unknown")
+        available = bool(manifest.get("update_available"))
+        supported = bool(manifest.get("current_version_supported"))
+        self.latest_var.set(f"Latest signed version: {version}")
+        compatibility = "supported" if supported else "update required"
+        self.api_var.set(f"API {manifest.get('api_version', 'unknown')} | Current desktop: {compatibility}")
+        if available and not supported:
+            self.status_var.set("This desktop version is below the supported floor. Install the verified update before relying on API features.")
+        elif available:
+            self.status_var.set("A newer signed update is ready. Review the notes, then install it.")
+        else:
+            self.status_var.set("This app is already on the latest signed version.")
+        can_install = available and not busy and not (RUNTIME_DIR / ".git").exists()
+        self.install_button.configure(state="normal" if can_install else "disabled")
+        if available and (RUNTIME_DIR / ".git").exists():
+            self.status_var.set("Update found. This is a Git working folder, so use git pull instead of auto-install.")
+        self.set_notes(manifest.get("notes") or [])
+
+
 class USBFileLocker(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -3002,6 +3596,13 @@ class USBFileLocker(tk.Tk):
         self.license_status = tk.StringVar(value=license_status_text(self.license_state))
         self.license_refresh_results = queue.Queue()
         self.license_refresh_in_progress = False
+        self.update_results = queue.Queue()
+        self.update_operation = ""
+        self.latest_update_manifest = None
+        self.update_window = None
+        self.update_button = None
+        self.cloud_audit_results = queue.Queue()
+        self.cloud_audit_in_progress = False
         self.pin_visible = tk.BooleanVar(value=False)
         self.pin_mode = tk.StringVar(value="USB KEY ONLY")
         self.progress_value = tk.DoubleVar(value=0)
@@ -3020,6 +3621,19 @@ class USBFileLocker(tk.Tk):
         self.after(3000, self.refresh_license_state_silent)
         self.after(20000, self.periodic_breach_refresh)
         self.after(1500, self.monitor_loaded_key)
+        self.after(30000, self.periodic_cloud_audit_upload)
+        if self.settings.get("auto_update_check", True):
+            self.after(6000, self.auto_check_for_updates)
+        completed_update = os.environ.pop("VAULTLINK_UPDATE_COMPLETED", "").strip()
+        if completed_update:
+            self.after(
+                1200,
+                lambda version=completed_update: messagebox.showinfo(
+                    "VaultLink updated",
+                    f"Update {version} installed successfully. Your keys and app data were preserved.",
+                    parent=self,
+                ),
+            )
 
     def build_ui(self):
         outer = tk.Frame(self, bg=BG)
@@ -3085,6 +3699,8 @@ class USBFileLocker(tk.Tk):
         self.backup_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.restore_data_button = tk.Button(storage_row, text="RESTORE APP DATA", command=self.restore_app_data, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.restore_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.update_button = tk.Button(storage_row, text="UPDATE CENTER", command=self.open_update_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.update_button.pack(side="right", ipadx=10, ipady=6)
 
         pin_row = tk.Frame(panel, bg=PANEL)
         pin_row.pack(fill="x", padx=18, pady=(2, 12))
@@ -3251,6 +3867,236 @@ class USBFileLocker(tk.Tk):
     def toggle_pin_visibility(self):
         self.pin_entry.configure(show="" if self.pin_visible.get() else "*")
 
+    def periodic_cloud_audit_upload(self):
+        if self.winfo_exists():
+            self.after(15 * 60 * 1000, self.periodic_cloud_audit_upload)
+        settings = load_settings()
+        if not settings.get("cloud_audit_enabled") or self.cloud_audit_in_progress:
+            return
+        state = load_license_state(settings)
+        if not license_is_active(state) or not license_feature_allowed("audit-log-viewer", state=state):
+            return
+        self.cloud_audit_in_progress = True
+
+        def worker():
+            try:
+                report = build_audit_report()
+                fingerprint = audit_report_snapshot_fingerprint(report)
+                if fingerprint == str(settings.get("last_cloud_audit_fingerprint", "")):
+                    self.cloud_audit_results.put(("skip", None, fingerprint, ""))
+                    return
+                response = upload_audit_report_online(state, report=report)
+                self.cloud_audit_results.put(("success", response, fingerprint, ""))
+            except Exception as exc:
+                self.cloud_audit_results.put(("error", None, "", str(exc)))
+
+        threading.Thread(target=worker, name="VaultLinkCloudAuditUpload", daemon=True).start()
+        self.after(75, self.poll_cloud_audit_results)
+
+    def poll_cloud_audit_results(self):
+        try:
+            outcome, response, fingerprint, error = self.cloud_audit_results.get_nowait()
+        except queue.Empty:
+            if self.cloud_audit_in_progress and self.winfo_exists():
+                self.after(75, self.poll_cloud_audit_results)
+            return
+        self.cloud_audit_in_progress = False
+        if outcome == "skip":
+            return
+        if outcome == "error":
+            self.status.set(f"Automatic API audit upload failed: {error}")
+            return
+        settings = load_settings()
+        settings["last_cloud_audit_fingerprint"] = fingerprint
+        settings["last_cloud_audit_export_id"] = str((response or {}).get("export_id", ""))
+        settings["last_cloud_audit_utc"] = utc_now_text()
+        save_settings(settings)
+        event_count = int((response or {}).get("event_count", 0) or 0)
+        breach_level = str(((response or {}).get("breach_summary") or {}).get("level", "unknown"))
+        log_event("audit_api_auto_upload", "api", "ok", f"events={event_count};level={breach_level}")
+        self.status.set(
+            f"Automatic privacy-safe API audit uploaded: {event_count} event(s), breach level {breach_level.upper()}."
+        )
+
+    def set_auto_update_check(self, enabled):
+        self.settings["auto_update_check"] = bool(enabled)
+        save_settings(self.settings)
+        self.status.set("Automatic daily update checks enabled." if enabled else "Automatic update checks turned off.")
+
+    def auto_check_for_updates(self):
+        if not self.settings.get("auto_update_check", True):
+            return
+        last_check = parse_utc_text(self.settings.get("last_update_check_utc"))
+        if last_check and (datetime.now(timezone.utc) - last_check).total_seconds() < 20 * 60 * 60:
+            return
+        self.start_update_check(silent=True)
+
+    def open_update_center(self):
+        if self.update_window is not None:
+            try:
+                if self.update_window.winfo_exists():
+                    self.update_window.lift()
+                    self.update_window.focus_set()
+                    return self.update_window
+            except tk.TclError:
+                pass
+        self.update_window = UpdateCenterWindow(self)
+        self.register_secondary_window(self.update_window)
+        if self.latest_update_manifest is None and not self.update_operation:
+            self.start_update_check(silent=False)
+        return self.update_window
+
+    def refresh_update_window(self, error=""):
+        if self.update_window is None:
+            return
+        try:
+            if self.update_window.winfo_exists():
+                self.update_window.show_manifest(self.latest_update_manifest, error=error)
+        except tk.TclError:
+            pass
+
+    def start_update_check(self, silent=False):
+        if self.update_operation:
+            return
+        try:
+            state = load_license_state(load_settings())
+            server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Update check failed", str(exc), parent=self)
+            return
+        self.update_operation = "check"
+        if self.update_button is not None:
+            self.update_button.configure(state="disabled", text="CHECKING...")
+        self.refresh_update_window()
+        if self.update_window is not None and self.update_window.winfo_exists():
+            self.update_window.status_var.set("Checking the API for a signed Windows release...")
+
+        def worker():
+            try:
+                manifest = check_windows_update_online(server)
+                error = ""
+            except Exception as exc:
+                manifest = None
+                error = str(exc)
+            self.update_results.put(("check", manifest, error, bool(silent)))
+
+        threading.Thread(target=worker, name="VaultLinkUpdateCheck", daemon=True).start()
+        self.after(75, self.poll_update_results)
+
+    def poll_update_results(self):
+        try:
+            operation, payload, error, silent = self.update_results.get_nowait()
+        except queue.Empty:
+            if self.update_operation and self.winfo_exists():
+                self.after(75, self.poll_update_results)
+            return
+        self.update_operation = ""
+        if operation == "check":
+            if error:
+                if self.update_button is not None:
+                    self.update_button.configure(state="normal", text="UPDATE CENTER", bg="#252936", fg=TEXT)
+                self.refresh_update_window(error=error)
+                if not silent:
+                    messagebox.showerror("Update check failed", error, parent=self)
+                return
+            self.latest_update_manifest = payload
+            self.settings["last_update_check_utc"] = utc_now_text()
+            available = bool(payload.get("update_available"))
+            update_required = available and not bool(payload.get("current_version_supported"))
+            if update_required:
+                self.update_button.configure(state="normal", text="UPDATE REQUIRED", bg=RED, fg=WHITE)
+            elif available:
+                self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
+            else:
+                self.update_button.configure(state="normal", text="UPDATE CENTER", bg="#252936", fg=TEXT)
+            self.refresh_update_window()
+            save_settings(self.settings)
+            if available and silent:
+                version = str(payload.get("version", ""))
+                if self.settings.get("last_update_notice_version") != version:
+                    self.settings["last_update_notice_version"] = version
+                    save_settings(self.settings)
+                    open_center = messagebox.askyesno(
+                        "Verified update required" if update_required else "Verified update available",
+                        (
+                            f"VaultLink {version} is required because this desktop build is below the supported floor."
+                            if update_required
+                            else f"VaultLink {version} is available and its release signature verified."
+                        ) + "\n\nOpen Update Center?",
+                        parent=self,
+                    )
+                    if open_center:
+                        self.open_update_center()
+            return
+        if operation == "stage":
+            if error:
+                self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
+                self.refresh_update_window(error=error)
+                messagebox.showerror("Update download failed", error, parent=self)
+                return
+            stage_dir, manifest_path, package_path = payload
+            try:
+                launch_staged_windows_update(
+                    stage_dir,
+                    manifest_path,
+                    package_path,
+                    parent_pid=os.getpid(),
+                )
+                version = str((self.latest_update_manifest or {}).get("version", "unknown"))
+                log_event("application_update", "api", "ok", f"version={version}")
+                self.status.set(f"Verified update {version} staged. Closing for installation...")
+                self.after(350, self.destroy)
+            except Exception as exc:
+                self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
+                self.refresh_update_window(error=str(exc))
+                messagebox.showerror("Could not start updater", str(exc), parent=self)
+
+    def install_latest_update(self):
+        manifest = self.latest_update_manifest
+        if not manifest or not manifest.get("update_available"):
+            messagebox.showinfo("No update ready", "Check for an update first.", parent=self)
+            return
+        if self.update_operation:
+            return
+        if (RUNTIME_DIR / ".git").exists():
+            messagebox.showinfo(
+                "Git folder detected",
+                "Automatic installation is disabled in a Git working folder. Use git pull, or run the clean release folder.",
+                parent=self,
+            )
+            return
+        version = str(manifest.get("version", "unknown"))
+        size_mb = int(manifest.get("size_bytes", 0)) / (1024 * 1024)
+        confirmed = messagebox.askyesno(
+            "Install verified update",
+            f"Install VaultLink {version} ({size_mb:.1f} MB)?\n\n"
+            "The Ed25519 signature and SHA-256 package hash will be checked again. "
+            "Current app files are backed up, and LocalAppData is not replaced.",
+            parent=self,
+        )
+        if not confirmed:
+            return
+        state = load_license_state(load_settings())
+        server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+        self.update_operation = "stage"
+        self.update_button.configure(state="disabled", text="DOWNLOADING...")
+        self.refresh_update_window()
+        if self.update_window is not None and self.update_window.winfo_exists():
+            self.update_window.status_var.set("Downloading and verifying the signed update package...")
+
+        def worker():
+            try:
+                staged = stage_windows_update(server, manifest)
+                error = ""
+            except Exception as exc:
+                staged = None
+                error = str(exc)
+            self.update_results.put(("stage", staged, error, False))
+
+        threading.Thread(target=worker, name="VaultLinkUpdateDownload", daemon=True).start()
+        self.after(75, self.poll_update_results)
+
     def update_pin_mode(self, _event=None):
         if self.pin_entry.get():
             self.pin_mode.set("USB KEY + PIN ACTIVE")
@@ -3416,8 +4262,8 @@ class USBFileLocker(tk.Tk):
         dialog = tk.Toplevel(self)
         self.register_secondary_window(dialog)
         dialog.title("License Center")
-        dialog.geometry("760x620")
-        dialog.minsize(700, 580)
+        dialog.geometry("780x700")
+        dialog.minsize(720, 650)
         dialog.configure(bg=BG)
 
         state = normalize_license_state(self.license_state)
@@ -3439,8 +4285,28 @@ class USBFileLocker(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=22, pady=(0, 16))
 
-        panel = tk.Frame(dialog, bg=PANEL)
-        panel.pack(fill="both", expand=True, padx=22, pady=(0, 20))
+        panel_host = tk.Frame(dialog, bg=BG)
+        panel_host.pack(fill="both", expand=True, padx=22, pady=(0, 20))
+        panel_canvas = tk.Canvas(panel_host, bg=PANEL, highlightthickness=0, borderwidth=0)
+        panel_scrollbar = ttk.Scrollbar(panel_host, orient="vertical", command=panel_canvas.yview)
+        panel_canvas.configure(yscrollcommand=panel_scrollbar.set)
+        panel_scrollbar.pack(side="right", fill="y")
+        panel_canvas.pack(side="left", fill="both", expand=True)
+        panel = tk.Frame(panel_canvas, bg=PANEL)
+        panel_window = panel_canvas.create_window((0, 0), window=panel, anchor="nw")
+
+        def resize_license_panel(_event=None):
+            panel_canvas.configure(scrollregion=panel_canvas.bbox("all"))
+
+        def fit_license_panel(event):
+            panel_canvas.itemconfigure(panel_window, width=event.width)
+
+        panel.bind("<Configure>", resize_license_panel)
+        panel_canvas.bind("<Configure>", fit_license_panel)
+        dialog.bind(
+            "<MouseWheel>",
+            lambda event: panel_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+        )
 
         def add_label(text, row):
             tk.Label(panel, text=text, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).grid(row=row, column=0, sticky="w", padx=18, pady=(16 if row == 0 else 12, 4))
@@ -3491,7 +4357,11 @@ class USBFileLocker(tk.Tk):
             for button in request_buttons.values():
                 button.configure(state="disabled" if busy else "normal")
             if busy:
-                verb = "Activating" if mode == "activate" else "Verifying"
+                verb = {
+                    "activate": "Activating",
+                    "verify": "Verifying",
+                    "deactivate": "Removing",
+                }.get(mode, "Checking")
                 status_var.set(f"{verb} license with the API...")
 
         def finish_license_request(mode, source_state, updated, error):
@@ -3499,8 +4369,24 @@ class USBFileLocker(tk.Tk):
             if error is not None:
                 failed = build_license_failure_state(source_state, error)
                 persist_and_refresh(failed)
+                if mode == "deactivation":
+                    log_event("license_deactivate", "api", "failed")
                 self.status.set(f"License {mode} failed.")
                 messagebox.showerror(f"License {mode} failed", str(error), parent=dialog)
+                return
+            if mode == "deactivation":
+                cleared = clear_license_state(self.settings, source_state.get("server_url"))
+                self.license_state = cleared
+                self.license_status.set(license_status_text(cleared))
+                self.apply_access_state()
+                refresh_dialog(cleared)
+                log_event("license_deactivate", "api", "ok")
+                self.status.set("License activation removed from this PC through the API.")
+                messagebox.showinfo(
+                    "License removed from this PC",
+                    "The API deactivated this receipt and the saved key was removed from this PC. The owner can still revoke the whole license separately.",
+                    parent=dialog,
+                )
                 return
             persist_and_refresh(updated)
             if license_is_active(updated):
@@ -3554,6 +4440,9 @@ class USBFileLocker(tk.Tk):
                     if mode == "activate":
                         updated = activate_license_online(source_state)
                         label = "activation"
+                    elif mode == "deactivate":
+                        updated = deactivate_license_online(source_state)
+                        label = "deactivation"
                     else:
                         updated = verify_license_online(source_state)
                         label = "verification"
@@ -3561,7 +4450,10 @@ class USBFileLocker(tk.Tk):
                 except Exception as exc:
                     updated = None
                     error = exc
-                    label = "activation" if mode == "activate" else "verification"
+                    label = {
+                        "activate": "activation",
+                        "deactivate": "deactivation",
+                    }.get(mode, "verification")
                 request_results.put((label, source_state, updated, error))
 
             threading.Thread(target=worker, name=f"License-{mode}", daemon=True).start()
@@ -3573,17 +4465,40 @@ class USBFileLocker(tk.Tk):
         def verify_now():
             start_license_request("verify")
 
+        def deactivate_now():
+            if request_busy:
+                return
+            if not self.license_state.get("receipt"):
+                messagebox.showerror(
+                    "No activation to remove",
+                    "This PC does not have a saved activation receipt.",
+                    parent=dialog,
+                )
+                return
+            if not messagebox.askyesno(
+                "Remove license from this PC",
+                "Deactivate this PC through the API and remove its saved license key and receipt?\n\nThis does not revoke the customer's whole license.",
+                parent=dialog,
+            ):
+                return
+            start_license_request("deactivate")
+
         def clear_now():
             if request_busy:
                 return
-            if not messagebox.askyesno("Clear saved license", "Remove the saved license key and activation receipt from this PC?", parent=dialog):
+            if not messagebox.askyesno(
+                "Clear local license copy only",
+                "Remove the saved key and receipt only from this PC?\n\nThe API activation will not be deactivated. Use REMOVE FROM THIS PC when online.",
+                parent=dialog,
+            ):
                 return
             cleared = clear_license_state(self.settings, server_var.get())
             self.license_state = cleared
             self.license_status.set(license_status_text(cleared))
             self.apply_access_state()
             refresh_dialog(cleared)
-            self.status.set("Cleared the saved license from this PC.")
+            log_event("license_local_clear", "local", "ok")
+            self.status.set("Cleared only the local license copy from this PC.")
 
         def use_default_server():
             server_var.set(DEFAULT_LICENSE_SERVER)
@@ -3607,23 +4522,43 @@ class USBFileLocker(tk.Tk):
         tk.Button(action_row, text="DEFAULT API", command=use_default_server, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="COPY MACHINE ID", command=copy_machine_id, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(action_row, text="ISSUER APP", command=open_issuer_app, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        request_buttons["clear"] = tk.Button(action_row, text="CLEAR", command=clear_now, bg=RED, fg=WHITE, relief="flat", font=("Segoe UI", 9, "bold"))
-        request_buttons["clear"].pack(side="right", ipadx=16, ipady=8)
+        removal_row = tk.Frame(panel, bg=PANEL)
+        removal_row.grid(row=7, column=0, sticky="ew", padx=18, pady=(12, 0))
+        request_buttons["deactivate"] = tk.Button(
+            removal_row,
+            text="REMOVE FROM THIS PC",
+            command=deactivate_now,
+            bg=RED,
+            fg=WHITE,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        request_buttons["deactivate"].pack(side="left", ipadx=16, ipady=8)
+        request_buttons["clear"] = tk.Button(
+            removal_row,
+            text="CLEAR LOCAL COPY ONLY",
+            command=clear_now,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        request_buttons["clear"].pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
 
         status_panel = tk.Frame(panel, bg="#181c24")
-        status_panel.grid(row=7, column=0, sticky="nsew", padx=18, pady=(16, 12))
+        status_panel.grid(row=8, column=0, sticky="nsew", padx=18, pady=(16, 12))
         tk.Label(status_panel, text="STATUS", bg="#181c24", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
         tk.Label(status_panel, textvariable=status_var, bg="#181c24", fg=GREEN, font=("Segoe UI", 10, "bold"), justify="left", wraplength=620).pack(anchor="w", padx=14)
         tk.Label(status_panel, textvariable=summary_var, bg="#181c24", fg=TEXT, font=("Segoe UI", 9), justify="left", wraplength=620).pack(anchor="w", padx=14, pady=(8, 14))
 
         feature_panel = tk.Frame(panel, bg="#181c24")
-        feature_panel.grid(row=8, column=0, sticky="nsew", padx=18, pady=(0, 18))
+        feature_panel.grid(row=9, column=0, sticky="nsew", padx=18, pady=(0, 18))
         tk.Label(feature_panel, text="ENTITLEMENTS", bg="#181c24", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
         tk.Label(feature_panel, textvariable=features_var, bg="#181c24", fg=TEXT, font=("Segoe UI", 9), justify="left", wraplength=620).pack(anchor="w", padx=14, pady=(0, 14))
 
         panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(7, weight=1)
         panel.rowconfigure(8, weight=1)
+        panel.rowconfigure(9, weight=1)
         license_entry.focus_set()
 
     def refresh_breach_status(self):

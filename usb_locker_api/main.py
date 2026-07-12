@@ -10,23 +10,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.4.0"
+API_VERSION = "0.6.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
 AUDIT_DOWNLOAD_PREFIX = "vla1"
 DEFAULT_SIGNING_SECRET = "vaultlink-dev-signing-secret-change-me"
+UPDATE_DIR = ROOT_DIR / "updates"
+UPDATE_MANIFEST_PATH = UPDATE_DIR / "windows-manifest.json"
+UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
+MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
+MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_LICENSE_JSON_BODY_BYTES = 64 * 1024
 MAX_AUDIT_JSON_BODY_BYTES = 4 * 1024 * 1024
 MAX_AUDIT_REPORT_BYTES = 3 * 1024 * 1024
 MAX_AUDIT_EVENTS = 20000
+MAX_AUDIT_LIST_ITEMS = 500
 MAX_SIGNED_TOKEN_CHARS = 32 * 1024
 ALLOWED_AUDIT_ACTIONS = frozenset(
     {
         "add_perm_unlock_items",
+        "api_audit_download",
+        "api_audit_list",
+        "application_update",
         "audit_api_export",
+        "audit_api_auto_upload",
         "audit_log_export",
         "audit_log_view",
         "audit_viewer_export_locked",
@@ -46,6 +58,11 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "failed_access",
         "find_locked_files",
         "license_issue",
+        "license_deactivate",
+        "license_local_clear",
+        "license_note_update",
+        "license_restore",
+        "license_revoke",
         "load_key",
         "load_recent_key",
         "lock",
@@ -85,14 +102,20 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
 )
 try:
     AUDIT_EXPORT_RETENTION_HOURS = min(
-        max(int(os.getenv("AUDIT_EXPORT_RETENTION_HOURS", "24")), 1),
-        168,
+        max(int(os.getenv("AUDIT_EXPORT_RETENTION_HOURS", "168")), 1),
+        2160,
     )
 except ValueError:
-    AUDIT_EXPORT_RETENTION_HOURS = 24
+    AUDIT_EXPORT_RETENTION_HOURS = 168
 AUDIT_EXPORT_DIR = Path(
     os.getenv("AUDIT_EXPORT_DIR", str(ROOT_DIR / "data" / "audit_exports"))
 ).expanduser()
+LICENSE_STATE_DIR = Path(
+    os.getenv("LICENSE_STATE_DIR", str(ROOT_DIR / "data" / "license_state"))
+).expanduser()
+MAX_LICENSE_NOTE_CHARS = 2000
+MAX_LICENSE_RECORDS = 500
+LICENSE_RECORD_AAD = b"VaultLinkLicenseRecordV1"
 
 
 class RequestTooLarge(ValueError):
@@ -226,7 +249,8 @@ COMPANION_APPS = [
 SECURITY_NOTES = [
     "The public API never unlocks files, never receives USB secrets, and never stores PINs or vault contents.",
     "Desktop encryption and USB-key logic stay in the Windows app instead of moving onto the internet-facing service.",
-    "Licensing is stateless right now: the server signs license keys and machine receipts, but strict seat counting needs a real database later.",
+    "Signed keys and receipts are checked against an API revocation ledger; strict concurrent seat counting still needs a database later.",
+    "Owner license keys and private notes are encrypted at rest and available only through admin-token routes.",
     "Audit exports are reduced to privacy-safe fields, require an active licensed machine, and use short-lived signed download links.",
     "Ranks are software and service package descriptions, not HIPAA certification, legal approval, guaranteed protection, or proof of professional review.",
 ]
@@ -526,6 +550,245 @@ def receipt_is_expired(receipt_payload):
     return valid_until < datetime.now(timezone.utc)
 
 
+def license_state_storage_is_persistent():
+    return bool(os.getenv("LICENSE_STATE_DIR", "").strip())
+
+
+def license_records_secret():
+    return os.getenv("LICENSE_RECORDS_SECRET", "").strip() or signing_secret()
+
+
+def license_record_encryption_key():
+    material = ("vaultlink-license-records-v1\0" + license_records_secret()).encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def clean_license_note(value):
+    text = "".join(
+        character if ord(character) >= 32 and ord(character) != 127 else " "
+        for character in str(value or "")
+    ).strip()
+    text = " ".join(text.split())
+    if len(text) > MAX_LICENSE_NOTE_CHARS:
+        raise ValueError(f"license_note must be {MAX_LICENSE_NOTE_CHARS} characters or fewer.")
+    return text
+
+
+def validated_license_id(value):
+    text = str(value or "").strip()
+    if not text or len(text) > 80:
+        raise ValueError("license_id must be between 1 and 80 characters.")
+    if any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in text):
+        raise ValueError("license_id may contain only letters, numbers, hyphens, and underscores.")
+    return text
+
+
+def private_record_path(folder, identity):
+    digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()
+    return LICENSE_STATE_DIR / folder / f"{digest}.json"
+
+
+def write_private_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(LICENSE_STATE_DIR, 0o700)
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        try:
+            os.chmod(temporary, 0o600)
+        except OSError:
+            pass
+        os.replace(temporary, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def encrypt_license_private_fields(payload):
+    nonce = os.urandom(12)
+    encrypted = AESGCM(license_record_encryption_key()).encrypt(
+        nonce,
+        canonical_json_bytes(payload),
+        LICENSE_RECORD_AAD,
+    )
+    return b64url_encode(nonce + encrypted)
+
+
+def decrypt_license_private_fields(record):
+    encoded = str(record.get("private_blob", "")).strip()
+    if not encoded:
+        return {}
+    packed = b64url_decode(encoded)
+    if len(packed) < 29:
+        raise ValueError("Stored private license data is damaged.")
+    plain = AESGCM(license_record_encryption_key()).decrypt(
+        packed[:12],
+        packed[12:],
+        LICENSE_RECORD_AAD,
+    )
+    payload = json.loads(plain.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Stored private license data is invalid.")
+    return payload
+
+
+def license_record_path(license_id):
+    return private_record_path("licenses", license_id)
+
+
+def read_license_record(license_id):
+    path = license_record_path(license_id)
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("license_id") != license_id:
+        raise ValueError("Stored license record identity did not verify.")
+    return payload
+
+
+def stored_license_private_fields(record):
+    try:
+        return decrypt_license_private_fields(record)
+    except Exception:
+        return {}
+
+
+def write_license_record(license_payload, license_key, license_note="", status=None, revocation_note=None):
+    license_id = validated_license_id(license_payload.get("license_id"))
+    plan = current_plan_for_license(license_payload)
+    existing = read_license_record(license_id) or {}
+    private_fields = stored_license_private_fields(existing)
+    private_fields.update(
+        {
+            "license_key": str(license_key or private_fields.get("license_key", "")).strip(),
+            "license_note": clean_license_note(
+                license_note if license_note is not None else private_fields.get("license_note", "")
+            ),
+            "customer_label": str(license_payload.get("customer_label", "")).strip()[:160],
+            "customer_email": str(license_payload.get("customer_email", "")).strip()[:254],
+        }
+    )
+    if revocation_note is not None:
+        private_fields["revocation_note"] = clean_license_note(revocation_note)
+    now = utc_now()
+    selected_status = status or existing.get("status") or "active"
+    record = {
+        "schema_version": 1,
+        "license_id": license_id,
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "issued_at_utc": str(license_payload.get("issued_at_utc", "")),
+        "expires_at_utc": str(license_payload.get("expires_at_utc", "")),
+        "max_devices": int(license_payload.get("max_devices", 1) or 1),
+        "status": selected_status,
+        "revoked_at_utc": existing.get("revoked_at_utc", ""),
+        "restored_at_utc": existing.get("restored_at_utc", ""),
+        "updated_at_utc": now,
+        "private_blob": encrypt_license_private_fields(private_fields),
+    }
+    if selected_status == "revoked":
+        record["revoked_at_utc"] = existing.get("revoked_at_utc") or now
+    elif status == "active":
+        record["restored_at_utc"] = now if existing else ""
+        record["revoked_at_utc"] = ""
+    write_private_json(license_record_path(license_id), record)
+    return record
+
+
+def license_is_revoked(license_payload):
+    license_id = str(license_payload.get("license_id", "")).strip()
+    if not license_id:
+        return False
+    record = read_license_record(license_id)
+    return bool(record and record.get("status") == "revoked")
+
+
+def receipt_deactivation_path(receipt):
+    return private_record_path("deactivations", receipt)
+
+
+def receipt_is_deactivated(receipt):
+    return bool(receipt and receipt_deactivation_path(receipt).is_file())
+
+
+def mark_receipt_deactivated(receipt, receipt_payload, app_version=""):
+    record = {
+        "schema_version": 1,
+        "receipt_hash": hashlib.sha256(receipt.encode("utf-8")).hexdigest(),
+        "receipt_id": str(receipt_payload.get("receipt_id", ""))[:80],
+        "license_id": str(receipt_payload.get("license_id", ""))[:80],
+        "machine_hash": hashlib.sha256(str(receipt_payload.get("machine_id", "")).encode("utf-8")).hexdigest()[:16],
+        "deactivated_at_utc": utc_now(),
+        "app_version": str(app_version or "").strip()[:80],
+    }
+    write_private_json(receipt_deactivation_path(receipt), record)
+    return record
+
+
+def masked_license_key(value):
+    text = str(value or "").strip()
+    if len(text) < 18:
+        return text
+    return f"{text[:8]}...{text[-6:]}"
+
+
+def admin_license_record_view(record, include_private=True):
+    private_fields = stored_license_private_fields(record) if include_private else {}
+    license_key = str(private_fields.get("license_key", ""))
+    return {
+        "license_id": str(record.get("license_id", "")),
+        "plan_id": str(record.get("plan_id", "")),
+        "plan_name": str(record.get("plan_name", "")),
+        "status": str(record.get("status", "active")),
+        "issued_at_utc": str(record.get("issued_at_utc", "")),
+        "expires_at_utc": str(record.get("expires_at_utc", "")),
+        "max_devices": int(record.get("max_devices", 1) or 1),
+        "revoked_at_utc": str(record.get("revoked_at_utc", "")),
+        "restored_at_utc": str(record.get("restored_at_utc", "")),
+        "updated_at_utc": str(record.get("updated_at_utc", "")),
+        "license_key": license_key,
+        "masked_license_key": masked_license_key(license_key),
+        "license_note": str(private_fields.get("license_note", "")),
+        "revocation_note": str(private_fields.get("revocation_note", "")),
+        "customer_label": str(private_fields.get("customer_label", "")),
+        "customer_email": str(private_fields.get("customer_email", "")),
+        "private_data_available": bool(private_fields),
+    }
+
+
+def list_admin_license_records():
+    folder = LICENSE_STATE_DIR / "licenses"
+    records = []
+    if folder.is_dir():
+        for path in sorted(folder.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(record, dict) and record.get("license_id"):
+                    records.append(admin_license_record_view(record))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if len(records) >= MAX_LICENSE_RECORDS:
+                break
+    return {
+        "ok": True,
+        "count": len(records),
+        "items": records,
+        "storage": "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral",
+        "private_fields_encrypted": True,
+        "server_time_utc": utc_now(),
+    }
+
+
 def product_payload():
     companion_scripts = sorted(
         {
@@ -556,9 +819,10 @@ def docs_payload():
     return {
         "service": API_NAME,
         "version": API_VERSION,
-        "license_mode": "signed_stateless_tokens",
+        "license_mode": "signed_tokens_with_revocation_ledger",
         "routes": [
             {"method": "GET", "path": "/", "purpose": "HTML homepage"},
+            {"method": "GET", "path": "/owner", "purpose": "Owner-only key and note web console"},
             {"method": "GET", "path": "/docs", "purpose": "JSON route index"},
             {"method": "GET", "path": "/health", "purpose": "Health check"},
             {"method": "GET", "path": "/api/v1/product", "purpose": "Product metadata"},
@@ -571,21 +835,127 @@ def docs_payload():
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
             {"method": "POST", "path": "/api/v1/licenses/activate", "purpose": "Machine-bound license activation"},
             {"method": "POST", "path": "/api/v1/licenses/verify", "purpose": "License and receipt verification"},
+            {"method": "POST", "path": "/api/v1/licenses/deactivate", "purpose": "Remove the current machine activation"},
+            {"method": "POST", "path": "/api/v1/licenses/revoke", "purpose": "Admin-only license revocation"},
+            {"method": "POST", "path": "/api/v1/licenses/restore", "purpose": "Admin-only license restoration"},
+            {"method": "POST", "path": "/api/v1/licenses/note", "purpose": "Admin-only private note update"},
+            {"method": "GET", "path": "/api/v1/admin/licenses", "purpose": "Admin-only encrypted key and note inventory"},
             {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
             {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
+            {"method": "GET", "path": "/api/v1/admin/audit-exports", "purpose": "Admin-only list of stored audit reports and breach levels"},
+            {"method": "GET", "path": "/api/v1/admin/audit-exports/{export_id}/download", "purpose": "Admin-only stored audit report download"},
+            {"method": "GET", "path": "/api/v1/updates/windows", "purpose": "Signed Windows desktop update manifest and compatibility data"},
+            {"method": "GET", "path": "/api/v1/updates/windows/download", "purpose": "SHA-256-pinned Windows desktop update package"},
         ],
         "required_env": [
             {"name": "PORT", "required": False, "purpose": "HTTP bind port on Railway or local runs"},
             {"name": "LICENSE_SIGNING_SECRET", "required": True, "purpose": "HMAC secret for license keys and activation receipts"},
             {"name": "LICENSE_ADMIN_TOKEN", "required": True, "purpose": "Admin-only token required for issuing new licenses"},
+            {"name": "LICENSE_STATE_DIR", "required": False, "purpose": "Persistent revocation and encrypted license-record folder; mount a Railway Volume here"},
+            {"name": "LICENSE_RECORDS_SECRET", "required": False, "purpose": "Separate encryption secret for saved owner keys and private notes; defaults to the signing secret"},
             {"name": "AUDIT_EXPORT_DIR", "required": False, "purpose": "Persistent audit-export folder; mount a Railway Volume here for durable retention"},
-            {"name": "AUDIT_EXPORT_RETENTION_HOURS", "required": False, "purpose": "Signed export lifetime from 1 to 168 hours; default 24"},
+            {"name": "AUDIT_EXPORT_RETENTION_HOURS", "required": False, "purpose": "Stored export lifetime from 1 to 2160 hours; default 168"},
         ],
         "request_limits": {
             "license_routes_bytes": MAX_LICENSE_JSON_BODY_BYTES,
             "audit_export_route_bytes": MAX_AUDIT_JSON_BODY_BYTES,
             "audit_events": MAX_AUDIT_EVENTS,
         },
+    }
+
+
+def update_file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_windows_update_release():
+    if not UPDATE_MANIFEST_PATH.exists():
+        raise FileNotFoundError("No Windows update release is published.")
+    raw = UPDATE_MANIFEST_PATH.read_bytes()
+    if len(raw) > MAX_UPDATE_MANIFEST_BYTES:
+        raise ValueError("The update manifest is too large.")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("The update manifest is invalid.") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("The update manifest must be a JSON object.")
+    allowed_fields = {
+        "schema_version",
+        "product",
+        "platform",
+        "version",
+        "minimum_supported_version",
+        "published_at_utc",
+        "package_filename",
+        "download_path",
+        "sha256",
+        "size_bytes",
+        "signing_key_id",
+        "notes",
+        "preserves_local_app_data",
+        "signature",
+    }
+    if set(manifest) != allowed_fields:
+        raise ValueError("The update manifest field set is invalid.")
+    if manifest.get("schema_version") != 1:
+        raise ValueError("The update manifest schema is not supported.")
+    if manifest.get("product") != "USB File Locker" or manifest.get("platform") != "windows-source":
+        raise ValueError("The update manifest is for a different product or platform.")
+    for field in ("version", "minimum_supported_version"):
+        value = str(manifest.get(field, ""))
+        if not value or len(value) > 40 or any(part == "" or not part.isdigit() for part in value.split(".")):
+            raise ValueError(f"The update manifest {field} is invalid.")
+    if clean_audit_time(manifest.get("published_at_utc")) != manifest.get("published_at_utc"):
+        raise ValueError("The update manifest timestamp is invalid.")
+    filename = str(manifest.get("package_filename", ""))
+    if not filename.endswith(".zip") or Path(filename).name != filename or len(filename) > 120:
+        raise ValueError("The update package filename is invalid.")
+    if manifest.get("download_path") != "/api/v1/updates/windows/download":
+        raise ValueError("The update download path is invalid.")
+    expected_hash = str(manifest.get("sha256", "")).lower()
+    if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
+        raise ValueError("The update package SHA-256 is invalid.")
+    package_path = UPDATE_DIR / filename
+    if not package_path.exists() or not package_path.is_file():
+        raise FileNotFoundError("The published update package is missing.")
+    size_bytes = package_path.stat().st_size
+    if not 0 < size_bytes <= MAX_UPDATE_PACKAGE_BYTES or int(manifest.get("size_bytes", 0)) != size_bytes:
+        raise ValueError("The update package size does not match its manifest.")
+    if not hmac.compare_digest(update_file_sha256(package_path), expected_hash):
+        raise ValueError("The update package hash does not match its manifest.")
+    notes = manifest.get("notes")
+    if not isinstance(notes, list) or len(notes) > 12 or any(not isinstance(note, str) or len(note) > 240 for note in notes):
+        raise ValueError("The update release notes are invalid.")
+    if not manifest.get("preserves_local_app_data"):
+        raise ValueError("The update package does not declare app-data preservation.")
+    signature = str(manifest.get("signature", ""))
+    if manifest.get("signing_key_id") != UPDATE_SIGNING_KEY_ID:
+        raise ValueError("The update manifest signing key is not recognized.")
+    if not 40 <= len(signature) <= 160 or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in signature):
+        raise ValueError("The update manifest signature format is invalid.")
+    return manifest, package_path
+
+
+def windows_update_payload():
+    manifest, _package_path = load_windows_update_release()
+    return {
+        "ok": True,
+        "api_version": API_VERSION,
+        "update": manifest,
+        "security": {
+            "manifest_signature": "Ed25519",
+            "package_integrity": "SHA-256",
+            "automatic_install_requires_user_confirmation": True,
+        },
+        "server_time_utc": utc_now(),
     }
 
 
@@ -784,6 +1154,7 @@ def homepage_html():
       <p>{product['tagline']}</p>
       <div class="cta">
         <a class="primary" href="/docs">Open Route Index</a>
+        <a href="/owner">Owner Console</a>
         <a href="/api/v1/product">Product JSON</a>
         <a href="/api/v1/ranks">All Ranks JSON</a>
       </div>
@@ -809,6 +1180,262 @@ def homepage_html():
       </div>
     </section>
   </div>
+</body>
+</html>"""
+
+
+def owner_portal_html():
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaultLink Owner Console</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0d0f12; --panel:#161a20; --field:#0a0c0f; --line:#313843; --text:#f4f7fa; --muted:#9ba8b6; --green:#35e878; --blue:#58b7e8; --yellow:#f3c84b; --red:#ff626d; }
+    * { box-sizing:border-box; letter-spacing:0; }
+    body { margin:0; min-width:320px; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI",Arial,sans-serif; }
+    header { border-bottom:1px solid var(--line); background:#111419; }
+    header > div, main { width:min(1180px,calc(100% - 32px)); margin:0 auto; }
+    header > div { min-height:78px; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    h1 { margin:0; font-size:24px; }
+    h2 { margin:0 0 14px; font-size:17px; }
+    .api-state { color:var(--muted); font-weight:700; }
+    main { padding:24px 0 44px; }
+    section { padding:20px 0 24px; border-bottom:1px solid var(--line); }
+    .auth, .grid, .latest, .record-head, .record-actions { display:grid; gap:10px; align-items:end; }
+    .auth { grid-template-columns:minmax(220px,1fr) auto auto; }
+    .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .latest { grid-template-columns:minmax(0,1fr) auto; }
+    .record-head { grid-template-columns:minmax(180px,1fr) minmax(160px,.7fr) auto; align-items:start; }
+    .record-actions { grid-template-columns:minmax(180px,1fr) auto auto auto; }
+    label { display:block; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; margin-bottom:5px; }
+    input, select, textarea { width:100%; border:1px solid var(--line); border-radius:4px; background:var(--field); color:var(--text); padding:10px 11px; font:inherit; }
+    textarea { min-height:72px; resize:vertical; }
+    button { min-height:40px; border:0; border-radius:4px; padding:0 14px; background:#29303a; color:var(--text); font:700 12px "Segoe UI",Arial,sans-serif; cursor:pointer; }
+    button:hover { filter:brightness(1.12); }
+    button:disabled { cursor:not-allowed; opacity:.45; }
+    .primary { background:var(--green); color:#06120a; }
+    .blue { background:var(--blue); color:#061017; }
+    .warn { background:var(--yellow); color:#171204; }
+    .danger { background:var(--red); color:#190407; }
+    .status { min-height:22px; margin-top:10px; color:var(--muted); }
+    .status.bad { color:var(--red); }
+    .status.good { color:var(--green); }
+    .record { margin-top:10px; padding:15px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
+    .record strong { font-size:15px; overflow-wrap:anywhere; }
+    .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+    .badge { display:inline-block; min-width:72px; padding:4px 8px; border-radius:4px; text-align:center; text-transform:uppercase; font-size:11px; font-weight:800; background:#25302a; color:var(--green); }
+    .badge.revoked { background:#392126; color:#ff9aa2; }
+    .empty { padding:26px 0; color:var(--muted); }
+    .split { grid-column:1 / -1; }
+    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions { grid-template-columns:1fr; } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
+  </style>
+</head>
+<body>
+  <header><div><h1>VaultLink Owner Console</h1><div id="apiState" class="api-state">DISCONNECTED</div></div></header>
+  <main>
+    <section>
+      <h2>Owner Access</h2>
+      <div class="auth">
+        <div><label for="token">License admin token</label><input id="token" type="password" autocomplete="off" spellcheck="false"></div>
+        <button id="connect" class="blue">CONNECT</button>
+        <button id="clearToken">CLEAR TOKEN</button>
+      </div>
+      <div id="status" class="status">The token stays in this page memory and is sent only in the admin header.</div>
+    </section>
+
+    <section>
+      <h2>Issue License</h2>
+      <div class="grid">
+        <div><label for="rank">Rank</label><select id="rank"></select></div>
+        <div><label for="devices">Maximum devices</label><input id="devices" type="number" min="1" max="1000" value="1"></div>
+        <div><label for="customer">Customer label</label><input id="customer" maxlength="160"></div>
+        <div><label for="email">Customer email</label><input id="email" type="email" maxlength="254"></div>
+        <div><label for="expires">Expiration, optional</label><input id="expires" type="datetime-local"></div>
+        <div><label for="note">Private owner note</label><input id="note" maxlength="2000"></div>
+        <div class="split"><button id="issue" class="primary" disabled>ISSUE LICENSE</button></div>
+      </div>
+      <div id="latestWrap" hidden>
+        <label for="latestKey">Latest key</label>
+        <div class="latest"><textarea id="latestKey" readonly></textarea><button id="copyLatest" class="warn">COPY KEY</button></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="record-head"><h2>Keys And Notes</h2><div id="storage" class="meta"></div><button id="refresh" disabled>REFRESH</button></div>
+      <div id="records"><div class="empty">Connect to load licenses.</div></div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { token: "", connected: false, busy: false, items: [] };
+
+    function setStatus(message, kind="") {
+      $("status").textContent = message;
+      $("status").className = `status ${kind}`;
+    }
+
+    function setConnected(value) {
+      state.connected = value;
+      $("apiState").textContent = value ? "CONNECTED" : "DISCONNECTED";
+      $("apiState").style.color = value ? "var(--green)" : "var(--muted)";
+      $("issue").disabled = !value || state.busy;
+      $("refresh").disabled = !value || state.busy;
+    }
+
+    async function api(path, options={}) {
+      const headers = { "Accept":"application/json", ...(options.headers || {}) };
+      if (state.token) headers["X-License-Admin-Token"] = state.token;
+      if (options.body) headers["Content-Type"] = "application/json";
+      const response = await fetch(path, { ...options, headers, cache:"no-store", redirect:"error" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || `API request failed (${response.status})`);
+      return payload;
+    }
+
+    async function loadRanks() {
+      const payload = await api("/api/v1/ranks");
+      const select = $("rank");
+      select.replaceChildren();
+      for (const plan of payload.items || []) {
+        const option = document.createElement("option");
+        option.value = plan.id;
+        option.textContent = `Rank ${plan.rank}: ${plan.name} (${plan.price_label})`;
+        select.append(option);
+      }
+    }
+
+    async function loadLicenses() {
+      const payload = await api("/api/v1/admin/licenses");
+      state.items = payload.items || [];
+      $("storage").textContent = payload.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE";
+      renderRecords();
+      setConnected(true);
+      setStatus(`Loaded ${payload.count || 0} license record(s).`, "good");
+    }
+
+    function actionButton(text, className, action) {
+      const button = document.createElement("button");
+      button.textContent = text;
+      button.className = className;
+      button.addEventListener("click", action);
+      return button;
+    }
+
+    function renderRecords() {
+      const host = $("records");
+      host.replaceChildren();
+      if (!state.items.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No license records yet.";
+        host.append(empty);
+        return;
+      }
+      for (const item of state.items) {
+        const record = document.createElement("article");
+        record.className = "record";
+        const head = document.createElement("div");
+        head.className = "record-head";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = item.license_id || "Unknown license";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.plan_name || item.plan_id} | issued ${item.issued_at_utc || "unknown"}`;
+        identity.append(title, meta);
+        const customer = document.createElement("div");
+        customer.className = "meta";
+        customer.textContent = item.customer_label || item.customer_email || "No customer label";
+        const badge = document.createElement("span");
+        badge.className = `badge ${item.status === "revoked" ? "revoked" : ""}`;
+        badge.textContent = item.status || "active";
+        head.append(identity, customer, badge);
+
+        const keyLabel = document.createElement("label");
+        keyLabel.textContent = "License key";
+        const key = document.createElement("input");
+        key.readOnly = true;
+        key.value = item.license_key || "Private data unavailable";
+
+        const noteLabel = document.createElement("label");
+        noteLabel.textContent = "Private owner note";
+        const actions = document.createElement("div");
+        actions.className = "record-actions";
+        const note = document.createElement("input");
+        note.maxLength = 2000;
+        note.value = item.license_note || "";
+        actions.append(note);
+        actions.append(actionButton("SAVE NOTE", "blue", () => saveNote(item, note.value)));
+        actions.append(actionButton("COPY KEY", "warn", () => copyText(item.license_key || "")));
+        actions.append(item.status === "revoked"
+          ? actionButton("RESTORE", "primary", () => changeStatus(item, "restore"))
+          : actionButton("REVOKE", "danger", () => changeStatus(item, "revoke")));
+        record.append(head, keyLabel, key, noteLabel, actions);
+        host.append(record);
+      }
+    }
+
+    async function connect() {
+      state.token = $("token").value.trim();
+      if (!state.token) return setStatus("Enter the Railway LICENSE_ADMIN_TOKEN.", "bad");
+      try { await loadLicenses(); } catch (error) { state.token = ""; setConnected(false); setStatus(error.message, "bad"); }
+    }
+
+    async function issueLicense() {
+      if (!state.connected || state.busy) return;
+      state.busy = true; setConnected(true); setStatus("Issuing license...");
+      try {
+        const expiresValue = $("expires").value;
+        const payload = await api("/api/v1/licenses/issue", { method:"POST", body:JSON.stringify({
+          plan_id: $("rank").value,
+          max_devices: Number($("devices").value || 1),
+          customer_label: $("customer").value.trim(),
+          customer_email: $("email").value.trim(),
+          license_note: $("note").value.trim(),
+          expires_at_utc: expiresValue ? new Date(expiresValue).toISOString() : ""
+        }) });
+        $("latestKey").value = payload.license_key || "";
+        $("latestWrap").hidden = false;
+        await loadLicenses();
+        setStatus("License issued and stored. Copy the key for the customer.", "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+      finally { state.busy = false; setConnected(state.connected); }
+    }
+
+    async function saveNote(item, note) {
+      try {
+        await api("/api/v1/licenses/note", { method:"POST", body:JSON.stringify({ license_key:item.license_key, license_note:note }) });
+        await loadLicenses();
+        setStatus(`Saved note for ${item.license_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function changeStatus(item, action) {
+      const verb = action === "revoke" ? "revoke" : "restore";
+      if (!confirm(`${verb.toUpperCase()} ${item.license_id}?`)) return;
+      try {
+        await api(`/api/v1/licenses/${action}`, { method:"POST", body:JSON.stringify({ license_key:item.license_key }) });
+        await loadLicenses();
+        setStatus(`${item.license_id} ${verb}d.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function copyText(text) {
+      if (!text) return setStatus("No key is available to copy.", "bad");
+      try { await navigator.clipboard.writeText(text); setStatus("License key copied.", "good"); }
+      catch (_) { setStatus("Browser clipboard access was blocked.", "bad"); }
+    }
+
+    $("connect").addEventListener("click", connect);
+    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; setConnected(false); renderRecords(); setStatus("Admin token cleared from page memory."); });
+    $("issue").addEventListener("click", issueLicense);
+    $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("copyLatest").addEventListener("click", () => copyText($("latestKey").value));
+    $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
+    loadRanks().catch((error) => setStatus(error.message,"bad"));
+  </script>
 </body>
 </html>"""
 
@@ -840,8 +1467,14 @@ def issue_license(payload):
         raise ValueError("customer_label must be 160 characters or fewer.")
     if len(customer_email) > 254:
         raise ValueError("customer_email must be 254 characters or fewer.")
+    license_note = clean_license_note(payload.get("license_note", ""))
+    license_id = validated_license_id(
+        payload.get("license_id") or f"LIC-{secrets.token_hex(8).upper()}"
+    )
+    if read_license_record(license_id):
+        raise ValueError("That license_id already exists.")
     license_payload = {
-        "license_id": payload.get("license_id") or f"LIC-{secrets.token_hex(8).upper()}",
+        "license_id": license_id,
         "product": "USB File Locker",
         "plan_id": plan["id"],
         "plan_name": plan["name"],
@@ -854,6 +1487,7 @@ def issue_license(payload):
         "issuer": API_NAME,
     }
     license_key = sign_token(LICENSE_KEY_PREFIX, license_payload)
+    write_license_record(license_payload, license_key, license_note=license_note, status="active")
     return {
         "ok": True,
         "issued": True,
@@ -862,8 +1496,8 @@ def issue_license(payload):
         "plan": public_plan_payload(plan),
         "server_time_utc": utc_now(),
         "limitations": [
-            "This API currently uses stateless signed tokens.",
-            "Strict seat enforcement needs a database-backed activation ledger later.",
+            "Signed keys are checked against the server revocation ledger.",
+            "Strict concurrent seat counting still needs a database-backed activation ledger.",
         ],
     }
 
@@ -881,6 +1515,22 @@ def activate_license(payload):
     if len(machine_name) > 160:
         raise ValueError("machine_name must be 160 characters or fewer.")
     license_payload = verify_token(license_key, LICENSE_KEY_PREFIX)
+    if license_is_revoked(license_payload):
+        plan = current_plan_for_license(license_payload)
+        return {
+            "ok": True,
+            "active": False,
+            "status": "revoked",
+            "plan": public_plan_payload(plan),
+            "license": {
+                "license_id": license_payload.get("license_id", ""),
+                "plan_id": plan["id"],
+                "plan_name": plan["name"],
+                "expires_at_utc": license_payload.get("expires_at_utc", ""),
+            },
+            "message": "This license was revoked by its owner.",
+            "server_time_utc": utc_now(),
+        }
     if license_is_expired(license_payload):
         plan = current_plan_for_license(license_payload)
         return {
@@ -950,6 +1600,16 @@ def verify_license(payload):
         "customer_label": license_payload.get("customer_label", ""),
         "customer_email": license_payload.get("customer_email", ""),
     }
+    if license_is_revoked(license_payload):
+        return {
+            "ok": True,
+            "active": False,
+            "status": "revoked",
+            "plan": public_plan_payload(plan),
+            "license": license_view,
+            "message": "This license was revoked by its owner.",
+            "server_time_utc": utc_now(),
+        }
     if license_is_expired(license_payload):
         return {
             "ok": True,
@@ -991,6 +1651,17 @@ def verify_license(payload):
             "message": "The saved activation receipt belongs to a different PC.",
             "server_time_utc": utc_now(),
         }
+    if receipt_is_deactivated(receipt):
+        return {
+            "ok": True,
+            "active": False,
+            "status": "deactivated",
+            "plan": public_plan_payload(plan),
+            "license": license_view,
+            "activation": receipt_payload,
+            "message": "This activation was removed from this PC. Activate again to create a new receipt.",
+            "server_time_utc": utc_now(),
+        }
     if receipt_is_expired(receipt_payload):
         return {
             "ok": True,
@@ -1009,6 +1680,106 @@ def verify_license(payload):
         "plan": public_plan_payload(plan),
         "license": license_view,
         "activation": receipt_payload,
+        "server_time_utc": utc_now(),
+    }
+
+
+def deactivate_license(payload):
+    verification = verify_license(payload)
+    receipt = str(payload.get("receipt", "")).strip()
+    if verification.get("status") == "deactivated":
+        return {
+            **verification,
+            "deactivated": True,
+            "message": "This activation was already removed from this PC.",
+        }
+    if not verification.get("active"):
+        return {
+            **verification,
+            "deactivated": False,
+        }
+    receipt_payload = verify_token(receipt, LICENSE_RECEIPT_PREFIX)
+    deactivation = mark_receipt_deactivated(
+        receipt,
+        receipt_payload,
+        app_version=payload.get("app_version", ""),
+    )
+    return {
+        "ok": True,
+        "active": False,
+        "deactivated": True,
+        "status": "deactivated",
+        "license": verification.get("license", {}),
+        "plan": verification.get("plan", {}),
+        "deactivation": {
+            "receipt_id": deactivation["receipt_id"],
+            "deactivated_at_utc": deactivation["deactivated_at_utc"],
+        },
+        "message": "This license activation was removed from this PC.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def require_admin_license_key(payload):
+    license_key = str(payload.get("license_key", "")).strip()
+    if not license_key:
+        raise ValueError("license_key is required.")
+    license_payload = verify_token(license_key, LICENSE_KEY_PREFIX)
+    current_plan_for_license(license_payload)
+    validated_license_id(license_payload.get("license_id"))
+    return license_key, license_payload
+
+
+def revoke_license(payload):
+    license_key, license_payload = require_admin_license_key(payload)
+    note = clean_license_note(payload.get("revocation_note", ""))
+    record = write_license_record(
+        license_payload,
+        license_key,
+        license_note=None,
+        status="revoked",
+        revocation_note=note,
+    )
+    return {
+        "ok": True,
+        "revoked": True,
+        "license": admin_license_record_view(record, include_private=False),
+        "message": "The license is revoked. Existing and future activation checks will fail.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def restore_license(payload):
+    license_key, license_payload = require_admin_license_key(payload)
+    record = write_license_record(
+        license_payload,
+        license_key,
+        license_note=None,
+        status="active",
+        revocation_note="",
+    )
+    return {
+        "ok": True,
+        "restored": True,
+        "license": admin_license_record_view(record, include_private=False),
+        "message": "The license is active again. Individually deactivated receipts remain deactivated.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def update_license_note(payload):
+    license_key, license_payload = require_admin_license_key(payload)
+    note = clean_license_note(payload.get("license_note", ""))
+    record = write_license_record(
+        license_payload,
+        license_key,
+        license_note=note,
+    )
+    return {
+        "ok": True,
+        "saved": True,
+        "license": admin_license_record_view(record),
+        "message": "Private owner note saved.",
         "server_time_utc": utc_now(),
     }
 
@@ -1152,6 +1923,141 @@ def clean_audit_report(report):
     }
 
 
+def summarize_audit_breach(report):
+    usb_section = report.get("usb_file_locker_audit") or {}
+    safety_section = report.get("pc_safety_check_audit") or {}
+    usb_events = list(usb_section.get("events") or [])
+    safety_events = list(safety_section.get("events") or [])
+    events = usb_events + safety_events
+    signals = []
+
+    def add_signal(level, title, count, summary):
+        signals.append(
+            {
+                "level": level,
+                "title": title,
+                "count": int(count),
+                "summary": summary,
+            }
+        )
+
+    usb_valid = bool(usb_section.get("valid"))
+    safety_valid = bool(safety_section.get("valid"))
+    if not usb_valid:
+        add_signal(
+            "critical",
+            "USB File Locker audit verification failed",
+            1,
+            "Treat the audit trail as damaged or tampered with until it is reviewed locally.",
+        )
+    if safety_events and not safety_valid:
+        add_signal(
+            "critical",
+            "PC Safety Check audit verification failed",
+            1,
+            "The PC Safety Check trail contains events but did not verify.",
+        )
+
+    suspicious_actions = {"failed_access", "unlock_double_click", "login", "load_recent_key"}
+    suspicious_failures = [
+        event
+        for event in events
+        if event.get("result") == "failure" and event.get("action") in suspicious_actions
+    ]
+    timed_failures = []
+    for event in suspicious_failures:
+        try:
+            moment = parse_utc(event.get("time_utc"))
+        except (TypeError, ValueError):
+            moment = None
+        if moment is not None:
+            timed_failures.append(moment)
+    timed_failures.sort()
+    strongest_burst = 0
+    start = 0
+    for end, moment in enumerate(timed_failures):
+        while start < end and (moment - timed_failures[start]).total_seconds() > 10 * 60:
+            start += 1
+        strongest_burst = max(strongest_burst, end - start + 1)
+    if strongest_burst >= 3:
+        level = "high" if strongest_burst >= 5 else "warning"
+        add_signal(
+            level,
+            "Repeated failed access attempts",
+            strongest_burst,
+            f"{strongest_burst} failed access or unlock attempts occurred within about 10 minutes.",
+        )
+
+    owner_removed = sum(event.get("action") == "owner_usb_removed" for event in events)
+    if owner_removed:
+        add_signal(
+            "high",
+            "Owner USB removed or replaced",
+            owner_removed,
+            f"{owner_removed} owner-USB removal event(s) were reported.",
+        )
+
+    key_removed = sum(event.get("action") == "usb_key_removed" for event in events)
+    if key_removed:
+        add_signal(
+            "warning",
+            "Loaded USB key disappeared",
+            key_removed,
+            f"{key_removed} loaded-key removal event(s) were reported.",
+        )
+
+    restores = sum(
+        event.get("action") == "restore_app_data" and event.get("result") == "success"
+        for event in events
+    )
+    if restores:
+        add_signal(
+            "warning",
+            "App data restored from backup",
+            restores,
+            f"{restores} successful app-data restore event(s) were reported.",
+        )
+
+    configuration_changes = sum(event.get("action") == "configuration_change" for event in events)
+    if configuration_changes >= 4:
+        add_signal(
+            "warning",
+            "Many security setting changes",
+            configuration_changes,
+            f"{configuration_changes} configuration-change events were reported.",
+        )
+
+    defender = report.get("defender_status") or {}
+    if defender.get("available") and "ProtectedNow" in defender and not defender.get("ProtectedNow"):
+        add_signal(
+            "warning",
+            "Microsoft Defender not fully protected",
+            1,
+            "At least one reported Defender protection component was off.",
+        )
+
+    level_order = {"clear": 0, "warning": 1, "high": 2, "critical": 3}
+    level = "clear"
+    for signal in signals:
+        if level_order[signal["level"]] > level_order[level]:
+            level = signal["level"]
+    headlines = {
+        "clear": "No suspicious breach pattern was found in this uploaded audit snapshot.",
+        "warning": "Warning-level activity needs review.",
+        "high": "High-risk activity needs prompt review.",
+        "critical": "Critical audit problems may indicate tampering or compromise.",
+    }
+    return {
+        "level": level,
+        "headline": headlines[level],
+        "signal_count": len(signals),
+        "signals": signals,
+        "event_count": len(events),
+        "audit_valid": usb_valid and (safety_valid or not safety_events),
+        "defender_protected_now": bool(defender.get("ProtectedNow")),
+    }
+
+
 def require_active_audit_license(payload):
     try:
         verification = verify_license(payload)
@@ -1228,6 +2134,7 @@ def write_private_audit_export(path, payload):
 def create_audit_export(payload):
     verification = require_active_audit_license(payload)
     report = clean_audit_report(payload.get("report"))
+    breach_summary = summarize_audit_breach(report)
     cleanup_expired_audit_exports()
     export_id = f"AUD-{secrets.token_hex(12).upper()}"
     uploaded_at = datetime.now(timezone.utc)
@@ -1237,7 +2144,7 @@ def create_audit_export(payload):
     license_view = verification.get("license") or {}
     plan = verification.get("plan") or {}
     stored = {
-        "schema_version": 1,
+        "schema_version": 2,
         "export_id": export_id,
         "uploaded_at_utc": format_utc(uploaded_at),
         "expires_at_utc": format_utc(expires_at),
@@ -1247,6 +2154,7 @@ def create_audit_export(payload):
             "machine_hash": machine_hash,
             "app_version": clean_audit_text(payload.get("app_version"), 40),
         },
+        "breach_summary": breach_summary,
         "report": report,
     }
     path = audit_export_path(export_id)
@@ -1275,8 +2183,90 @@ def create_audit_export(payload):
             report["usb_file_locker_audit"]["event_count"]
             + report["pc_safety_check_audit"]["event_count"]
         ),
+        "breach_summary": breach_summary,
         "server_time_utc": utc_now(),
     }
+
+
+def read_stored_audit_export(export_id):
+    path = audit_export_path(export_id)
+    if not path.exists():
+        raise FileNotFoundError("The audit export was not found or the server restarted.")
+    body = path.read_bytes()
+    if len(body) > MAX_AUDIT_REPORT_BYTES:
+        raise ValueError("Stored audit export is too large.")
+    try:
+        stored = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Stored audit export is damaged.") from exc
+    if not isinstance(stored, dict) or stored.get("export_id") != export_id:
+        raise ValueError("Stored audit export identity did not verify.")
+    return stored, body
+
+
+def audit_export_metadata(stored, size_bytes):
+    report = stored.get("report") or {}
+    source = stored.get("source") or {}
+    breach_summary = summarize_audit_breach(report)
+    return {
+        "export_id": clean_audit_identifier(stored.get("export_id"), 64),
+        "uploaded_at_utc": clean_audit_time(stored.get("uploaded_at_utc")),
+        "expires_at_utc": clean_audit_time(stored.get("expires_at_utc")),
+        "source": {
+            "license_id": clean_audit_text(source.get("license_id"), 80),
+            "plan_id": clean_audit_text(source.get("plan_id"), 40),
+            "machine_hash": clean_audit_text(source.get("machine_hash"), 16),
+            "app_version": clean_audit_text(source.get("app_version"), 40),
+        },
+        "event_count": int(breach_summary.get("event_count", 0) or 0),
+        "breach_summary": breach_summary,
+        "size_bytes": int(size_bytes),
+        "download_path": f"/api/v1/admin/audit-exports/{stored.get('export_id', '')}/download",
+    }
+
+
+def list_admin_audit_exports():
+    cleanup_expired_audit_exports()
+    if not AUDIT_EXPORT_DIR.exists():
+        paths = []
+    else:
+        def modified_time(path):
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0
+
+        paths = sorted(
+            AUDIT_EXPORT_DIR.glob("AUD-*.json"),
+            key=modified_time,
+            reverse=True,
+        )[:MAX_AUDIT_LIST_ITEMS]
+    items = []
+    damaged_count = 0
+    for path in paths:
+        try:
+            stored, body = read_stored_audit_export(path.stem)
+            items.append(audit_export_metadata(stored, len(body)))
+        except (FileNotFoundError, OSError, ValueError):
+            damaged_count += 1
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "damaged_count": damaged_count,
+        "retention_hours": AUDIT_EXPORT_RETENTION_HOURS,
+        "storage": "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral",
+        "privacy_notice": (
+            "Stored reports contain only approved privacy-safe audit fields and anonymous machine hashes."
+        ),
+        "server_time_utc": utc_now(),
+    }
+
+
+def load_admin_audit_export_download(export_id):
+    cleanup_expired_audit_exports()
+    _stored, body = read_stored_audit_export(export_id)
+    return body, f"vaultlink-audit-{export_id}.json"
 
 
 def load_audit_export_download(export_id, token):
@@ -1295,18 +2285,7 @@ def load_audit_export_download(export_id, token):
         except OSError:
             pass
         raise PermissionError("This audit download link has expired.")
-    path = audit_export_path(export_id)
-    if not path.exists():
-        raise FileNotFoundError("The audit export was not found or the server restarted.")
-    body = path.read_bytes()
-    if len(body) > MAX_AUDIT_REPORT_BYTES:
-        raise ValueError("Stored audit export is too large.")
-    try:
-        stored = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Stored audit export is damaged.") from exc
-    if not isinstance(stored, dict) or stored.get("export_id") != export_id:
-        raise ValueError("Stored audit export identity did not verify.")
+    stored, body = read_stored_audit_export(export_id)
     stored_machine_hash = ((stored.get("source") or {}).get("machine_hash", ""))
     if not hmac.compare_digest(
         str(stored_machine_hash),
@@ -1324,6 +2303,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
         self.end_headers()
         self.wfile.write(body)
 
@@ -1332,13 +2317,20 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
         self.end_headers()
         self.wfile.write(body)
 
-    def send_download(self, body, filename):
+    def send_download(self, body, filename, content_type="application/json; charset=utf-8"):
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -1386,6 +2378,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/docs":
             self.send_json(docs_payload())
             return
+        if path == "/owner":
+            self.send_html(owner_portal_html())
+            return
         if path == "/health":
             self.send_json(
                 {
@@ -1395,11 +2390,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "time_utc": utc_now(),
                     "license_admin_configured": admin_token_configured(),
                     "using_default_signing_secret": using_default_signing_secret(),
+                    "license_state_storage": (
+                        "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral"
+                    ),
+                    "license_private_fields_encrypted": True,
                     "audit_exports_enabled": True,
                     "audit_export_storage": (
                         "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral"
                     ),
                     "audit_export_retention_hours": AUDIT_EXPORT_RETENTION_HOURS,
+                    "windows_update_published": UPDATE_MANIFEST_PATH.exists(),
                 }
             )
             return
@@ -1421,14 +2421,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/security":
             self.send_json(
                 {
-                    "license_mode": "signed_stateless_tokens",
+                    "license_mode": "signed_tokens_with_revocation_ledger",
                     "notes": SECURITY_NOTES,
                     "remote_actions_allowed": [
                         "admin license issue",
                         "license activate",
                         "license verify",
+                        "customer device deactivation",
+                        "admin license revoke, restore, note, and inventory",
                         "license-authenticated privacy-safe audit export upload",
                         "signed short-lived audit export download",
+                        "admin-protected audit export list and download",
                     ],
                     "banned_remote_actions": [
                         "remote unlock",
@@ -1438,14 +2441,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "remote vault secret retrieval",
                     ],
                     "license_limitations": [
-                        "Receipt signing works without a database.",
-                        "Strict seat counting and revocation lists need persistent storage later.",
+                        "Strict concurrent seat counting still needs a database.",
+                        "Configure LICENSE_STATE_DIR on a Railway Volume so revocations, keys, and notes survive restarts.",
+                        "LICENSE_RECORDS_SECRET should be configured separately and retained for encrypted-record recovery.",
                     ],
                     "admin_authentication": "X-License-Admin-Token header only; never accepted in a JSON body.",
                     "audit_export_controls": [
                         "Only approved privacy-safe fields are retained.",
                         "Upload requires an active machine-bound license with Audit Log Viewer access.",
-                        "Downloads require a signed expiring bearer link.",
+                        "Client downloads require a signed expiring bearer link.",
+                        "Owner listing and downloads require the admin token in a request header.",
+                        "Each stored report includes a server-calculated breach summary.",
                         "Configure AUDIT_EXPORT_DIR on a Railway Volume for restart-safe retention.",
                     ],
                 }
@@ -1461,13 +2467,98 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "recommended_env": [
                         "LICENSE_SIGNING_SECRET",
                         "LICENSE_ADMIN_TOKEN",
+                        "LICENSE_STATE_DIR",
+                        "LICENSE_RECORDS_SECRET",
                         "AUDIT_EXPORT_DIR",
                         "AUDIT_EXPORT_RETENTION_HOURS",
                     ],
                 }
             )
             return
+        if path == "/api/v1/updates/windows":
+            try:
+                self.send_json(windows_update_payload())
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                self.send_json(
+                    {"ok": False, "error": "update_unavailable", "message": str(exc)},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+            return
+        if path == "/api/v1/updates/windows/download":
+            try:
+                manifest, package_path = load_windows_update_release()
+                self.send_download(
+                    package_path.read_bytes(),
+                    manifest["package_filename"],
+                    content_type="application/zip",
+                )
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                self.send_json(
+                    {"ok": False, "error": "update_unavailable", "message": str(exc)},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+            return
         parts = path.strip("/").split("/")
+        if path == "/api/v1/admin/audit-exports":
+            try:
+                self.require_admin_token()
+                self.send_json(list_admin_audit_exports())
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if path == "/api/v1/admin/licenses":
+            try:
+                self.require_admin_token()
+                self.send_json(list_admin_license_records())
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if (
+            len(parts) == 6
+            and parts[:4] == ["api", "v1", "admin", "audit-exports"]
+            and parts[5] == "download"
+        ):
+            try:
+                self.require_admin_token()
+                body, filename = load_admin_audit_export_download(parts[4])
+                self.send_download(body, filename)
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except FileNotFoundError as exc:
+                self.send_json(
+                    {"ok": False, "error": "not_found", "message": str(exc)},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "error": "bad_request", "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         if (
             len(parts) == 5
             and parts[:3] == ["api", "v1", "audit-exports"]
@@ -1518,6 +2609,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/licenses/issue": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/activate": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/verify": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/deactivate": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/revoke": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/restore": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/note": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
         }
         if path not in route_limits:
@@ -1541,6 +2636,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/v1/licenses/verify":
                 self.send_json(verify_license(payload))
+                return
+            if path == "/api/v1/licenses/deactivate":
+                self.send_json(deactivate_license(payload))
+                return
+            if path == "/api/v1/licenses/revoke":
+                self.require_admin_token()
+                self.send_json(revoke_license(payload))
+                return
+            if path == "/api/v1/licenses/restore":
+                self.require_admin_token()
+                self.send_json(restore_license(payload))
+                return
+            if path == "/api/v1/licenses/note":
+                self.require_admin_token()
+                self.send_json(update_license_note(payload))
                 return
             if path == "/api/v1/audit-exports":
                 self.send_json(create_audit_export(payload), status=HTTPStatus.CREATED)

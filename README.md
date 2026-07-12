@@ -2,11 +2,13 @@
 
 USB File Locker App is a Windows desktop toolkit for locking files and folders with a USB key, keeping a personal vault, reviewing privacy-safe audit logs, and watching for suspicious access patterns.
 
-The Audit Log Viewer can upload its approved privacy-safe report fields to the licensed Railway API and immediately download a signed JSON copy. The server never receives raw files, file contents, USB secrets, passwords, PINs, client names, or full paths.
+The Audit Log Viewer can upload its approved privacy-safe report fields to the licensed Railway API and immediately download a signed JSON copy. Its explicit `AUTO-UPLOAD EVERY 15 MIN` option sends a new snapshot only when meaningful audit or Defender state changes. The API stores a breach summary with each report. Owners can open `API LOGS` in the License Issuer to list and download stored reports later. The server never receives raw files, file contents, USB secrets, passwords, PINs, client names, or full paths.
 
 ## First run
 
 Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for Python 3.9 or newer and imports the pinned `cryptography` package. If that package is missing, the launcher installs it from `requirements.txt`, verifies the import, and then opens the selected app. The first setup needs an internet connection; later starts do not reinstall it.
+
+The app checks the API at startup when its daily check is due. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, asks before installing, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. Every installed build with Update Center uses the same published API release. Automatic installation is disabled inside Git working folders; use `git pull` there.
 
 ## Main desktop apps
 
@@ -21,6 +23,8 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 - `perm_unlock_workbench.py` - edit and relock workflow
 - `key_inspector.py` - inspects owner and USB key setup
 - `quick_lock_note.py` - makes locked notes quickly
+- `vaultlink_updater.py` - separate signed-package installer that runs after the main app closes
+- `build_signed_update.py` - owner release builder; requires the DPAPI-protected signing key stored outside GitHub
 
 ## API folder
 
@@ -32,7 +36,9 @@ That folder is also safe to copy into its own separate repo if you want a standa
 
 ## Issuing licenses
 
-Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, and issue the key. The ranks run from `$5 Starter` through `$20,000+ Pro Baseline`; old `plus`, `pro`, and `signature` keys remain compatible. The admin token is masked, sent only in the `X-License-Admin-Token` header, and never written to settings, receipts, logs, or GitHub. Send the customer only the generated `vlk1...` license key or use `COPY CUSTOMER SETUP` for a token-free handoff note.
+Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, add an optional private owner note, and issue the key. `KEYS + NOTES WEBSITE` opens the owner console, where the same admin token can list encrypted-at-rest keys and notes, copy keys, update notes, revoke a whole license, or restore it. `REVOKE LATEST` handles the newest key directly in the issuer. Use `API LOGS` to review stored breach levels and download selected privacy-safe reports.
+
+Customers can choose `REMOVE FROM THIS PC` in License Center. That deactivates the current machine receipt through the API and then removes the saved key and receipt locally. `CLEAR LOCAL COPY ONLY` is an offline fallback and does not notify the API. The ranks run from `$5 Starter` through `$20,000+ Pro Baseline`; old `plus`, `pro`, and `signature` keys remain compatible. The admin token is masked, sent only in the `X-License-Admin-Token` header, and never written to settings, receipts, logs, or GitHub.
 
 Rank names describe software and service packages. The app does not claim HIPAA certification, legal approval, guaranteed protection, or completed professional review.
 

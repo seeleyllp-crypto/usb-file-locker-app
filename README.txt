@@ -17,6 +17,14 @@ First run:
 - The launcher checks Python and installs cryptography 49.0.0 if it is missing.
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
+Updates:
+- UPDATE CENTER checks the API at startup when its daily check is due.
+- Every installed build with Update Center reads the same published API release.
+- Every release manifest must verify with the embedded Ed25519 public key.
+- The ZIP must match the signed SHA-256 hash before installation.
+- The app asks before installing and backs up files it replaces.
+- Keys, licenses, vault data, settings, and logs in LocalAppData are preserved.
+
 Important:
 - Keep the master USB key private.
 - Make a backup of the master USB key.
@@ -138,9 +146,19 @@ Companion apps:
 - Run Personal Vault Pad.bat
   Opens the personal vault in a simpler note-style helper app.
 - Run Audit Log Viewer.bat
-  Opens the audit chain in a dedicated viewer with verification and export tools.
+  Opens the audit chain, uploads privacy-safe reports, downloads a signed copy,
+  and shows the API breach summary and storage lifetime. AUTO-UPLOAD EVERY 15 MIN
+  is opt-in and skips uploads when the meaningful snapshot has not changed.
 - Run License Issuer.bat
-  Issues Starter, Plus, Pro, or Signature API licenses. The Railway admin token is masked and never saved.
+  Issues all seven API license ranks with optional private owner notes. KEYS + NOTES
+  WEBSITE lists encrypted-at-rest keys and notes and can revoke or restore a license.
+  REVOKE LATEST removes the newest key. API LOGS lists stored breach reports and
+  downloads a selected report. The Railway admin token is masked and never saved.
+
+License Center:
+- REMOVE FROM THIS PC deactivates that machine receipt through the API and clears
+  the saved local key and receipt after the server confirms it.
+- CLEAR LOCAL COPY ONLY is an offline fallback and does not notify the API.
 - Run Text Log Processor.bat
   Pastes or loads table-style text logs, counts actions, spots failures and duplicate sequence numbers, and exports a cleaner report.
 - Run Global Breach Guard.bat

@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['C:\\Users\\jonis\\OneDrive\\Desktop\\USBFileLockerApp\\usb_file_locker.py'],
+    ['usb_file_locker.py'],
     pathex=[],
     binaries=[],
     datas=[],

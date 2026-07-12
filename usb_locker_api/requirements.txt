@@ -1,1 +1,1 @@
-# No external dependencies are required for the current Railway build.
+cryptography==49.0.0

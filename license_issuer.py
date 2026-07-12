@@ -66,6 +66,325 @@ EXPIRY_CHOICES = {
 }
 
 
+class ApiAuditLogsWindow(tk.Toplevel):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.title("VaultLink API Audit Logs")
+        self.geometry("1120x720")
+        self.minsize(940, 620)
+        self.configure(bg=locker.BG)
+        self.records = []
+        self.results = queue.Queue()
+        self.busy = False
+        self.status_var = tk.StringVar(value="Enter the admin token in the issuer, then refresh API logs.")
+        self.storage_var = tk.StringVar(value="Storage status has not been checked yet.")
+        self.detail_var = tk.StringVar(value="Select a stored report to review its breach summary.")
+        self.refresh_button = None
+        self.download_button = None
+        self.tree = None
+        self.build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        if owner.admin_token_var.get().strip():
+            self.after(100, self.refresh_logs)
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=locker.BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=22)
+
+        tk.Label(
+            outer,
+            text="API Audit Logs",
+            bg=locker.BG,
+            fg=locker.TEXT,
+            font=("Segoe UI", 25, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="OWNER-ONLY BREACH REVIEW | PRIVACY-SAFE FIELDS | ADMIN TOKEN REQUIRED",
+            bg=locker.BG,
+            fg=locker.YELLOW,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(4, 14))
+
+        toolbar = tk.Frame(outer, bg=locker.PANEL)
+        toolbar.pack(fill="x")
+        self.refresh_button = tk.Button(
+            toolbar,
+            text="REFRESH LOGS",
+            command=self.refresh_logs,
+            bg=locker.GREEN,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.refresh_button.pack(side="left", padx=(16, 0), pady=14, ipadx=14, ipady=8)
+        self.download_button = tk.Button(
+            toolbar,
+            text="DOWNLOAD SELECTED",
+            command=self.download_selected,
+            state="disabled",
+            bg="#58b7e8",
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.download_button.pack(side="left", padx=(10, 0), pady=14, ipadx=14, ipady=8)
+        tk.Button(
+            toolbar,
+            text="OPEN DOWNLOADS",
+            command=self.open_downloads,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), pady=14, ipadx=12, ipady=8)
+        tk.Button(
+            toolbar,
+            text="CLOSE",
+            command=self.destroy,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", padx=(0, 16), pady=14, ipadx=14, ipady=8)
+
+        tk.Label(
+            outer,
+            textvariable=self.storage_var,
+            bg=locker.BG,
+            fg=locker.MUTED,
+            justify="left",
+            wraplength=1050,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", pady=(12, 8))
+
+        columns = ("uploaded", "level", "events", "machine", "plan", "export_id")
+        tree_frame = tk.Frame(outer, bg=locker.BG)
+        tree_frame.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=14)
+        headings = {
+            "uploaded": "UPLOADED UTC",
+            "level": "BREACH LEVEL",
+            "events": "EVENTS",
+            "machine": "MACHINE HASH",
+            "plan": "RANK ID",
+            "export_id": "EXPORT ID",
+        }
+        widths = {
+            "uploaded": 170,
+            "level": 110,
+            "events": 70,
+            "machine": 130,
+            "plan": 120,
+            "export_id": 245,
+        }
+        for column in columns:
+            self.tree.heading(column, text=headings[column])
+            self.tree.column(column, width=widths[column], minwidth=60, anchor="w")
+        self.tree.tag_configure("clear", foreground="#74e27f")
+        self.tree.tag_configure("warning", foreground="#ffd166")
+        self.tree.tag_configure("high", foreground="#ff7b72")
+        self.tree.tag_configure("critical", foreground="#ff5c5c")
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", lambda _event: self.update_details())
+
+        detail = tk.Label(
+            outer,
+            textvariable=self.detail_var,
+            bg=locker.PANEL,
+            fg=locker.TEXT,
+            justify="left",
+            anchor="w",
+            wraplength=1030,
+            font=("Segoe UI", 9),
+        )
+        detail.pack(fill="x", pady=(12, 0), padx=0, ipady=12)
+        tk.Label(
+            outer,
+            textvariable=self.status_var,
+            bg=locker.BG,
+            fg=locker.MUTED,
+            justify="left",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(10, 0))
+
+    def set_busy(self, busy, status):
+        self.busy = busy
+        if self.refresh_button is not None:
+            self.refresh_button.configure(state="disabled" if busy else "normal")
+        if self.download_button is not None:
+            selected = bool(self.tree.selection()) if self.tree is not None else False
+            self.download_button.configure(state="normal" if selected and not busy else "disabled")
+        self.status_var.set(status)
+
+    def api_credentials(self):
+        server = locker.validated_license_server_url(self.owner.server_var.get())
+        token = locker.validated_admin_api_token(self.owner.admin_token_var.get())
+        return server, token
+
+    def refresh_logs(self):
+        if self.busy:
+            return
+        try:
+            server, token = self.api_credentials()
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            return
+        self.set_busy(True, "Loading stored privacy-safe reports from the API...")
+
+        def worker():
+            try:
+                response = locker.list_admin_audit_exports_online(server, token)
+                self.results.put(("list", response, ""))
+            except Exception as exc:
+                self.results.put(("error", None, str(exc)))
+
+        threading.Thread(target=worker, name="ApiAuditLogList", daemon=True).start()
+        self.after(50, self.poll_results)
+
+    def poll_results(self):
+        try:
+            kind, payload, error = self.results.get_nowait()
+        except queue.Empty:
+            if self.busy and self.winfo_exists():
+                self.after(50, self.poll_results)
+            return
+        if kind == "error":
+            self.set_busy(False, "API log request failed.")
+            messagebox.showerror("API logs failed", error, parent=self)
+            return
+        if kind == "list":
+            self.show_listing(payload)
+            return
+        if kind == "download":
+            self.set_busy(False, f"Downloaded API audit report: {payload}")
+            locker.log_event("api_audit_download", "api", "ok")
+            try:
+                os.startfile(Path(payload).parent)
+            except OSError:
+                pass
+            messagebox.showinfo("Audit report downloaded", f"Saved privacy-safe report:\n\n{payload}", parent=self)
+
+    def show_listing(self, response):
+        items = response.get("items") or []
+        self.records = [item for item in items if isinstance(item, dict)]
+        self.tree.delete(*self.tree.get_children())
+        for index, item in enumerate(self.records):
+            source = item.get("source") or {}
+            summary = item.get("breach_summary") or {}
+            level = str(summary.get("level", "unknown") or "unknown").lower()
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    item.get("uploaded_at_utc", ""),
+                    level.upper(),
+                    item.get("event_count", 0),
+                    source.get("machine_hash", ""),
+                    source.get("plan_id", ""),
+                    item.get("export_id", ""),
+                ),
+                tags=(level,),
+            )
+        storage = str(response.get("storage", "unknown"))
+        retention = int(response.get("retention_hours", 0) or 0)
+        if storage == "persistent_configured":
+            storage_text = f"Persistent API storage configured | Retention: {retention} hour(s)"
+        else:
+            storage_text = (
+                f"TEMPORARY RAILWAY STORAGE | Retention target: {retention} hour(s) | "
+                "Reports can disappear when the service restarts until a Railway Volume is mounted."
+            )
+        self.storage_var.set(storage_text)
+        if self.records:
+            self.tree.selection_set("0")
+            self.tree.see("0")
+        self.update_details()
+        self.set_busy(False, f"Loaded {len(self.records)} stored API audit report(s).")
+        locker.log_event("api_audit_list", "api", "ok", f"count={len(self.records)}")
+
+    def selected_record(self):
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        try:
+            return self.records[int(selection[0])]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def update_details(self):
+        item = self.selected_record()
+        if item is None:
+            self.detail_var.set("Select a stored report to review its breach summary.")
+            if self.download_button is not None:
+                self.download_button.configure(state="disabled")
+            return
+        summary = item.get("breach_summary") or {}
+        signals = summary.get("signals") or []
+        signal_text = "; ".join(
+            f"{signal.get('level', '').upper()}: {signal.get('title', '')} ({signal.get('count', 0)})"
+            for signal in signals
+            if isinstance(signal, dict)
+        ) or "No suspicious signal was reported in this snapshot."
+        self.detail_var.set(
+            f"{summary.get('headline', 'No breach summary available.')}  "
+            f"Expires: {item.get('expires_at_utc', 'unknown')}  |  {signal_text}"
+        )
+        if self.download_button is not None and not self.busy:
+            self.download_button.configure(state="normal")
+
+    def download_selected(self):
+        if self.busy:
+            return
+        item = self.selected_record()
+        if item is None:
+            messagebox.showinfo("Nothing selected", "Select an API audit report first.", parent=self)
+            return
+        try:
+            server, token = self.api_credentials()
+        except Exception as exc:
+            messagebox.showerror("Cannot download", str(exc), parent=self)
+            return
+        export_id = str(item.get("export_id", "")).strip()
+        destination = filedialog.asksaveasfilename(
+            title="Download API Audit Report",
+            initialdir=str(Path.home() / "Downloads"),
+            initialfile=f"vaultlink-audit-{export_id}.json",
+            defaultextension=".json",
+            filetypes=[("JSON audit report", "*.json")],
+            parent=self,
+        )
+        if not destination:
+            return
+        self.set_busy(True, f"Downloading {export_id}...")
+
+        def worker():
+            try:
+                path = locker.download_admin_audit_export_online(
+                    server,
+                    token,
+                    export_id,
+                    destination,
+                )
+                self.results.put(("download", str(path), ""))
+            except Exception as exc:
+                self.results.put(("error", None, str(exc)))
+
+        threading.Thread(target=worker, name="ApiAuditLogDownload", daemon=True).start()
+        self.after(50, self.poll_results)
+
+    def open_downloads(self):
+        try:
+            os.startfile(Path.home() / "Downloads")
+        except OSError as exc:
+            messagebox.showerror("Could not open Downloads", str(exc), parent=self)
+
+
 class LicenseIssuer(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -80,6 +399,7 @@ class LicenseIssuer(tk.Tk):
         self.rank_detail_var = tk.StringVar(value="")
         self.customer_var = tk.StringVar(value="")
         self.email_var = tk.StringVar(value="")
+        self.note_var = tk.StringVar(value="")
         self.max_devices_var = tk.StringVar(value="1")
         self.expiry_var = tk.StringVar(value="Never expires")
         self.status_var = tk.StringVar(value="Ready to issue a license.")
@@ -90,15 +410,40 @@ class LicenseIssuer(tk.Tk):
         self.copy_button = None
         self.handoff_button = None
         self.save_button = None
+        self.revoke_button = None
         self.result_text = None
         self.token_entry = None
         self.rank_buttons = {}
+        self.api_logs_window = None
+        self.management_results = queue.Queue()
+        self.management_busy = False
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
 
     def build_ui(self):
-        outer = tk.Frame(self, bg=locker.BG)
-        outer.pack(fill="both", expand=True, padx=26, pady=22)
+        page_host = tk.Frame(self, bg=locker.BG)
+        page_host.pack(fill="both", expand=True)
+        page_canvas = tk.Canvas(page_host, bg=locker.BG, highlightthickness=0, borderwidth=0)
+        page_scrollbar = ttk.Scrollbar(page_host, orient="vertical", command=page_canvas.yview)
+        page_canvas.configure(yscrollcommand=page_scrollbar.set)
+        page_scrollbar.pack(side="right", fill="y")
+        page_canvas.pack(side="left", fill="both", expand=True)
+        outer = tk.Frame(page_canvas, bg=locker.BG)
+        page_window = page_canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.configure(padx=26, pady=22)
+
+        def resize_page(_event=None):
+            page_canvas.configure(scrollregion=page_canvas.bbox("all"))
+
+        def fit_page(event):
+            page_canvas.itemconfigure(page_window, width=event.width)
+
+        outer.bind("<Configure>", resize_page)
+        page_canvas.bind("<Configure>", fit_page)
+        self.bind(
+            "<MouseWheel>",
+            lambda event: page_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+        )
 
         tk.Label(
             outer,
@@ -262,8 +607,19 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 10),
         ).grid(row=10, column=1, sticky="ew", padx=(8, 18), ipady=7)
 
+        self.add_label(form, "PRIVATE OWNER NOTE, OPTIONAL", 11, 0, columnspan=2)
+        tk.Entry(
+            form,
+            textvariable=self.note_var,
+            bg=locker.FIELD,
+            fg=locker.TEXT,
+            insertbackground=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 10),
+        ).grid(row=12, column=0, columnspan=2, sticky="ew", padx=18, ipady=7)
+
         action_row = tk.Frame(form, bg=locker.PANEL)
-        action_row.grid(row=11, column=0, columnspan=2, sticky="e", padx=18, pady=(14, 18))
+        action_row.grid(row=13, column=0, columnspan=2, sticky="e", padx=18, pady=(14, 18))
         self.issue_button = tk.Button(
             action_row,
             text="ISSUE LICENSE",
@@ -274,6 +630,24 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 10, "bold"),
         )
         self.issue_button.pack(side="left", ipadx=18, ipady=9)
+        tk.Button(
+            action_row,
+            text="API LOGS",
+            command=self.open_api_logs,
+            bg="#58b7e8",
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=9)
+        tk.Button(
+            action_row,
+            text="KEYS + NOTES WEBSITE",
+            command=self.open_owner_portal,
+            bg=locker.YELLOW,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=9)
         tk.Button(
             action_row,
             text="API DOCS",
@@ -341,6 +715,17 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         )
         self.save_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
+        self.revoke_button = tk.Button(
+            result_actions,
+            text="REVOKE LATEST",
+            command=self.revoke_latest_license,
+            state="disabled",
+            bg=locker.RED,
+            fg=locker.WHITE,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.revoke_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
         tk.Button(
             result_actions,
             text="CLEAR TOKEN",
@@ -432,6 +817,7 @@ class LicenseIssuer(tk.Tk):
             "plan_id": plan_id,
             "customer_label": self.customer_var.get(),
             "customer_email": self.email_var.get(),
+            "license_note": self.note_var.get(),
             "max_devices": max_devices,
             "expires_at_utc": self.expiry_text(),
         }
@@ -468,6 +854,7 @@ class LicenseIssuer(tk.Tk):
         self.copy_button.configure(state="normal")
         self.handoff_button.configure(state="normal")
         self.save_button.configure(state="normal")
+        self.revoke_button.configure(state="normal", text="REVOKE LATEST")
         locker.log_event("license_issue", "api", "ok")
         self.status_var.set("License issued. Send only the license key to the customer.")
 
@@ -481,6 +868,7 @@ class LicenseIssuer(tk.Tk):
             f"Rank: {plan.get('rank_label', '')} | {plan.get('name', license_info.get('plan_name', ''))}",
             f"Expires: {license_info.get('expires_at_utc') or 'Never'}",
             f"Max devices claim: {license_info.get('max_devices', '')}",
+            f"Private owner note: {self.note_var.get().strip() or 'None'}",
             f"Entitlements ({len(entitlement_names)}): {', '.join(entitlement_names)}",
             "",
             "LICENSE KEY",
@@ -564,6 +952,84 @@ class LicenseIssuer(tk.Tk):
             self.status_var.set("Opened API documentation.")
         except Exception as exc:
             messagebox.showerror("Could not open API docs", str(exc), parent=self)
+
+    def open_owner_portal(self):
+        try:
+            server = locker.validated_license_server_url(self.server_var.get())
+            webbrowser.open(server + "/owner")
+            self.status_var.set("Opened the owner keys and notes website. Enter the admin token there to connect.")
+        except Exception as exc:
+            messagebox.showerror("Could not open owner website", str(exc), parent=self)
+
+    def revoke_latest_license(self):
+        if self.management_busy:
+            return
+        response = self.latest_response or {}
+        license_key = str(response.get("license_key", "")).strip()
+        license_info = response.get("license") or {}
+        license_id = str(license_info.get("license_id", "")).strip() or "the latest license"
+        try:
+            server = locker.validated_license_server_url(self.server_var.get())
+            token = locker.validated_admin_api_token(self.admin_token_var.get())
+            license_key = locker.require_valid_api_license_key(license_key)
+        except Exception as exc:
+            messagebox.showerror("Cannot revoke license", str(exc), parent=self)
+            return
+        if not messagebox.askyesno(
+            "Revoke license",
+            f"Revoke {license_id}?\n\nExisting receipts will stop verifying. You can restore it later from the owner website.",
+            parent=self,
+        ):
+            return
+        self.management_busy = True
+        self.revoke_button.configure(state="disabled", text="REVOKING...")
+        self.status_var.set(f"Revoking {license_id} through the API...")
+
+        def worker():
+            try:
+                result = locker.revoke_license_online(server, token, license_key)
+                error = ""
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self.management_results.put((license_id, result, error))
+
+        threading.Thread(target=worker, name="LicenseRevokeRequest", daemon=True).start()
+        self.after(50, self.poll_management_result)
+
+    def poll_management_result(self):
+        try:
+            license_id, result, error = self.management_results.get_nowait()
+        except queue.Empty:
+            if self.management_busy and self.winfo_exists():
+                self.after(50, self.poll_management_result)
+            return
+        self.management_busy = False
+        if error:
+            self.revoke_button.configure(state="normal", text="REVOKE LATEST")
+            locker.log_event("license_revoke", "api", "failed")
+            self.status_var.set(f"Could not revoke {license_id}.")
+            messagebox.showerror("License revoke failed", error, parent=self)
+            return
+        self.revoke_button.configure(state="disabled", text="REVOKED")
+        locker.log_event("license_revoke", "api", "ok")
+        self.status_var.set(f"{license_id} is revoked. Restore it from the owner website if needed.")
+        messagebox.showinfo(
+            "License revoked",
+            str((result or {}).get("message") or f"{license_id} was revoked."),
+            parent=self,
+        )
+
+    def open_api_logs(self):
+        if self.api_logs_window is not None:
+            try:
+                if self.api_logs_window.winfo_exists():
+                    self.api_logs_window.lift()
+                    self.api_logs_window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+        self.api_logs_window = ApiAuditLogsWindow(self)
 
     def close_window(self):
         self.admin_token_var.set("")

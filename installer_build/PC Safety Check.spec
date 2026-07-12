@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['C:\\Users\\jonis\\OneDrive\\Desktop\\PCSafetyCheckApp\\pc_safety_check.py'],
+    ['pc_safety_check.py'],
     pathex=[],
     binaries=[],
     datas=[],

@@ -40,11 +40,15 @@ class AuditLogViewer(tk.Tk):
         self.api_export_busy = False
         self.api_export_results = queue.Queue()
         self.api_export_button = None
+        self.cloud_upload_busy = False
+        self.cloud_upload_results = queue.Queue()
+        self.auto_upload_var = tk.BooleanVar(value=bool(settings.get("cloud_audit_enabled")))
         self.tree = None
         self.details = None
         self.build_ui()
         locker.log_event("audit_viewer_open", locker.LOG_FILE, "ok")
         self.refresh_data()
+        self.after(15 * 60 * 1000, self.periodic_cloud_upload)
 
     def build_ui(self):
         outer = tk.Frame(self, bg=locker.BG)
@@ -82,7 +86,7 @@ class AuditLogViewer(tk.Tk):
         api_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 18))
         self.api_export_button = tk.Button(
             api_row,
-            text="UPLOAD + DOWNLOAD API COPY",
+            text="UPLOAD LOG + DOWNLOAD COPY",
             command=self.upload_download_api_copy,
             bg="#4d8cff",
             fg=locker.WHITE,
@@ -92,9 +96,21 @@ class AuditLogViewer(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         )
         self.api_export_button.pack(side="left", ipadx=14, ipady=8)
+        tk.Checkbutton(
+            api_row,
+            text="AUTO-UPLOAD EVERY 15 MIN",
+            variable=self.auto_upload_var,
+            command=self.toggle_cloud_upload,
+            bg=locker.PANEL,
+            fg=locker.TEXT,
+            selectcolor=locker.FIELD,
+            activebackground=locker.PANEL,
+            activeforeground=locker.TEXT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(12, 0))
         tk.Label(
             api_row,
-            text="PRIVACY-SAFE FIELDS ONLY | SIGNED DOWNLOAD | SHORT-LIVED SERVER COPY",
+            text="PRIVACY-SAFE FIELDS ONLY | SERVER BREACH SUMMARY | OWNER CAN DOWNLOAD LATER",
             bg=locker.PANEL,
             fg=locker.MUTED,
             font=("Segoe UI", 8, "bold"),
@@ -373,6 +389,95 @@ class AuditLogViewer(tk.Tk):
             locker.log_event("audit_viewer_export_raw", destination, "failed", str(exc))
             messagebox.showerror("Export failed", str(exc))
 
+    def toggle_cloud_upload(self):
+        enabled = bool(self.auto_upload_var.get())
+        if enabled:
+            confirmed = messagebox.askyesno(
+                "Enable automatic API audit uploads",
+                "Upload a privacy-safe audit snapshot to your configured VaultLink API every 15 minutes when it changes?\n\n"
+                "The API receives actions, results, anonymous event IDs, hashes, Defender status, and an anonymous machine hash. "
+                "It never receives passwords, PINs, USB secrets, file contents, client names, or full paths.",
+                parent=self,
+            )
+            if not confirmed:
+                self.auto_upload_var.set(False)
+                return
+            state = locker.load_license_state(locker.load_settings())
+            if not locker.license_is_active(state):
+                self.auto_upload_var.set(False)
+                messagebox.showwarning(
+                    "Active license required",
+                    "Activate this PC in License Center before enabling automatic API audit uploads.",
+                    parent=self,
+                )
+                return
+        settings = locker.load_settings()
+        settings["cloud_audit_enabled"] = enabled
+        locker.save_settings(settings)
+        if enabled:
+            self.status.set("Automatic privacy-safe API uploads enabled every 15 minutes when the audit snapshot changes.")
+            self.after(500, self.run_cloud_upload)
+        else:
+            self.status.set("Automatic API audit uploads turned off.")
+
+    def periodic_cloud_upload(self):
+        if self.winfo_exists():
+            self.after(15 * 60 * 1000, self.periodic_cloud_upload)
+        if self.auto_upload_var.get():
+            self.run_cloud_upload()
+
+    def run_cloud_upload(self):
+        if self.cloud_upload_busy or self.api_export_busy:
+            return
+        state = locker.load_license_state(locker.load_settings())
+        if not locker.license_is_active(state):
+            self.status.set("Automatic API upload is waiting for an active license.")
+            return
+        self.cloud_upload_busy = True
+        self.status.set("Checking whether the privacy-safe API audit snapshot changed...")
+
+        def worker():
+            try:
+                report = locker.build_audit_report()
+                fingerprint = locker.audit_report_snapshot_fingerprint(report)
+                settings = locker.load_settings()
+                if fingerprint == str(settings.get("last_cloud_audit_fingerprint", "")):
+                    self.cloud_upload_results.put(("skip", None, fingerprint, ""))
+                    return
+                response = locker.upload_audit_report_online(state, report=report)
+                self.cloud_upload_results.put(("success", response, fingerprint, ""))
+            except Exception as exc:
+                self.cloud_upload_results.put(("error", None, "", str(exc)))
+
+        threading.Thread(target=worker, name="AuditViewerCloudUpload", daemon=True).start()
+        self.after(75, self.poll_cloud_upload)
+
+    def poll_cloud_upload(self):
+        try:
+            outcome, response, fingerprint, error = self.cloud_upload_results.get_nowait()
+        except queue.Empty:
+            if self.cloud_upload_busy and self.winfo_exists():
+                self.after(75, self.poll_cloud_upload)
+            return
+        self.cloud_upload_busy = False
+        if outcome == "skip":
+            self.status.set("Automatic API upload skipped because the meaningful audit snapshot has not changed.")
+            return
+        if outcome == "error":
+            self.status.set(f"Automatic API audit upload failed: {error}")
+            return
+        settings = locker.load_settings()
+        settings["last_cloud_audit_fingerprint"] = fingerprint
+        settings["last_cloud_audit_export_id"] = str((response or {}).get("export_id", ""))
+        settings["last_cloud_audit_utc"] = locker.utc_now_text()
+        locker.save_settings(settings)
+        event_count = int((response or {}).get("event_count", 0) or 0)
+        level = str(((response or {}).get("breach_summary") or {}).get("level", "unknown"))
+        locker.log_event("audit_api_auto_upload", "api", "ok", f"events={event_count};level={level}")
+        self.status.set(
+            f"Automatic API audit uploaded: {event_count} privacy-safe event(s), breach level {level.upper()}."
+        )
+
     def upload_download_api_copy(self):
         if self.api_export_busy:
             return
@@ -427,7 +532,7 @@ class AuditLogViewer(tk.Tk):
     def _finish_api_export(self, success, destination, response):
         self.api_export_busy = False
         if self.api_export_button is not None and self.api_export_button.winfo_exists():
-            self.api_export_button.configure(state="normal", text="UPLOAD + DOWNLOAD API COPY")
+            self.api_export_button.configure(state="normal", text="UPLOAD LOG + DOWNLOAD COPY")
         if not success:
             error = str(response.get("message") or "The API export failed.")
             locker.log_event("audit_api_export", destination, "failed", error)
@@ -437,8 +542,13 @@ class AuditLogViewer(tk.Tk):
         event_count = int(response.get("event_count", 0) or 0)
         expires_at = str(response.get("expires_at_utc", "") or "unknown")
         export_id = str(response.get("export_id", "") or "")
+        storage = str(response.get("storage", "unknown") or "unknown")
+        retention = int(response.get("retention_hours", 0) or 0)
+        breach = response.get("breach_summary") or {}
+        breach_level = str(breach.get("level", "unknown") or "unknown").upper()
+        breach_headline = str(breach.get("headline", "No breach summary was returned."))
         locker.log_event("audit_api_export", destination, "ok", f"events={event_count}")
-        self.status.set(f"API copy downloaded: {export_id}")
+        self.status.set(f"API copy downloaded: {export_id} | Breach level: {breach_level}")
         try:
             os.startfile(Path(destination).parent)
         except OSError:
@@ -448,7 +558,16 @@ class AuditLogViewer(tk.Tk):
             f"Saved {event_count} privacy-safe event(s).\n\n"
             f"File: {destination}\n"
             f"Export ID: {export_id}\n"
-            f"Server copy expires: {expires_at}",
+            f"Breach level: {breach_level}\n"
+            f"{breach_headline}\n\n"
+            f"Server copy expires: {expires_at}\n"
+            f"Retention target: {retention} hour(s)\n"
+            f"Storage: {storage}"
+            + (
+                "\n\nWarning: Railway storage is temporary until a persistent Volume is mounted."
+                if storage != "persistent_configured"
+                else ""
+            ),
             parent=self,
         )
         self.refresh_data()
