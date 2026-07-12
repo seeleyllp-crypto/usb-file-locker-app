@@ -7,6 +7,7 @@ This folder contains a Railway-ready API service for the USB File Locker app.
 - A small public API for product info, features, companion apps, and security notes
 - A public catalog and homepage comparison for all seven USB locker ranks
 - Signed license keys with device deactivation and owner-controlled revocation
+- Persistent anonymous enforcement of each license's maximum device count
 - An owner-only keys and private notes website at `/owner`
 - A homepage at `/`
 - A route index at `/docs`
@@ -36,7 +37,7 @@ Set a long `LICENSE_RECORDS_SECRET` and keep it stable across deployments. Saved
 
 License issuance requires the Railway admin token in the `X-License-Admin-Token` header. The API never accepts that token inside a JSON request body.
 
-The owner website at `/owner` issues keys, lists encrypted keys and notes, updates notes, revokes licenses, and restores licenses. Customer removal uses `POST /api/v1/licenses/deactivate`; owner management uses admin-protected `/api/v1/licenses/revoke`, `/restore`, `/note`, and `GET /api/v1/admin/licenses`.
+The owner website at `/owner` shows license/device/audit/breach totals, issues keys, enforces and resets device seats, lists encrypted keys and notes, updates notes, revokes licenses, and restores licenses. Customer removal uses `POST /api/v1/licenses/deactivate`; owner management uses admin-protected `/api/v1/licenses/revoke`, `/restore`, `/note`, `/reset-devices`, `GET /api/v1/admin/licenses`, and `GET /api/v1/admin/dashboard`.
 
 Owner audit review uses `GET /api/v1/admin/audit-exports` and `GET /api/v1/admin/audit-exports/{export_id}/download`. Both require the admin token in the request header. The License Issuer exposes these routes through its `API LOGS` window without saving the token.
 

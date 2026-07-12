@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.11.3"
+DESKTOP_APP_VERSION = "2026.07.12.1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -2081,10 +2081,19 @@ def list_admin_licenses_online(server_url, admin_token):
     )
 
 
+def get_admin_dashboard_online(server_url, admin_token):
+    token = validated_admin_api_token(admin_token)
+    return license_api_get_json(
+        server_url,
+        "/api/v1/admin/dashboard",
+        extra_headers={"X-License-Admin-Token": token},
+    )
+
+
 def admin_license_action_online(server_url, admin_token, action, license_key, note=""):
     token = validated_admin_api_token(admin_token)
     selected_action = str(action or "").strip().lower()
-    if selected_action not in {"revoke", "restore", "note"}:
+    if selected_action not in {"revoke", "restore", "note", "reset-devices"}:
         raise ValueError("Choose a valid license management action.")
     payload = {"license_key": require_valid_api_license_key(license_key)}
     if selected_action == "revoke":
@@ -2109,6 +2118,10 @@ def restore_license_online(server_url, admin_token, license_key):
 
 def update_license_note_online(server_url, admin_token, license_key, note):
     return admin_license_action_online(server_url, admin_token, "note", license_key, note)
+
+
+def reset_license_devices_online(server_url, admin_token, license_key):
+    return admin_license_action_online(server_url, admin_token, "reset-devices", license_key)
 
 
 def list_admin_audit_exports_online(server_url, admin_token):

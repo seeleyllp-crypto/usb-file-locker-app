@@ -150,8 +150,9 @@ Companion apps:
   and shows the API breach summary and storage lifetime. AUTO-UPLOAD EVERY 15 MIN
   is opt-in and skips uploads when the meaningful snapshot has not changed.
 - Run License Issuer.bat
-  Issues all seven API license ranks with optional private owner notes. KEYS + NOTES
-  WEBSITE lists encrypted-at-rest keys and notes and can revoke or restore a license.
+  Issues all seven API license ranks with enforced device limits and optional private
+  owner notes. KEYS + NOTES WEBSITE shows API dashboard totals, anonymous active-device
+  counts, encrypted-at-rest keys and notes, seat resets, revoke, and restore controls.
   REVOKE LATEST removes the newest key. API LOGS lists stored breach reports and
   downloads a selected report. The Railway admin token is masked and never saved.
 

@@ -215,6 +215,22 @@ class DesktopHelperTests(unittest.TestCase):
 
         with mock.patch.object(
             locker,
+            "license_api_get_json",
+            return_value={"ok": True, "licenses": {}, "devices": {}},
+        ) as get_json:
+            dashboard = locker.get_admin_dashboard_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+            )
+        self.assertTrue(dashboard["ok"])
+        self.assertEqual(get_json.call_args.args[1], "/api/v1/admin/dashboard")
+        self.assertEqual(
+            get_json.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+        with mock.patch.object(
+            locker,
             "license_api_post_json",
             return_value={"ok": True, "revoked": True},
         ) as post:
@@ -229,6 +245,25 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(path, "/api/v1/licenses/revoke")
         self.assertNotIn("admin_token", payload)
         self.assertEqual(payload["revocation_note"], "Customer requested removal")
+        self.assertEqual(
+            post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={"ok": True, "devices_reset": 2},
+        ) as post:
+            response = locker.reset_license_devices_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+                VALID_TEST_LICENSE,
+            )
+        self.assertEqual(response["devices_reset"], 2)
+        _server, path, payload = post.call_args.args
+        self.assertEqual(path, "/api/v1/licenses/reset-devices")
+        self.assertEqual(payload, {"license_key": VALID_TEST_LICENSE})
         self.assertEqual(
             post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
             "admin-secret",
