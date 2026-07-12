@@ -19,6 +19,11 @@ First run:
 
 Updates:
 - UPDATE CENTER checks the API at startup when its daily check is due.
+- LICENSE HEARTBEAT checks the API about every 60 seconds and before a premium
+  action when the saved decision is stale. Revoked, expired, reset, removed-device,
+  and deactivated receipts turn premium controls off without opening License Center.
+- License Center shows API version, last decision ID, device-seat usage, sync timing,
+  and signed desktop release status returned by the API.
 - Every installed build with Update Center reads the same published API release.
 - Every release manifest must verify with the embedded Ed25519 public key.
 - The ZIP must match the signed SHA-256 hash before installation.
@@ -152,7 +157,9 @@ Companion apps:
 - Run License Issuer.bat
   Issues all seven API license ranks with enforced device limits and optional private
   owner notes. KEYS + NOTES WEBSITE shows API dashboard totals, anonymous active-device
-  counts, encrypted-at-rest keys and notes, seat resets, revoke, and restore controls.
+  counts, per-license anonymous device lists, one-device removal, encrypted-at-rest
+  keys and notes, seat resets, revoke, and restore controls. It auto-refreshes every
+  30 seconds after the owner connects.
   REVOKE LATEST removes the newest key. API LOGS lists stored breach reports and
   downloads a selected report. The Railway admin token is masked and never saved.
 

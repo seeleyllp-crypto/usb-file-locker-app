@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.1"
+DESKTOP_APP_VERSION = "2026.07.12.2"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -49,6 +49,11 @@ MAX_UPDATE_ARCHIVE_FILES = 5000
 MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
+LICENSE_BACKGROUND_REFRESH_SECONDS = 60
+LICENSE_MIN_REFRESH_SECONDS = 30
+LICENSE_MAX_REFRESH_SECONDS = 300
+LICENSE_GATE_REFRESH_SECONDS = 75
+LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
@@ -1467,6 +1472,15 @@ def license_state_template():
         "license_expires_at": "",
         "receipt_expires_at": "",
         "last_checked_utc": "",
+        "api_version": "",
+        "sync_interval_seconds": LICENSE_BACKGROUND_REFRESH_SECONDS,
+        "last_decision_id": "",
+        "last_sync_result": "",
+        "device_active": 0,
+        "device_maximum": 0,
+        "latest_desktop_version": "",
+        "minimum_supported_version": "",
+        "update_available": False,
         "last_error": "",
     }
 
@@ -1583,6 +1597,25 @@ def normalize_license_state(data=None):
     state["license_expires_at"] = str(state.get("license_expires_at", "") or "").strip()
     state["receipt_expires_at"] = str(state.get("receipt_expires_at", "") or "").strip()
     state["last_checked_utc"] = str(state.get("last_checked_utc", "") or "").strip()
+    state["api_version"] = str(state.get("api_version", "") or "").strip()[:80]
+    state["last_decision_id"] = str(state.get("last_decision_id", "") or "").strip()[:80]
+    state["last_sync_result"] = str(state.get("last_sync_result", "") or "").strip().lower()[:80]
+    state["latest_desktop_version"] = str(state.get("latest_desktop_version", "") or "").strip()[:80]
+    state["minimum_supported_version"] = str(state.get("minimum_supported_version", "") or "").strip()[:80]
+    state["update_available"] = bool(state.get("update_available", False))
+    for field, default in (
+        ("sync_interval_seconds", LICENSE_BACKGROUND_REFRESH_SECONDS),
+        ("device_active", 0),
+        ("device_maximum", 0),
+    ):
+        try:
+            state[field] = max(0, int(state.get(field, default) or 0))
+        except (TypeError, ValueError):
+            state[field] = default
+    state["sync_interval_seconds"] = min(
+        max(state["sync_interval_seconds"] or LICENSE_BACKGROUND_REFRESH_SECONDS, LICENSE_MIN_REFRESH_SECONDS),
+        LICENSE_MAX_REFRESH_SECONDS,
+    )
     state["last_error"] = str(state.get("last_error", "") or "").strip()
     features = state.get("features", [])
     if isinstance(features, str):
@@ -1666,6 +1699,37 @@ def license_feature_allowed(feature_id, settings=None, state=None):
     return feature_id in set(current.get("features", []))
 
 
+def license_check_age_seconds(state, now=None):
+    checked = parse_utc_text(normalize_license_state(state).get("last_checked_utc"))
+    if checked is None:
+        return None
+    current_time = now or datetime.now(timezone.utc)
+    return max(0.0, (current_time - checked).total_seconds())
+
+
+def recommended_license_refresh_seconds(state):
+    current = normalize_license_state(state)
+    return min(
+        max(int(current.get("sync_interval_seconds") or LICENSE_BACKGROUND_REFRESH_SECONDS), LICENSE_MIN_REFRESH_SECONDS),
+        LICENSE_MAX_REFRESH_SECONDS,
+    )
+
+
+def refresh_license_for_feature_gate(settings=None, max_age_seconds=LICENSE_GATE_REFRESH_SECONDS):
+    current_settings = settings if isinstance(settings, dict) else load_settings()
+    state = load_license_state(current_settings)
+    if not state.get("license_key") or not state.get("receipt"):
+        return state
+    age = license_check_age_seconds(state)
+    if age is not None and age <= max(0, int(max_age_seconds)):
+        return state
+    try:
+        updated = verify_license_online(state, timeout=LICENSE_GATE_HTTP_TIMEOUT_SECONDS)
+    except Exception as exc:
+        updated = build_license_failure_state(state, exc)
+    return save_license_state(current_settings, updated)
+
+
 def license_status_text(state):
     current = normalize_license_state(state)
     if license_is_active(current):
@@ -1689,6 +1753,16 @@ def license_summary_text(state):
         lines.append(f"Plan: {current['plan_name']}")
     if current.get("last_checked_utc"):
         lines.append(f"Last checked: {current['last_checked_utc']}")
+    lines.append(f"Automatic API sync: every {recommended_license_refresh_seconds(current)} seconds")
+    if current.get("api_version"):
+        lines.append(f"API version: {current['api_version']}")
+    if current.get("last_decision_id"):
+        lines.append(f"Last decision ID: {current['last_decision_id']}")
+    if current.get("device_maximum"):
+        lines.append(f"Device seats: {current.get('device_active', 0)}/{current['device_maximum']}")
+    if current.get("latest_desktop_version"):
+        release_state = "update ready" if current.get("update_available") else "current"
+        lines.append(f"Desktop release: {current['latest_desktop_version']} ({release_state})")
     if current.get("receipt_expires_at"):
         lines.append(f"Receipt expires: {current['receipt_expires_at']}")
     if current.get("last_error"):
@@ -1713,14 +1787,22 @@ def license_required_message(feature_id):
 
 
 def ensure_license_feature(feature_id, parent=None, show_message=True):
-    if license_feature_allowed(feature_id):
+    state = refresh_license_for_feature_gate()
+    if parent is not None and hasattr(parent, "update_license_state_ui"):
+        try:
+            parent.update_license_state_ui(state)
+            if hasattr(parent, "apply_access_state"):
+                parent.apply_access_state()
+        except Exception:
+            pass
+    if license_feature_allowed(feature_id, state=state):
         return True
     if show_message:
         messagebox.showwarning("License required", license_required_message(feature_id), parent=parent)
     return False
 
 
-def license_api_post_json(server_url, api_path, payload, extra_headers=None):
+def license_api_post_json(server_url, api_path, payload, extra_headers=None, timeout=15):
     url = validated_license_server_url(server_url) + api_path
     body = json.dumps(payload).encode("utf-8")
     headers = {
@@ -1736,7 +1818,7 @@ def license_api_post_json(server_url, api_path, payload, extra_headers=None):
         method="POST",
     )
     try:
-        with API_URL_OPENER.open(request, timeout=15) as response:
+        with API_URL_OPENER.open(request, timeout=max(1, min(int(timeout), 60))) as response:
             raw_bytes = response.read(MAX_API_RESPONSE_BYTES + 1)
             if len(raw_bytes) > MAX_API_RESPONSE_BYTES:
                 raise ValueError("API response was too large.")
@@ -2197,6 +2279,9 @@ def apply_license_response(state, payload):
     plan = payload.get("plan") or {}
     license_info = payload.get("license") or {}
     activation = payload.get("activation") or {}
+    device_usage = payload.get("device_usage") or {}
+    sync = payload.get("sync") or {}
+    release = payload.get("release") or {}
     message = str(payload.get("message", "") or "").strip()
     current["status"] = str(payload.get("status", "active" if payload.get("active") else current.get("status", "saved"))).strip().lower()
     current["plan_id"] = str(plan.get("id", current.get("plan_id", "")) or "").strip().lower()
@@ -2214,6 +2299,25 @@ def apply_license_response(state, payload):
     current["machine_id"] = current_machine_fingerprint()
     current["machine_name"] = current_machine_name()
     current["last_checked_utc"] = str(payload.get("server_time_utc", utc_now_text()) or utc_now_text()).strip()
+    current["api_version"] = str(payload.get("api_version", sync.get("api_version", current.get("api_version", ""))) or "").strip()
+    try:
+        current["sync_interval_seconds"] = int(
+            sync.get("recommended_interval_seconds", current.get("sync_interval_seconds", LICENSE_BACKGROUND_REFRESH_SECONDS))
+            or LICENSE_BACKGROUND_REFRESH_SECONDS
+        )
+    except (TypeError, ValueError):
+        current["sync_interval_seconds"] = LICENSE_BACKGROUND_REFRESH_SECONDS
+    current["last_decision_id"] = str(sync.get("decision_id", current.get("last_decision_id", "")) or "").strip()
+    current["last_sync_result"] = current["status"]
+    current["latest_desktop_version"] = str(release.get("latest_version", current.get("latest_desktop_version", "")) or "").strip()
+    current["minimum_supported_version"] = str(release.get("minimum_supported_version", current.get("minimum_supported_version", "")) or "").strip()
+    current["update_available"] = bool(release.get("update_available", current.get("update_available", False)))
+    try:
+        current["device_active"] = max(0, int(device_usage.get("active", current.get("device_active", 0)) or 0))
+        current["device_maximum"] = max(0, int(device_usage.get("maximum", current.get("device_maximum", 0)) or 0))
+    except (TypeError, ValueError):
+        current["device_active"] = 0
+        current["device_maximum"] = 0
     current["last_error"] = "" if payload.get("active") else message
     return normalize_license_state(current)
 
@@ -2243,19 +2347,31 @@ def activate_license_online(state):
     return apply_license_response(current, payload)
 
 
-def verify_license_online(state):
+def verify_license_online(state, timeout=15):
     current = normalize_license_state(state)
     current["license_key"] = require_valid_api_license_key(current.get("license_key"))
-    payload = license_api_post_json(
-        current.get("server_url"),
-        "/api/v1/licenses/verify",
-        {
-            "license_key": current.get("license_key"),
-            "receipt": current.get("receipt", ""),
-            "machine_id": current_machine_fingerprint(),
-            "app_version": DESKTOP_APP_VERSION,
-        },
-    )
+    request_payload = {
+        "license_key": current.get("license_key"),
+        "receipt": current.get("receipt", ""),
+        "machine_id": current_machine_fingerprint(),
+        "app_version": DESKTOP_APP_VERSION,
+    }
+    try:
+        payload = license_api_post_json(
+            current.get("server_url"),
+            "/api/v1/licenses/sync",
+            request_payload,
+            timeout=timeout,
+        )
+    except ValueError as exc:
+        if "route not found" not in str(exc).lower():
+            raise
+        payload = license_api_post_json(
+            current.get("server_url"),
+            "/api/v1/licenses/verify",
+            request_payload,
+            timeout=timeout,
+        )
     return apply_license_response(current, payload)
 
 
@@ -3609,6 +3725,8 @@ class USBFileLocker(tk.Tk):
         self.license_status = tk.StringVar(value=license_status_text(self.license_state))
         self.license_refresh_results = queue.Queue()
         self.license_refresh_in_progress = False
+        self.license_refresh_after_id = None
+        self.last_license_notice_status = ""
         self.update_results = queue.Queue()
         self.update_operation = ""
         self.latest_update_manifest = None
@@ -3631,7 +3749,7 @@ class USBFileLocker(tk.Tk):
         self.try_load_last_key()
         self.apply_access_state()
         self.refresh_breach_status()
-        self.after(3000, self.refresh_license_state_silent)
+        self.schedule_license_refresh(3000)
         self.after(20000, self.periodic_breach_refresh)
         self.after(1500, self.monitor_loaded_key)
         self.after(30000, self.periodic_cloud_audit_upload)
@@ -3663,7 +3781,16 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w", pady=(0, 10))
         tk.Label(outer, textvariable=self.breach_status, bg=BG, fg=YELLOW, font=("Segoe UI", 9, "bold"), wraplength=860, justify="left").pack(anchor="w", pady=(0, 10))
-        tk.Label(outer, textvariable=self.license_status, bg=BG, fg=GREEN, font=("Segoe UI", 9, "bold"), wraplength=860, justify="left").pack(anchor="w", pady=(0, 12))
+        self.license_status_label = tk.Label(
+            outer,
+            textvariable=self.license_status,
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 9, "bold"),
+            wraplength=860,
+            justify="left",
+        )
+        self.license_status_label.pack(anchor="w", pady=(0, 12))
 
         panel = tk.Frame(outer, bg=PANEL)
         panel.pack(fill="both", expand=True)
@@ -4134,6 +4261,10 @@ class USBFileLocker(tk.Tk):
             if save:
                 self.license_state = save_license_state(self.settings, self.license_state)
         self.license_status.set(license_status_text(self.license_state))
+        status = self.license_state.get("status", "unlicensed")
+        color = GREEN if license_is_active(self.license_state) else (RED if status == "revoked" else YELLOW)
+        if getattr(self, "license_status_label", None):
+            self.license_status_label.configure(fg=color)
         return self.license_state
 
     def apply_access_state(self):
@@ -4236,13 +4367,25 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open Apps Hub.")
             messagebox.showerror("Could not open Apps Hub", str(exc))
 
+    def schedule_license_refresh(self, delay_ms=None):
+        if self.license_refresh_after_id is not None:
+            try:
+                self.after_cancel(self.license_refresh_after_id)
+            except Exception:
+                pass
+        if delay_ms is None:
+            delay_ms = recommended_license_refresh_seconds(self.license_state) * 1000
+        self.license_refresh_after_id = self.after(max(250, int(delay_ms)), self.refresh_license_state_silent)
+
     def refresh_license_state_silent(self):
+        self.license_refresh_after_id = None
         if self.license_refresh_in_progress:
             return
         state = load_license_state(self.settings)
         if not state.get("license_key") or not state.get("receipt"):
             self.update_license_state_ui(state)
             self.apply_access_state()
+            self.schedule_license_refresh(LICENSE_BACKGROUND_REFRESH_SECONDS * 1000)
             return
 
         self.license_refresh_in_progress = True
@@ -4265,11 +4408,31 @@ class USBFileLocker(tk.Tk):
                 self.after(50, self.poll_license_refresh)
             return
         self.license_refresh_in_progress = False
-        self.finish_license_refresh(state)
+        self.finish_license_refresh(state, automatic=True)
 
-    def finish_license_refresh(self, state):
+    def finish_license_refresh(self, state, automatic=False):
+        previous = normalize_license_state(self.license_state)
         self.update_license_state_ui(state, save=True)
         self.apply_access_state()
+        current_status = self.license_state.get("status", "unlicensed")
+        if automatic and previous.get("status") != current_status:
+            if license_is_active(self.license_state):
+                self.status.set("License restored by the API. Premium controls are available again.")
+                log_event("license_sync", "api", "ok")
+                self.last_license_notice_status = "active"
+            elif current_status in {"revoked", "expired", "deactivated", "reset", "wrong_machine", "receipt_expired"}:
+                reason = self.license_state.get("last_error") or f"License status changed to {current_status}."
+                self.status.set(f"API license check disabled premium controls: {reason}")
+                log_event("license_sync", "api", "failed")
+                if self.last_license_notice_status != current_status:
+                    self.last_license_notice_status = current_status
+                    messagebox.showwarning(
+                        "License access changed",
+                        f"The API reported {current_status.replace('_', ' ')}.\n\n{reason}\n\n"
+                        "Premium controls are now disabled. Unlocking existing files and recovery tools remain available.",
+                        parent=self,
+                    )
+        self.schedule_license_refresh()
 
     def open_license_center(self):
         dialog = tk.Toplevel(self)

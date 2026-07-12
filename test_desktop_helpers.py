@@ -76,6 +76,79 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(replaced["features"], [])
         self.assertEqual(replaced["status"], "saved")
 
+    def test_license_sync_uses_heartbeat_and_applies_server_metadata(self):
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "features": ["privacy-safety-hub"],
+            }
+        )
+        response = {
+            "ok": True,
+            "active": True,
+            "status": "active",
+            "plan": {
+                "id": "personal-plus",
+                "name": "$50 Personal Plus",
+                "entitlements": ["privacy-safety-hub"],
+            },
+            "license": {"license_id": "LIC-SYNC"},
+            "activation": {"valid_until_utc": "2099-01-01T00:00:00Z"},
+            "device_usage": {"active": 2, "maximum": 4},
+            "api_version": "0.8.0",
+            "sync": {
+                "recommended_interval_seconds": 60,
+                "decision_id": "0123456789abcdef",
+            },
+            "release": {
+                "latest_version": "2026.07.12.2",
+                "minimum_supported_version": "2026.07.11.3",
+                "update_available": False,
+            },
+            "server_time_utc": locker.utc_now_text(),
+        }
+        with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
+            updated = locker.verify_license_online(state, timeout=5)
+        self.assertEqual(post.call_args.args[1], "/api/v1/licenses/sync")
+        self.assertEqual(post.call_args.kwargs["timeout"], 5)
+        self.assertTrue(locker.license_is_active(updated))
+        self.assertEqual(updated["api_version"], "0.8.0")
+        self.assertEqual(updated["last_decision_id"], "0123456789abcdef")
+        self.assertEqual((updated["device_active"], updated["device_maximum"]), (2, 4))
+        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.2")
+
+    def test_stale_feature_gate_enforces_revocation_but_keeps_valid_cache_on_outage(self):
+        active = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "features": ["privacy-safety-hub"],
+                "receipt_expires_at": "2099-01-01T00:00:00Z",
+                "last_checked_utc": "",
+            }
+        )
+        revoked = locker.normalize_license_state({**active, "status": "revoked", "last_error": "Revoked"})
+        with (
+            mock.patch.object(locker, "load_license_state", return_value=active),
+            mock.patch.object(locker, "verify_license_online", return_value=revoked),
+            mock.patch.object(locker, "save_license_state", side_effect=lambda _settings, state: state),
+        ):
+            refreshed = locker.refresh_license_for_feature_gate(settings={}, max_age_seconds=0)
+        self.assertEqual(refreshed["status"], "revoked")
+        self.assertFalse(locker.license_feature_allowed("privacy-safety-hub", state=refreshed))
+
+        with (
+            mock.patch.object(locker, "load_license_state", return_value=active),
+            mock.patch.object(locker, "verify_license_online", side_effect=ValueError("offline")),
+            mock.patch.object(locker, "save_license_state", side_effect=lambda _settings, state: state),
+        ):
+            cached = locker.refresh_license_for_feature_gate(settings={}, max_age_seconds=0)
+        self.assertTrue(locker.license_is_active(cached))
+        self.assertEqual(cached["last_error"], "offline")
+
     def test_signed_update_manifest_rejects_tampering_and_checks_download_hash(self):
         private_key = Ed25519PrivateKey.generate()
         public_raw = private_key.public_key().public_bytes_raw()

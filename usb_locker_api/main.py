@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.7.0"
+API_VERSION = "0.8.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -27,6 +27,8 @@ UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
 MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_LICENSE_JSON_BODY_BYTES = 64 * 1024
+LICENSE_SYNC_INTERVAL_SECONDS = 60
+DEVICE_LAST_SEEN_WRITE_SECONDS = 300
 MAX_AUDIT_JSON_BODY_BYTES = 4 * 1024 * 1024
 MAX_AUDIT_REPORT_BYTES = 3 * 1024 * 1024
 MAX_AUDIT_EVENTS = 20000
@@ -65,6 +67,7 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "license_note_update",
         "license_restore",
         "license_revoke",
+        "license_sync",
         "load_key",
         "load_recent_key",
         "lock",
@@ -799,6 +802,43 @@ def active_device_count(license_id):
     return sum(activation_record_is_active(record) for record in activation_records(license_id))
 
 
+def validated_machine_hash(value):
+    text = str(value or "").strip().lower()
+    if len(text) != 24 or any(character not in "0123456789abcdef" for character in text):
+        raise ValueError("machine_hash must be a 24-character anonymous device id.")
+    return text
+
+
+def admin_license_devices(license_id):
+    clean_license_id = validated_license_id(license_id)
+    if not read_license_record(clean_license_id):
+        raise FileNotFoundError("License record was not found.")
+    items = []
+    for record in activation_records(clean_license_id):
+        items.append(
+            {
+                "machine_hash": str(record.get("machine_hash", "")),
+                "status": str(record.get("status", "unknown")),
+                "active": activation_record_is_active(record),
+                "activated_at_utc": str(record.get("activated_at_utc", "")),
+                "valid_until_utc": str(record.get("valid_until_utc", "")),
+                "updated_at_utc": str(record.get("updated_at_utc", "")),
+                "last_seen_at_utc": str(record.get("last_seen_at_utc", "")),
+                "app_version": str(record.get("app_version", "")),
+            }
+        )
+    items.sort(key=lambda item: item.get("updated_at_utc", ""), reverse=True)
+    return {
+        "ok": True,
+        "license_id": clean_license_id,
+        "count": len(items),
+        "active_count": sum(bool(item.get("active")) for item in items),
+        "items": items,
+        "privacy": "Device ids are one-way anonymous hashes; PC names and hardware ids are not returned.",
+        "server_time_utc": utc_now(),
+    }
+
+
 def write_activation_record(receipt, receipt_payload, status="active", status_time_field=""):
     license_id = validated_license_id(receipt_payload.get("license_id"))
     machine_id = str(receipt_payload.get("machine_id", "")).strip()
@@ -837,7 +877,7 @@ def register_activation_receipt(license_payload, receipt, receipt_payload):
         return True, used_devices if current_uses_seat else used_devices + 1
 
 
-def verify_activation_receipt(license_payload, receipt, receipt_payload):
+def verify_activation_receipt(license_payload, receipt, receipt_payload, app_version=""):
     license_id = validated_license_id(license_payload.get("license_id"))
     machine_id = str(receipt_payload.get("machine_id", "")).strip()
     with LICENSE_STATE_LOCK:
@@ -856,6 +896,14 @@ def verify_activation_receipt(license_payload, receipt, receipt_payload):
         receipt_hash = hashlib.sha256(receipt.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(str(record.get("receipt_hash", "")), receipt_hash):
             return False, "receipt_replaced", active_device_count(license_id)
+        last_seen = parse_utc(record.get("last_seen_at_utc"))
+        now = datetime.now(timezone.utc)
+        if last_seen is None or (now - last_seen).total_seconds() >= DEVICE_LAST_SEEN_WRITE_SECONDS:
+            record["last_seen_at_utc"] = format_utc(now)
+            current_version = str(app_version or "").strip()[:80]
+            if current_version:
+                record["app_version"] = current_version
+            write_private_json(activation_path(license_id, machine_id), record)
         return True, "active", active_device_count(license_id)
 
 
@@ -992,12 +1040,15 @@ def docs_payload():
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
             {"method": "POST", "path": "/api/v1/licenses/activate", "purpose": "Machine-bound license activation"},
             {"method": "POST", "path": "/api/v1/licenses/verify", "purpose": "License and receipt verification"},
+            {"method": "POST", "path": "/api/v1/licenses/sync", "purpose": "Automatic client heartbeat with revocation, seat, release, and sync policy"},
             {"method": "POST", "path": "/api/v1/licenses/deactivate", "purpose": "Remove the current machine activation"},
             {"method": "POST", "path": "/api/v1/licenses/revoke", "purpose": "Admin-only license revocation"},
             {"method": "POST", "path": "/api/v1/licenses/restore", "purpose": "Admin-only license restoration"},
             {"method": "POST", "path": "/api/v1/licenses/note", "purpose": "Admin-only private note update"},
             {"method": "POST", "path": "/api/v1/licenses/reset-devices", "purpose": "Admin-only reset of active device seats"},
+            {"method": "POST", "path": "/api/v1/licenses/remove-device", "purpose": "Admin-only removal of one anonymous device seat"},
             {"method": "GET", "path": "/api/v1/admin/licenses", "purpose": "Admin-only encrypted key and note inventory"},
+            {"method": "GET", "path": "/api/v1/admin/licenses/{license_id}/devices", "purpose": "Admin-only anonymous device-seat inventory"},
             {"method": "GET", "path": "/api/v1/admin/dashboard", "purpose": "Admin-only license, device, audit, breach, and release totals"},
             {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
             {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
@@ -1367,8 +1418,8 @@ def owner_portal_html():
     .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .latest { grid-template-columns:minmax(0,1fr) auto; }
     .record-head { grid-template-columns:minmax(180px,1fr) minmax(160px,.7fr) auto; align-items:start; }
-    .record-actions { grid-template-columns:minmax(180px,1fr) auto auto auto auto; }
-    .stats { grid-template-columns:repeat(6,minmax(0,1fr)); align-items:stretch; }
+    .record-actions { grid-template-columns:minmax(180px,1fr) auto auto auto auto auto; }
+    .stats { grid-template-columns:repeat(4,minmax(0,1fr)); align-items:stretch; }
     .stat { min-width:0; padding:12px 10px; border-left:3px solid var(--blue); background:var(--panel); }
     .stat strong { display:block; margin-top:3px; font-size:20px; overflow-wrap:anywhere; }
     label { display:block; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; margin-bottom:5px; }
@@ -1389,10 +1440,12 @@ def owner_portal_html():
     .meta { color:var(--muted); font-size:12px; margin-top:4px; }
     .badge { display:inline-block; min-width:72px; padding:4px 8px; border-radius:4px; text-align:center; text-transform:uppercase; font-size:11px; font-weight:800; background:#25302a; color:var(--green); }
     .badge.revoked { background:#392126; color:#ff9aa2; }
+    .device-list { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+    .device-row { display:grid; grid-template-columns:minmax(180px,1fr) minmax(120px,.6fr) auto; gap:10px; align-items:center; padding:8px 0; }
     .empty { padding:26px 0; color:var(--muted); }
     .split { grid-column:1 / -1; }
     @media (max-width:900px) { .stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
+    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
   </style>
 </head>
 <body>
@@ -1417,6 +1470,8 @@ def owner_portal_html():
         <div class="stat"><label>Audit reports</label><strong id="statAudits">-</strong></div>
         <div class="stat"><label>High + critical</label><strong id="statBreaches">-</strong></div>
         <div class="stat"><label>Desktop release</label><strong id="statRelease">-</strong></div>
+        <div class="stat"><label>API version</label><strong id="statApi">-</strong></div>
+        <div class="stat"><label>Client sync</label><strong id="statSync">-</strong></div>
       </div>
     </section>
 
@@ -1444,7 +1499,8 @@ def owner_portal_html():
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { token: "", connected: false, busy: false, items: [], dashboard: null };
+    const state = { token: "", connected: false, busy: false, loading: false, items: [], dashboard: null };
+    const AUTO_REFRESH_MS = 30000;
 
     function setStatus(message, kind="") {
       $("status").textContent = message;
@@ -1481,7 +1537,10 @@ def owner_portal_html():
       }
     }
 
-    async function loadLicenses() {
+    async function loadLicenses(silent=false) {
+      if (state.loading) return;
+      state.loading = true;
+      try {
       const [payload, dashboard] = await Promise.all([
         api("/api/v1/admin/licenses"),
         api("/api/v1/admin/dashboard")
@@ -1492,7 +1551,10 @@ def owner_portal_html():
       renderDashboard(dashboard);
       renderRecords();
       setConnected(true);
-      setStatus(`Loaded ${payload.count || 0} license record(s).`, "good");
+      if (!silent) setStatus(`Loaded ${payload.count || 0} license record(s). Automatic refresh is on.`, "good");
+      } finally {
+        state.loading = false;
+      }
     }
 
     function renderDashboard(dashboard) {
@@ -1506,6 +1568,8 @@ def owner_portal_html():
       $("statAudits").textContent = dashboard ? String(audits.total || 0) : "-";
       $("statBreaches").textContent = dashboard ? String((levels.high || 0) + (levels.critical || 0)) : "-";
       $("statRelease").textContent = dashboard ? String((dashboard.release || {}).desktop_version || "none") : "-";
+      $("statApi").textContent = dashboard ? String((dashboard.release || {}).api_version || "unknown") : "-";
+      $("statSync").textContent = dashboard ? `${String((dashboard.release || {}).license_sync_seconds || 60)}s` : "-";
     }
 
     function actionButton(text, className, action) {
@@ -1562,11 +1626,15 @@ def owner_portal_html():
         actions.append(note);
         actions.append(actionButton("SAVE NOTE", "blue", () => saveNote(item, note.value)));
         actions.append(actionButton("COPY KEY", "warn", () => copyText(item.license_key || "")));
+        const deviceList = document.createElement("div");
+        deviceList.className = "device-list";
+        deviceList.hidden = true;
+        actions.append(actionButton("DEVICES", "", () => toggleDevices(item, deviceList)));
         actions.append(actionButton("RESET DEVICES", "", () => resetDevices(item)));
         actions.append(item.status === "revoked"
           ? actionButton("RESTORE", "primary", () => changeStatus(item, "restore"))
           : actionButton("REVOKE", "danger", () => changeStatus(item, "revoke")));
-        record.append(head, keyLabel, key, noteLabel, actions);
+        record.append(head, keyLabel, key, noteLabel, actions, deviceList);
         host.append(record);
       }
     }
@@ -1575,6 +1643,16 @@ def owner_portal_html():
       state.token = $("token").value.trim();
       if (!state.token) return setStatus("Enter the Railway LICENSE_ADMIN_TOKEN.", "bad");
       try { await loadLicenses(); } catch (error) { state.token = ""; setConnected(false); setStatus(error.message, "bad"); }
+    }
+
+    async function autoRefresh() {
+      if (!state.connected || state.busy || state.loading) return;
+      try {
+        await loadLicenses(true);
+        setStatus(`Owner data refreshed automatically at ${new Date().toLocaleTimeString()}.`, "good");
+      } catch (error) {
+        setStatus(`Automatic refresh failed: ${error.message}`, "bad");
+      }
     }
 
     async function issueLicense() {
@@ -1625,6 +1703,46 @@ def owner_portal_html():
       } catch (error) { setStatus(error.message, "bad"); }
     }
 
+    async function toggleDevices(item, host) {
+      if (!host.hidden) { host.hidden = true; return; }
+      host.hidden = false;
+      host.textContent = "Loading anonymous device seats...";
+      try {
+        const payload = await api(`/api/v1/admin/licenses/${encodeURIComponent(item.license_id)}/devices`);
+        host.replaceChildren();
+        if (!(payload.items || []).length) {
+          host.textContent = "No device seats have been recorded for this license.";
+          return;
+        }
+        for (const device of payload.items) {
+          const row = document.createElement("div");
+          row.className = "device-row";
+          const identity = document.createElement("div");
+          identity.textContent = device.machine_hash || "unknown device";
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const lastSeen = device.last_seen_at_utc ? new Date(device.last_seen_at_utc).toLocaleString() : "not synced yet";
+          meta.textContent = `${device.status || "unknown"} | app ${device.app_version || "unknown"} | last sync ${lastSeen}`;
+          const remove = actionButton("REMOVE DEVICE", "danger", () => removeDevice(item, device));
+          remove.disabled = !device.active;
+          row.append(identity, meta, remove);
+          host.append(row);
+        }
+      } catch (error) {
+        host.textContent = error.message;
+        setStatus(error.message, "bad");
+      }
+    }
+
+    async function removeDevice(item, device) {
+      if (!confirm(`REMOVE DEVICE ${device.machine_hash} FROM ${item.license_id}? Its receipt will stop working at the next sync.`)) return;
+      try {
+        const result = await api("/api/v1/licenses/remove-device", { method:"POST", body:JSON.stringify({ license_key:item.license_key, machine_hash:device.machine_hash }) });
+        await loadLicenses(true);
+        setStatus(result.message || `Removed device from ${item.license_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
     async function copyText(text) {
       if (!text) return setStatus("No key is available to copy.", "bad");
       try { await navigator.clipboard.writeText(text); setStatus("License key copied.", "good"); }
@@ -1637,6 +1755,7 @@ def owner_portal_html():
     $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("copyLatest").addEventListener("click", () => copyText($("latestKey").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
+    window.setInterval(autoRefresh, AUTO_REFRESH_MS);
     loadRanks().catch((error) => setStatus(error.message,"bad"));
   </script>
 </body>
@@ -1908,6 +2027,7 @@ def verify_license(payload):
         license_payload,
         receipt,
         receipt_payload,
+        app_version=payload.get("app_version", ""),
     )
     if not activation_allowed:
         messages = {
@@ -1915,6 +2035,7 @@ def verify_license(payload):
             "reset": "The owner reset this license's device seats. Activate again on this PC.",
             "deactivated": "This activation was removed from this PC. Activate again to create a new receipt.",
             "receipt_replaced": "A newer activation receipt replaced this one on the same PC.",
+            "removed": "The owner removed this device seat. Activate again only if the owner permits it.",
         }
         return {
             "ok": True,
@@ -1943,6 +2064,44 @@ def verify_license(payload):
         },
         "server_time_utc": utc_now(),
     }
+
+
+def sync_license(payload):
+    result = dict(verify_license(payload))
+    decision = str(result.get("status", "unknown") or "unknown")
+    result["api_version"] = API_VERSION
+    result["sync"] = {
+        "automatic": True,
+        "recommended_interval_seconds": LICENSE_SYNC_INTERVAL_SECONDS,
+        "decision": decision,
+        "decision_id": secrets.token_hex(8),
+        "api_version": API_VERSION,
+        "revocation_enforced": True,
+        "device_seats_enforced": True,
+    }
+    try:
+        manifest, _package_path = load_windows_update_release()
+        current_parts = tuple(
+            int(part) if part.isdigit() else 0
+            for part in str(payload.get("app_version", "")).split(".")
+        )
+        latest_parts = tuple(
+            int(part) if part.isdigit() else 0
+            for part in str(manifest.get("version", "")).split(".")
+        )
+        result["release"] = {
+            "latest_version": manifest.get("version", ""),
+            "minimum_supported_version": manifest.get("minimum_supported_version", ""),
+            "update_available": bool(latest_parts and latest_parts > current_parts),
+        }
+    except (FileNotFoundError, OSError, ValueError):
+        result["release"] = {
+            "latest_version": "",
+            "minimum_supported_version": "",
+            "update_available": False,
+        }
+    result["server_time_utc"] = utc_now()
+    return result
 
 
 def deactivate_license(payload):
@@ -2064,6 +2223,37 @@ def admin_reset_license_devices(payload):
             "max_devices": int(license_payload.get("max_devices", 1) or 1),
         },
         "message": f"Reset {reset_count} active device seat(s). Those PCs must activate again.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def admin_remove_license_device(payload):
+    _license_key, license_payload = require_admin_license_key(payload)
+    license_id = validated_license_id(license_payload.get("license_id"))
+    machine_hash = validated_machine_hash(payload.get("machine_hash"))
+    with LICENSE_STATE_LOCK:
+        path = activation_folder(license_id) / f"{machine_hash}.json"
+        if not path.is_file():
+            raise FileNotFoundError("That anonymous device seat was not found.")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("license_id") != license_id or record.get("machine_hash") != machine_hash:
+            raise ValueError("Stored activation record identity did not verify.")
+        was_active = activation_record_is_active(record)
+        record["status"] = "removed"
+        record["removed_at_utc"] = utc_now()
+        record["updated_at_utc"] = record["removed_at_utc"]
+        write_private_json(path, record)
+    return {
+        "ok": True,
+        "removed": True,
+        "was_active": was_active,
+        "license": {
+            "license_id": license_id,
+            "active_devices": active_device_count(license_id),
+            "max_devices": int(license_payload.get("max_devices", 1) or 1),
+        },
+        "device": {"machine_hash": machine_hash, "status": "removed"},
+        "message": "The anonymous device seat was removed. Its saved receipt will fail at the next automatic sync.",
         "server_time_utc": utc_now(),
     }
 
@@ -2603,6 +2793,7 @@ def admin_dashboard_summary():
         "release": {
             "api_version": API_VERSION,
             "desktop_version": desktop_release,
+            "license_sync_seconds": LICENSE_SYNC_INTERVAL_SECONDS,
         },
         "server_time_utc": utc_now(),
     }
@@ -2740,6 +2931,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ),
                     "license_private_fields_encrypted": True,
                     "device_seat_enforcement": True,
+                    "automatic_license_sync": True,
+                    "license_sync_interval_seconds": LICENSE_SYNC_INTERVAL_SECONDS,
                     "audit_exports_enabled": True,
                     "audit_export_storage": (
                         "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral"
@@ -2773,8 +2966,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "admin license issue",
                         "license activate",
                         "license verify",
+                        "automatic license heartbeat and revocation sync",
                         "customer device deactivation",
-                        "admin license revoke, restore, note, device reset, inventory, and dashboard",
+                        "admin license revoke, restore, note, device reset, individual device removal, inventory, and dashboard",
                         "license-authenticated privacy-safe audit export upload",
                         "signed short-lived audit export download",
                         "admin-protected audit export list and download",
@@ -2892,6 +3086,35 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if (
             len(parts) == 6
+            and parts[:4] == ["api", "v1", "admin", "licenses"]
+            and parts[5] == "devices"
+        ):
+            try:
+                self.require_admin_token()
+                self.send_json(admin_license_devices(parts[4]))
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except FileNotFoundError as exc:
+                self.send_json(
+                    {"ok": False, "error": "not_found", "message": str(exc)},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            except ValueError as exc:
+                self.send_json(
+                    {"ok": False, "error": "bad_request", "message": str(exc)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if (
+            len(parts) == 6
             and parts[:4] == ["api", "v1", "admin", "audit-exports"]
             and parts[5] == "download"
         ):
@@ -2970,11 +3193,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/licenses/issue": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/activate": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/verify": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/sync": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/deactivate": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/revoke": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/restore": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/note": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/reset-devices": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/remove-device": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
         }
         if path not in route_limits:
@@ -2999,6 +3224,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/licenses/verify":
                 self.send_json(verify_license(payload))
                 return
+            if path == "/api/v1/licenses/sync":
+                self.send_json(sync_license(payload))
+                return
             if path == "/api/v1/licenses/deactivate":
                 self.send_json(deactivate_license(payload))
                 return
@@ -3017,6 +3245,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/licenses/reset-devices":
                 self.require_admin_token()
                 self.send_json(admin_reset_license_devices(payload))
+                return
+            if path == "/api/v1/licenses/remove-device":
+                self.require_admin_token()
+                self.send_json(admin_remove_license_device(payload))
                 return
             if path == "/api/v1/audit-exports":
                 self.send_json(create_audit_export(payload), status=HTTPStatus.CREATED)
@@ -3047,6 +3279,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "message": str(exc),
                 },
                 status=HTTPStatus.FORBIDDEN,
+            )
+        except FileNotFoundError as exc:
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": str(exc),
+                },
+                status=HTTPStatus.NOT_FOUND,
             )
         except ValueError as exc:
             self.send_json(
