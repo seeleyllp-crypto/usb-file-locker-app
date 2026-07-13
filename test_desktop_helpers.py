@@ -554,6 +554,125 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(locker.format_update_size(1536), "1.5 KB")
         self.assertEqual(locker.format_update_size(3 * 1024 * 1024), "3.0 MB")
 
+    def test_update_readiness_is_signed_and_contains_no_local_paths(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        manifest = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.3",
+            "minimum_supported_version": "2026.07.12.9",
+            "published_at_utc": "2026-07-13T20:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.3.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": "b" * 64,
+            "size_bytes": 4096,
+            "signing_key_id": key_id,
+            "notes": ["Readiness test"],
+            "preserves_local_app_data": True,
+        }
+        manifest["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(locker.canonical_update_manifest_bytes(manifest))
+        ).rstrip(b"=").decode("ascii")
+        with tempfile.TemporaryDirectory(prefix="vaultlink_readiness_") as folder:
+            root = Path(folder)
+            data_root = root / "data"
+            data_root.mkdir()
+            with (
+                mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
+                mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
+            ):
+                report = locker.update_readiness_report(manifest, root, data_root)
+                self.assertTrue(report["ready_for_automatic_install"])
+                (root / ".git").mkdir()
+                git_report = locker.update_readiness_report(manifest, root, data_root)
+            self.assertEqual(git_report["installation_mode"], "git-manual")
+            self.assertFalse(git_report["ready_for_automatic_install"])
+            self.assertNotIn(str(root).lower(), json.dumps(report).lower())
+
+    def test_update_activity_summary_excludes_paths_and_unrelated_events(self):
+        records = [
+            {"sequence": 1, "time_utc": "2026-07-13T20:00:00Z", "event_id": "event-one", "action": "file_lock", "result": "success"},
+            {"sequence": 2, "time_utc": "2026-07-13T20:01:00Z", "event_id": "event-two", "action": "application_update_completed", "result": "success"},
+        ]
+        with tempfile.TemporaryDirectory(prefix="vaultlink_update_activity_") as folder:
+            status_path = Path(folder) / "update-status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "version": "2026.07.13.3",
+                        "time_utc": "2026-07-13T20:01:00Z",
+                        "backup_dir": r"C:\Users\Person\private-backup",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = locker.update_activity_summary(records, status_path)
+        self.assertEqual(len(report["events"]), 1)
+        self.assertEqual(report["events"][0]["event_id"], "event-two")
+        self.assertTrue(report["latest_install"]["backup_created"])
+        serialized = json.dumps(report).lower()
+        self.assertNotIn("private-backup", serialized)
+        self.assertNotIn("file_lock", serialized)
+
+    def test_install_and_verified_copy_use_separate_update_operations(self):
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        manifest = {
+            "version": "9999.4",
+            "size_bytes": 4096,
+            "package_filename": "VaultLink-Windows-9999.4.zip",
+            "update_available": True,
+        }
+        with tempfile.TemporaryDirectory(prefix="vaultlink_update_workflows_") as folder:
+            root = Path(folder)
+            app = SimpleNamespace(
+                latest_update_manifest=manifest,
+                update_operation="",
+                update_button=FakeButton(),
+                update_window=None,
+                update_results=queue.Queue(),
+                status=FakeVar(),
+                refresh_update_window=mock.Mock(),
+                after=mock.Mock(),
+                poll_update_results=mock.Mock(),
+            )
+            with (
+                mock.patch.object(locker, "RUNTIME_DIR", root),
+                mock.patch.object(locker.messagebox, "askyesno", return_value=True),
+                mock.patch.object(locker, "load_settings", return_value={}),
+                mock.patch.object(locker, "load_license_state", return_value={}),
+                mock.patch.object(locker, "stage_windows_update", return_value=(root, root / "manifest", root / "package")),
+                mock.patch.object(locker.threading, "Thread", ImmediateThread),
+            ):
+                locker.USBFileLocker.install_latest_update(app)
+            self.assertEqual(app.update_operation, "stage")
+            self.assertEqual(app.update_results.get_nowait()[0], "stage")
+
+            app.update_operation = ""
+            target = root / manifest["package_filename"]
+            with (
+                mock.patch.object(locker.filedialog, "asksaveasfilename", return_value=str(target)),
+                mock.patch.object(locker, "load_settings", return_value={}),
+                mock.patch.object(locker, "load_license_state", return_value={}),
+                mock.patch.object(locker, "download_windows_update_package", return_value=target),
+                mock.patch.object(locker.threading, "Thread", ImmediateThread),
+            ):
+                locker.USBFileLocker.download_latest_update_copy(app)
+            self.assertEqual(app.update_operation, "copy")
+            copy_result = app.update_results.get_nowait()
+            self.assertEqual(copy_result[0], "copy")
+            self.assertEqual(copy_result[1], target)
+
     def test_updater_rejects_zip_slip_and_preserves_local_app_data(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_updater_safety_") as folder:
             root = Path(folder)

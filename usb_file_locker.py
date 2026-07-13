@@ -2123,6 +2123,107 @@ def update_verification_receipt(manifest, checked_at_utc=None):
     }
 
 
+def update_readiness_report(manifest, runtime_dir=None, app_dir=None):
+    if not isinstance(manifest, dict):
+        raise ValueError("Check for a signed update before running readiness checks.")
+    validated = validate_windows_update_manifest(
+        {
+            "api_version": str(manifest.get("api_version", "") or ""),
+            "update": signed_update_manifest_fields(manifest),
+        }
+    )
+    runtime = Path(runtime_dir or RUNTIME_DIR)
+    data_root = Path(app_dir or APP_DIR)
+    runtime_exists = runtime.is_dir()
+    runtime_writable = runtime_exists and os.access(runtime, os.W_OK)
+    git_folder = (runtime / ".git").exists() if runtime_exists else False
+    try:
+        free_bytes = shutil.disk_usage(data_root).free
+    except OSError:
+        free_bytes = 0
+    required_bytes = max(validated["size_bytes"] * 3, 10 * 1024 * 1024)
+    disk_ready = free_bytes >= required_bytes
+    supported = bool(validated["current_version_supported"])
+    checks = [
+        {"name": "Signed release manifest", "passed": True, "detail": "Ed25519 signature verified."},
+        {"name": "Current version support", "passed": supported, "detail": "Supported." if supported else "Update required."},
+        {"name": "Application folder", "passed": runtime_exists, "detail": "Available." if runtime_exists else "Missing."},
+        {"name": "Application folder write access", "passed": runtime_writable, "detail": "Available." if runtime_writable else "Blocked."},
+        {
+            "name": "Temporary disk space",
+            "passed": disk_ready,
+            "detail": f"{format_update_size(free_bytes)} free; {format_update_size(required_bytes)} required.",
+        },
+        {
+            "name": "Installation mode",
+            "passed": not git_folder,
+            "detail": "Automatic signed install." if not git_folder else "Git folder detected; use git pull.",
+        },
+    ]
+    ready = all(item["passed"] for item in checks)
+    return {
+        "schema_version": 1,
+        "checked_at_utc": utc_now_text(),
+        "release_version": validated["version"],
+        "ready_for_automatic_install": ready,
+        "installation_mode": "automatic" if ready else ("git-manual" if git_folder else "blocked"),
+        "checks": checks,
+        "privacy_note": "Readiness results contain no local paths, license data, USB secrets, PINs, passwords, or file contents.",
+    }
+
+
+UPDATE_ACTIVITY_ACTIONS = {
+    "application_update": "Verified update staged",
+    "application_auto_update": "Automatic update",
+    "application_update_completed": "Update installed",
+    "update_hash_copy": "Verified hash copied",
+    "update_receipt_export": "Verification receipt exported",
+    "update_package_copy": "Verified package downloaded",
+    "auto_update_setting": "Automatic update setting changed",
+}
+
+
+def update_activity_summary(records=None, status_path=None, limit=25):
+    source_records = list(records if records is not None else load_all_audit_records(APP_DIR))
+    events = []
+    for record in source_records:
+        action = str(record.get("action", ""))
+        if action not in UPDATE_ACTIVITY_ACTIONS:
+            continue
+        events.append(
+            {
+                "sequence": int(record.get("sequence", 0) or 0),
+                "time_utc": str(record.get("time_utc", ""))[:24],
+                "event_id": str(record.get("event_id", ""))[:32],
+                "action": action,
+                "title": UPDATE_ACTIVITY_ACTIONS[action],
+                "result": "success" if record.get("result") == "success" else "failure",
+            }
+        )
+    events = events[-max(1, min(int(limit or 25), 100)):]
+    latest_install = {}
+    status_file = Path(status_path or (APP_DIR / "update-status.json"))
+    if status_file.is_file():
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+            version = str(payload.get("version", ""))
+            update_version_tuple(version)
+            latest_install = {
+                "ok": bool(payload.get("ok")),
+                "version": version,
+                "time_utc": str(payload.get("time_utc", ""))[:24],
+                "backup_created": bool(str(payload.get("backup_dir", "")).strip()),
+            }
+        except Exception:
+            latest_install = {"ok": False, "version": "unknown", "time_utc": "", "backup_created": False}
+    return {
+        "schema_version": 1,
+        "latest_install": latest_install,
+        "events": events,
+        "privacy_note": "Activity includes anonymous event IDs and release actions only; paths and file contents are excluded.",
+    }
+
+
 def download_windows_update_package(server_url, manifest, destination):
     validated = validate_windows_update_manifest({"update": signed_update_manifest_fields(manifest)})
     url = validated_license_server_url(server_url) + validated["download_path"]
@@ -3716,8 +3817,8 @@ class UpdateCenterWindow(tk.Toplevel):
         super().__init__(owner)
         self.owner = owner
         self.title("VaultLink Update Center")
-        self.geometry("840x720")
-        self.minsize(740, 640)
+        self.geometry("900x760")
+        self.minsize(780, 660)
         self.configure(bg=BG)
         self.current_var = tk.StringVar(value=f"Installed version: {DESKTOP_APP_VERSION}")
         self.latest_var = tk.StringVar(value="Latest signed version: checking...")
@@ -3733,6 +3834,7 @@ class UpdateCenterWindow(tk.Toplevel):
         self.hash_button = None
         self.receipt_button = None
         self.details_button = None
+        self.download_button = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.show_manifest(owner.latest_update_manifest)
@@ -3778,7 +3880,7 @@ class UpdateCenterWindow(tk.Toplevel):
         tk.Label(outer, text="RELEASE NOTES", bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(16, 6))
         self.notes = tk.Text(
             outer,
-            height=8,
+            height=6,
             bg=FIELD,
             fg=TEXT,
             insertbackground=TEXT,
@@ -3922,6 +4024,47 @@ class UpdateCenterWindow(tk.Toplevel):
             relief="flat",
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+
+        tools_controls = tk.Frame(outer, bg=BG)
+        tools_controls.pack(fill="x", pady=(10, 0))
+        tk.Button(
+            tools_controls,
+            text="UPDATE READINESS",
+            command=self.show_update_readiness,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", ipadx=12, ipady=7)
+        self.download_button = tk.Button(
+            tools_controls,
+            text="DOWNLOAD VERIFIED COPY",
+            command=self.owner.download_latest_update_copy,
+            state="disabled",
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.download_button.pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            tools_controls,
+            text="UPDATE ACTIVITY",
+            command=self.show_update_activity,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            tools_controls,
+            text="UPDATE BACKUPS",
+            command=self.owner.open_update_backups,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
             outer,
             textvariable=self.status_var,
@@ -4009,8 +4152,51 @@ class UpdateCenterWindow(tk.Toplevel):
         ]
         messagebox.showinfo("Signed Update Verification", "\n".join(lines), parent=self)
 
+    def show_update_readiness(self):
+        try:
+            report = update_readiness_report(self.owner.latest_update_manifest)
+        except Exception as exc:
+            messagebox.showerror("Readiness unavailable", str(exc), parent=self)
+            return
+        lines = [
+            f"Release: {report['release_version']}",
+            f"Install mode: {report['installation_mode']}",
+            f"Automatic install ready: {'YES' if report['ready_for_automatic_install'] else 'NO'}",
+            "",
+        ]
+        for item in report["checks"]:
+            lines.append(f"{'PASS' if item['passed'] else 'CHECK'} | {item['name']} | {item['detail']}")
+        lines.extend(["", report["privacy_note"]])
+        messagebox.showinfo("Update Readiness", "\n".join(lines), parent=self)
+
+    def show_update_activity(self):
+        report = update_activity_summary()
+        lines = []
+        latest = report.get("latest_install") or {}
+        if latest:
+            lines.extend(
+                [
+                    f"Latest installer result: {'SUCCESS' if latest['ok'] else 'FAILED'}",
+                    f"Version: {latest['version']}",
+                    f"Time: {latest['time_utc'] or 'unknown'}",
+                    f"Rollback backup created: {'yes' if latest['backup_created'] else 'no'}",
+                    "",
+                ]
+            )
+        lines.append("RECENT ANONYMOUS UPDATE EVENTS")
+        lines.append("------------------------------")
+        for event in reversed(report["events"]):
+            lines.append(
+                f"{event['time_utc'] or 'unknown'} | {event['result'].upper()} | "
+                f"{event['title']} | event {event['event_id'] or 'unknown'}"
+            )
+        if not report["events"]:
+            lines.append("No update activity has been recorded yet.")
+        lines.extend(["", report["privacy_note"]])
+        messagebox.showinfo("Update Activity", "\n".join(lines), parent=self)
+
     def show_manifest(self, manifest, error=""):
-        busy = self.owner.update_operation in {"check", "stage"}
+        busy = self.owner.update_operation in {"check", "stage", "copy"}
         self.check_button.configure(state="disabled" if busy else "normal")
         if error:
             self.latest_var.set("Latest signed version: unavailable")
@@ -4021,6 +4207,7 @@ class UpdateCenterWindow(tk.Toplevel):
             self.hash_button.configure(state="disabled")
             self.receipt_button.configure(state="disabled")
             self.details_button.configure(state="disabled")
+            self.download_button.configure(state="disabled")
             self.set_notes([])
             return
         if not manifest:
@@ -4032,6 +4219,7 @@ class UpdateCenterWindow(tk.Toplevel):
             self.hash_button.configure(state="disabled")
             self.receipt_button.configure(state="disabled")
             self.details_button.configure(state="disabled")
+            self.download_button.configure(state="disabled")
             self.set_notes([])
             return
         version = manifest.get("version", "unknown")
@@ -4047,6 +4235,7 @@ class UpdateCenterWindow(tk.Toplevel):
         self.hash_button.configure(state="normal")
         self.receipt_button.configure(state="normal")
         self.details_button.configure(state="normal")
+        self.download_button.configure(state="disabled" if busy else "normal")
         if available and not supported:
             self.status_var.set("This desktop version is below the supported floor. Install the verified update before relying on API features.")
         elif available:
@@ -4631,6 +4820,7 @@ class USBFileLocker(tk.Tk):
             self.after(6000, self.auto_check_for_updates)
         completed_update = os.environ.pop("VAULTLINK_UPDATE_COMPLETED", "").strip()
         if completed_update:
+            log_event("application_update_completed", "release", "ok")
             self.after(
                 1200,
                 lambda version=completed_update: messagebox.showinfo(
@@ -5031,6 +5221,18 @@ class USBFileLocker(tk.Tk):
             log_event("recovery_readiness_open", "api", "failed")
             messagebox.showerror("Could not open Recovery Readiness", str(exc), parent=self)
 
+    def open_update_backups(self):
+        try:
+            backup_dir = APP_DIR / "update_backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            os.startfile(backup_dir)
+            self.status.set("Opened the local signed-update backup folder.")
+            log_event("update_backups_open", "release", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the update backup folder.")
+            log_event("update_backups_open", "release", "failed")
+            messagebox.showerror("Could not open update backups", str(exc), parent=self)
+
     def refresh_update_window(self, error=""):
         if self.update_window is None:
             return
@@ -5119,6 +5321,19 @@ class USBFileLocker(tk.Tk):
                     if open_center:
                         self.open_update_center()
             return
+        if operation == "copy":
+            if error:
+                if self.update_button is not None:
+                    self.update_button.configure(state="normal", text="UPDATE CENTER", bg="#252936", fg=TEXT)
+                self.refresh_update_window(error=error)
+                messagebox.showerror("Verified download failed", error, parent=self)
+                return
+            self.update_button.configure(state="normal", text="UPDATE CENTER", bg="#252936", fg=TEXT)
+            self.refresh_update_window()
+            log_event("update_package_copy", "release", "ok")
+            self.status.set("Saved a separately verified copy of the signed update package.")
+            messagebox.showinfo("Verified copy saved", f"Saved and verified:\n{payload}", parent=self)
+            return
         if operation == "stage":
             if error:
                 self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
@@ -5192,6 +5407,44 @@ class USBFileLocker(tk.Tk):
             self.update_results.put(("stage", staged, error, bool(automatic)))
 
         threading.Thread(target=worker, name="VaultLinkUpdateDownload", daemon=True).start()
+        self.after(75, self.poll_update_results)
+
+    def download_latest_update_copy(self):
+        manifest = self.latest_update_manifest
+        if not manifest:
+            messagebox.showinfo("No release loaded", "Check for a signed update first.", parent=self)
+            return
+        if self.update_operation:
+            return
+        target = filedialog.asksaveasfilename(
+            title="Save verified signed update package",
+            defaultextension=".zip",
+            initialfile=str(manifest.get("package_filename", "VaultLink-Windows.zip")),
+            filetypes=[("ZIP package", "*.zip")],
+        )
+        if not target:
+            return
+        try:
+            state = load_license_state(load_settings())
+            server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+        except Exception as exc:
+            messagebox.showerror("Verified download unavailable", str(exc), parent=self)
+            return
+        self.update_operation = "copy"
+        if self.update_button is not None:
+            self.update_button.configure(state="disabled", text="DOWNLOADING...")
+        self.refresh_update_window()
+
+        def worker():
+            try:
+                saved = download_windows_update_package(server, manifest, Path(target))
+                error = ""
+            except Exception as exc:
+                saved = None
+                error = str(exc)
+            self.update_results.put(("copy", saved, error, False))
+
+        threading.Thread(target=worker, name="VaultLinkVerifiedUpdateCopy", daemon=True).start()
         self.after(75, self.poll_update_results)
 
     def update_pin_mode(self, _event=None):
