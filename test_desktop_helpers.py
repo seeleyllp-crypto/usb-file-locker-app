@@ -16,6 +16,7 @@ import customer_hub
 import license_issuer
 import owner_update_lab
 import usb_file_locker as locker
+import vault_health_center
 import vaultlink_updater
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -52,7 +53,7 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 13)
+        self.assertEqual(len(launchers), 14)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
@@ -60,9 +61,53 @@ class DesktopHelperTests(unittest.TestCase):
                 self.assertIn("%PYTHON_CMD%", content)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("vault_health_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
+        self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
+
+    def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:
+            root = Path(folder)
+            source = root / "private-client-name.txt"
+            source.write_text("private contents", encoding="utf-8")
+            key = {"key_id": "0123456789abcdef", "secret": b"K" * 32}
+            header = locker.portable_lock_header(source.name, source.stat().st_size, key)
+            locked_path = root / "private-client-name.txt.locked"
+            locker.write_portable_locked(source, locked_path, header, key, "")
+
+            healthy = vault_health_center.inspect_locked_file(locked_path, key["key_id"])
+            self.assertEqual(healthy["health"], "Healthy")
+            self.assertEqual(healthy["key_match"], "match")
+            self.assertEqual(healthy["format"], "Portable")
+
+            wrong_key = vault_health_center.inspect_locked_file(locked_path, "fedcba9876543210")
+            self.assertEqual(wrong_key["key_match"], "mismatch")
+            self.assertEqual(wrong_key["health"], "Healthy")
+
+            damaged_path = root / "damaged.locked"
+            damaged_path.write_bytes(b"not-a-vaultlink-lock")
+            damaged = vault_health_center.inspect_locked_file(damaged_path, key["key_id"])
+            self.assertEqual(damaged["health"], "Unreadable")
+
+            report = vault_health_center.build_privacy_safe_health_report(
+                [healthy, wrong_key, damaged],
+                scope="selected-folder",
+                loaded_key=True,
+            )
+            self.assertEqual(report["locked_file_count"], 3)
+            self.assertEqual(report["key_match_counts"]["match"], 1)
+            self.assertEqual(report["key_match_counts"]["mismatch"], 1)
+            serialized = json.dumps(report).lower()
+            for forbidden in (
+                "private-client-name",
+                str(root).lower(),
+                key["key_id"],
+                "private contents",
+            ):
+                self.assertNotIn(forbidden, serialized)
 
     def test_owner_release_authorization_requires_protected_policy_and_removable_usb(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_auth_") as temp_dir:

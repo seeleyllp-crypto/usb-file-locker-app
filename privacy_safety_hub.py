@@ -66,6 +66,7 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Audit Log Viewer", "Read the privacy-safe activity chain, verify it, copy event IDs, and export raw or locked audit reports.", self.open_audit_log_viewer, 3, 0, locker.WHITE, locker.BLACK)
         self.app_card(apps, "Text Log Processor", "Paste or load table-style log text, then count actions, catch failures, and export a cleaner summary.", self.open_text_log_processor, 3, 1, locker.YELLOW, locker.BLACK)
         self.app_card(apps, "Global Breach Guard", "Run a global topmost breach watcher that checks the signed audit trail and throws on-screen alerts for high-risk activity.", self.open_global_breach_guard, 4, 0, locker.WHITE, locker.BLACK)
+        self.app_card(apps, "Vault Health Center", "Check locked-file structure, key compatibility, legacy formats, and export a privacy-safe health report.", self.open_vault_health_center, 4, 1, "#252936", locker.TEXT)
 
         for col in range(2):
             apps.grid_columnconfigure(col, weight=1)
@@ -278,6 +279,14 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Global Breach Guard.")
             messagebox.showerror("Could not open Global Breach Guard", str(exc))
+
+    def open_vault_health_center(self):
+        try:
+            locker.launch_companion_script("vault_health_center.py")
+            self.status.set("Opened Vault Health Center.")
+        except Exception as exc:
+            self.status.set("Could not open Vault Health Center.")
+            messagebox.showerror("Could not open Vault Health Center", str(exc))
 
 
 if __name__ == "__main__":

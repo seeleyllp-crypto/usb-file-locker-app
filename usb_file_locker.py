@@ -111,6 +111,7 @@ SCRIPT_LICENSE_FEATURES = {
     "global_breach_guard.py": "global-breach-guard",
     "text_log_processor.py": "text-log-processor",
     "locked_file_browser.py": "locked-file-browser",
+    "vault_health_center.py": "locked-file-browser",
     "perm_unlock_workbench.py": "perm-unlock",
 }
 

@@ -31,6 +31,7 @@ PACKAGE_FILES = [
     "Run Quick Lock Note.bat",
     "Run Text Log Processor.bat",
     "Run USB File Locker.bat",
+    "Run Vault Health Center.bat",
     "audit_log_viewer.py",
     "customer_hub.py",
     "global_breach_guard.py",
@@ -45,6 +46,7 @@ PACKAGE_FILES = [
     "settings.example.json",
     "text_log_processor.py",
     "usb_file_locker.py",
+    "vault_health_center.py",
     "vaultlink_updater.py",
 ]
 

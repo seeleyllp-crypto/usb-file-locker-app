@@ -45,8 +45,8 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Update Center adds signed verification details, receipts, readiness checks, and verified download-only mode.",
-    "Customers can review anonymous update activity, open rollback backups, and back up app data before installing.",
+    "Vault Health Center adds read-only locked-file structure, legacy-format, and key-compatibility checks.",
+    "Customers can export aggregate health reports without filenames, paths, key IDs, secrets, or file contents.",
     "Private owner tools remain excluded from customer update packages.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
