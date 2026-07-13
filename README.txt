@@ -18,6 +18,11 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.13.3 expands the private OWNER UPDATE LAB with a 15-check
+  preflight, package inspector, SHA-256 copy, privacy-safe report export,
+  hash-chained release history, candidate-folder access, and owner/GitHub links.
+  Owner tools remain outside customer ZIPs. Keys, licenses, settings, vault
+  data, audit logs, and locked files remain preserved by signed updates.
 - Version 2026.07.13.2 adds a private local OWNER UPDATE LAB. It tests the app,
   API, signature, ZIP hash, package contents, and Defender scans before publish.
   Publishing repeats the checks, sends the exact tested files through the pinned
