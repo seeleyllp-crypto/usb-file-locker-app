@@ -114,6 +114,58 @@ class DesktopHelperTests(unittest.TestCase):
             validate.assert_called_once_with(manifest, package_path)
             self.assertEqual(validated, manifest)
 
+    def test_owner_release_history_is_hash_chained_and_privacy_safe(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_owner_history_") as temp_dir:
+            history_path = Path(temp_dir) / "release_history.jsonl"
+            with mock.patch.object(owner_update_lab, "HISTORY_FILE", history_path):
+                owner_update_lab.append_lab_history(
+                    "candidate_verified",
+                    "ok",
+                    {
+                        "version": "9999.1",
+                        "sha256": "a" * 64,
+                        "test_count": 48,
+                        "owner_key_path": "D:/master_usb_file_locker.key",
+                        "secret": "DO-NOT-STORE",
+                    },
+                )
+                entries, integrity = owner_update_lab.load_lab_history()
+                self.assertTrue(integrity["valid"])
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["details"]["version"], "9999.1")
+                serialized = history_path.read_text(encoding="utf-8")
+                self.assertNotIn("master_usb_file_locker.key", serialized)
+                self.assertNotIn("DO-NOT-STORE", serialized)
+
+                damaged = json.loads(serialized)
+                damaged["details"]["version"] = "tampered"
+                history_path.write_text(json.dumps(damaged) + "\n", encoding="utf-8")
+                _entries, damaged_integrity = owner_update_lab.load_lab_history()
+                self.assertFalse(damaged_integrity["valid"])
+
+    def test_owner_package_inspector_reports_only_signed_zip_entries(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_package_info_") as temp_dir:
+            candidate_dir = Path(temp_dir)
+            manifest_path = candidate_dir / "windows-manifest.json"
+            package_path = candidate_dir / "VaultLink-Windows-test.zip"
+            manifest = {"version": "9999.1", "preserves_local_app_data": True}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with zipfile.ZipFile(package_path, "w") as archive:
+                archive.writestr("usb_file_locker.py", "print('safe')")
+                archive.writestr("Run USB File Locker.bat", "@echo off")
+                archive.writestr("README.txt", "safe")
+            report = {
+                "manifest_filename": manifest_path.name,
+                "package_filename": package_path.name,
+            }
+            with mock.patch.object(owner_update_lab, "CANDIDATE_DIR", candidate_dir), \
+                    mock.patch.object(owner_update_lab, "verify_candidate_files", return_value=manifest):
+                info = owner_update_lab.candidate_package_info(report)
+            self.assertEqual(info["entry_count"], 3)
+            self.assertEqual(info["python_files"], 1)
+            self.assertEqual(info["launchers"], 1)
+            self.assertEqual(info["entries"], ["README.txt", "Run USB File Locker.bat", "usb_file_locker.py"])
+
     def test_license_key_validation_and_state_replacement(self):
         self.assertTrue(locker.valid_api_license_key(VALID_TEST_LICENSE))
         self.assertFalse(locker.valid_api_license_key("PSI-OLD-STYLE-KEY"))

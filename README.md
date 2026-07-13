@@ -18,6 +18,8 @@ The app checks the API at startup when its daily update check is due. License st
 
 Release `2026.07.13.2` adds a private local Owner Update Lab. `TEST CANDIDATE` builds and signs outside the live API repo, runs both regression suites, verifies the Ed25519 manifest and ZIP hash, checks package contents, and scans the app, API, and candidate with Microsoft Defender. `PUBLISH VERIFIED UPDATE` repeats those gates, publishes the exact tested files through the pinned GitHub repositories, waits for Railway, and verifies the live download hash. Both actions require the registered removable owner USB and Windows-protected signing key. The lab and its launcher are deliberately excluded from customer update ZIPs; the customer app shows its launcher only in the local owner source folder. The API independently verifies the release signature as well as the package size and SHA-256 hash. Updates still replace app files only and preserve keys, licenses, settings, vault data, and audit logs in `%LOCALAPPDATA%\USBFileLocker`.
 
+The Owner Update Lab also includes a 15-check read-only preflight, signed-package content inspection, SHA-256 copy, privacy-safe JSON report export, hash-chained release history, candidate-folder access, and shortcuts to the live Owner Console, Update Center, and pinned app/API GitHub repositories. Its reports and history exclude USB secrets, key paths, signing keys, passwords, PINs, license keys, customer data, file contents, and LocalAppData paths.
+
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window

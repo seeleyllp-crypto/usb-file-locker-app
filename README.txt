@@ -25,6 +25,9 @@ Updates:
   Test and publish require the registered removable owner USB and the
   Windows-protected signing key. The lab is not included in customer update ZIPs.
   The API now verifies the Ed25519 signature, package size, and SHA-256 hash too.
+  Owner tools also include a 15-check preflight, package viewer, hash copy,
+  privacy-safe report export, hash-chained release history, candidate-folder
+  access, and shortcuts to the live owner pages and pinned GitHub repositories.
 - Version 2026.07.13.1 adds direct desktop links to the online UPDATE CENTER
   and RECOVERY READINESS app, plus a two-row toolbar that keeps every main
   action visible. The readiness self-check stores nothing and marks missing

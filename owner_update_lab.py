@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,8 @@ LAB_DIR = locker.APP_DIR / "owner_update_lab"
 CANDIDATE_DIR = LAB_DIR / "candidate"
 REPORT_FILE = LAB_DIR / "verified_candidate.json"
 PUBLISH_REPORT_FILE = LAB_DIR / "last_publish.json"
+PREFLIGHT_REPORT_FILE = LAB_DIR / "last_preflight.json"
+HISTORY_FILE = LAB_DIR / "release_history.jsonl"
 MAX_LIVE_PACKAGE_BYTES = 250 * 1024 * 1024
 PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git"
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
@@ -47,6 +50,19 @@ DEFAULT_NOTES = [
     "The exact signed package that passed tests and Defender is copied into the API release repo.",
     "Keys, licenses, settings, vault data, audit logs, and locked files remain untouched.",
 ]
+
+HISTORY_PAYLOAD_FIELDS = (
+    "version",
+    "sha256",
+    "size_bytes",
+    "test_count",
+    "desktop_test_count",
+    "api_test_count",
+    "app_head",
+    "api_head",
+    "defender",
+    "live_verified",
+)
 
 
 def command_creation_flags():
@@ -177,6 +193,111 @@ def package_sensitive_entries(package_path):
     ]
 
 
+def canonical_history_record(record):
+    payload = dict(record)
+    payload.pop("hash", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def load_lab_history(limit=100):
+    if not HISTORY_FILE.is_file():
+        return [], {"valid": True, "message": "No owner release history has been recorded yet."}
+    entries = []
+    previous_hash = "0" * 64
+    try:
+        lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines, start=1):
+            record = json.loads(line)
+            if not isinstance(record, dict) or record.get("previous_hash") != previous_hash:
+                raise ValueError(f"History record {index} broke the hash chain.")
+            expected_hash = hashlib.sha256(canonical_history_record(record)).hexdigest()
+            if not secrets.compare_digest(str(record.get("hash", "")), expected_hash):
+                raise ValueError(f"History record {index} failed its hash check.")
+            entries.append(record)
+            previous_hash = expected_hash
+    except Exception as exc:
+        return entries[-limit:], {"valid": False, "message": str(exc)}
+    return entries[-limit:], {"valid": True, "message": f"Verified {len(entries)} hash-chained owner release event(s)."}
+
+
+def append_lab_history(action, result, payload=None):
+    entries, integrity = load_lab_history(limit=500)
+    if not integrity["valid"]:
+        raise ValueError("Owner release history integrity failed. Review it before recording another event.")
+    safe_payload = {}
+    for field in HISTORY_PAYLOAD_FIELDS:
+        value = (payload or {}).get(field)
+        if isinstance(value, (str, int, bool)) and value not in ("", None):
+            safe_payload[field] = value
+    previous_hash = entries[-1]["hash"] if entries else "0" * 64
+    record = {
+        "schema_version": 1,
+        "time_utc": locker.utc_now_text(),
+        "event_id": secrets.token_hex(8),
+        "action": str(action)[:60],
+        "result": "ok" if result == "ok" else "failed",
+        "details": safe_payload,
+        "previous_hash": previous_hash,
+    }
+    record["hash"] = hashlib.sha256(canonical_history_record(record)).hexdigest()
+    LAB_DIR.mkdir(parents=True, exist_ok=True)
+    with HISTORY_FILE.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    return record
+
+
+def candidate_package_info(report=None):
+    report = report or load_candidate_report()
+    if not isinstance(report, dict):
+        raise ValueError("No verified candidate report is available.")
+    manifest_name = Path(str(report.get("manifest_filename", ""))).name
+    package_name = Path(str(report.get("package_filename", ""))).name
+    if not manifest_name or not package_name:
+        raise ValueError("The candidate report does not name its signed files.")
+    manifest_path = CANDIDATE_DIR / manifest_name
+    package_path = CANDIDATE_DIR / package_name
+    manifest = verify_candidate_files(manifest_path, package_path)
+    with zipfile.ZipFile(package_path) as archive:
+        entries = sorted(archive.namelist(), key=str.lower)
+    return {
+        "version": manifest.get("version", ""),
+        "package_filename": package_name,
+        "sha256": release_builder.package_sha256(package_path),
+        "size_bytes": package_path.stat().st_size,
+        "entry_count": len(entries),
+        "python_files": sum(name.lower().endswith(".py") for name in entries),
+        "launchers": sum(name.lower().endswith((".bat", ".cmd")) for name in entries),
+        "entries": entries,
+        "preserves_local_app_data": bool(manifest.get("preserves_local_app_data")),
+    }
+
+
+def owner_report_payload():
+    history, integrity = load_lab_history(limit=50)
+    candidate = load_candidate_report() or {}
+    try:
+        published = json.loads(PUBLISH_REPORT_FILE.read_text(encoding="utf-8")) if PUBLISH_REPORT_FILE.is_file() else {}
+    except Exception:
+        published = {}
+    try:
+        preflight = json.loads(PREFLIGHT_REPORT_FILE.read_text(encoding="utf-8")) if PREFLIGHT_REPORT_FILE.is_file() else {}
+    except Exception:
+        preflight = {}
+    return {
+        "schema_version": 1,
+        "generated_at_utc": locker.utc_now_text(),
+        "candidate": candidate,
+        "last_publish": published,
+        "last_preflight": preflight,
+        "history_integrity": integrity,
+        "release_history": history,
+        "privacy": (
+            "This report excludes USB secrets, key paths, signing keys, passwords, PINs, license keys, "
+            "customer records, file contents, and LocalAppData paths."
+        ),
+    }
+
+
 def verify_candidate_files(manifest_path, package_path):
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     vaultlink_updater.validate_manifest(manifest, package_path)
@@ -301,6 +422,7 @@ def build_and_test_candidate(app_repo, api_repo, owner_key_path, minimum_support
         "preserves_local_app_data": bool(validated.get("preserves_local_app_data")),
     }
     locker.write_text_atomic(REPORT_FILE, json.dumps(report, indent=2))
+    append_lab_history("candidate_verified", "ok", report)
     return report
 
 
@@ -413,6 +535,119 @@ def verify_live_package(server_url, update):
     return size, digest.hexdigest()
 
 
+def owner_preflight(app_repo, api_repo, owner_key_path, minimum_supported, notes, server_url):
+    checks = []
+
+    def safe_detail(value):
+        if isinstance(value, Path):
+            return "Repository folder found."
+        text = str(value or "").strip()
+        home = str(Path.home())
+        return text.replace(home, "%USERPROFILE%").replace(home.replace("\\", "/"), "%USERPROFILE%")[:500]
+
+    def check(name, callback):
+        try:
+            detail = callback()
+            checks.append({"name": name, "passed": True, "detail": safe_detail(detail or "Ready.")})
+            return detail
+        except Exception as exc:
+            checks.append({"name": name, "passed": False, "detail": safe_detail(exc)})
+            return None
+
+    def blocked(name, reason):
+        checks.append({"name": name, "passed": False, "detail": safe_detail(reason)})
+
+    def signing_key_check():
+        private_key, _authorization = release_builder.load_owner_signing_key(owner_key_path)
+        key_id = hashlib.sha256(private_key.public_key().public_bytes_raw()).hexdigest()[:16]
+        if key_id != locker.UPDATE_SIGNING_KEY_ID:
+            raise ValueError("The Windows signing key does not match the public key embedded in the app.")
+        return "Windows-protected signing key matches the embedded public key."
+
+    def version_check():
+        locker.update_version_tuple(locker.DESKTOP_APP_VERSION)
+        locker.update_version_tuple(minimum_supported)
+        return f"Candidate {locker.DESKTOP_APP_VERSION}; compatibility floor {minimum_supported}."
+
+    def source_check(validated_app_repo):
+        missing = [name for name in release_builder.PACKAGE_FILES if not (validated_app_repo / name).is_file()]
+        if missing:
+            raise ValueError(f"Missing {len(missing)} customer package source file(s).")
+        return f"All {len(release_builder.PACKAGE_FILES)} customer package files are present."
+
+    def private_allowlist_check():
+        lowered = [name.lower() for name in release_builder.PACKAGE_FILES]
+        blocked = [
+            name
+            for name in lowered
+            if name.endswith((".dpapi", ".locked", ".lookeed"))
+            or Path(name).name in {"settings.json", "audit_log.jsonl", "locker_log.jsonl", "license_state.json"}
+        ]
+        if blocked or "owner_update_lab.py" in lowered or "run owner update lab.bat" in lowered:
+            raise ValueError("The customer package allowlist contains owner-only or private app-data files.")
+        return "Owner tools, keys, LocalAppData records, and locked files are excluded."
+
+    check("Owner USB authorization", lambda: (release_builder.authorize_owner_release(owner_key_path), "Registered removable owner USB verified.")[1])
+    check("Update signing key", signing_key_check)
+    check("Git tooling", lambda: (git_executable(), "Git executable found.")[1])
+    check("Microsoft Defender", lambda: (defender_executable(), "Microsoft Defender command-line scanner found.")[1])
+    check("Version policy", version_check)
+
+    validated_app_repo = check("App source repository", lambda: validate_repo(app_repo, "usb_file_locker.py"))
+    validated_api_repo = check("API release repository", lambda: validate_repo(api_repo, "main.py"))
+    if validated_app_repo:
+        check("App repository state", lambda: (require_clean_main_repo(validated_app_repo, "App repository"), "App repository is clean on main.")[1])
+        check("App GitHub origin", lambda: f"Pinned origin: {require_pinned_origin(validated_app_repo, PINNED_APP_REMOTE, 'App repository')}")
+        check("Customer package source", lambda: source_check(validated_app_repo))
+    else:
+        blocked("App repository state", "Blocked until the app source repository is valid.")
+        blocked("App GitHub origin", "Blocked until the app source repository is valid.")
+        blocked("Customer package source", "Blocked until the app source repository is valid.")
+    if validated_api_repo:
+        check("API repository state", lambda: (require_clean_main_repo(validated_api_repo, "API repository"), "API repository is clean on main.")[1])
+        check("API GitHub origin", lambda: f"Pinned origin: {require_pinned_origin(validated_api_repo, PINNED_API_REMOTE, 'API repository')}")
+    else:
+        blocked("API repository state", "Blocked until the API release repository is valid.")
+        blocked("API GitHub origin", "Blocked until the API release repository is valid.")
+    check("Private-file package rules", private_allowlist_check)
+
+    if validated_app_repo and validated_api_repo:
+        def candidate_check():
+            current, message = candidate_is_current(
+                load_candidate_report(),
+                validated_app_repo,
+                validated_api_repo,
+                minimum_supported,
+                notes,
+            )
+            if not current:
+                raise ValueError(message)
+            return message
+
+        check("Verified candidate gate", candidate_check)
+    else:
+        blocked("Verified candidate gate", "Blocked until both repositories are valid.")
+
+    def live_check():
+        update = live_release_payload(server_url)["update"]
+        return f"Live API serves desktop {update.get('version', 'unknown')} with SHA-256 {str(update.get('sha256', ''))[:16]}..."
+
+    check("Live update service", live_check)
+    passed = sum(bool(item["passed"]) for item in checks)
+    report = {
+        "schema_version": 1,
+        "tested_at_utc": locker.utc_now_text(),
+        "passed": passed,
+        "total": len(checks),
+        "ready_to_publish": passed == len(checks),
+        "checks": checks,
+    }
+    LAB_DIR.mkdir(parents=True, exist_ok=True)
+    locker.write_text_atomic(PREFLIGHT_REPORT_FILE, json.dumps(report, indent=2))
+    append_lab_history("owner_preflight", "ok" if report["ready_to_publish"] else "failed", {"version": locker.DESKTOP_APP_VERSION})
+    return report
+
+
 def publish_verified_candidate(app_repo, api_repo, owner_key_path, minimum_supported, notes, server_url):
     app_repo = validate_repo(app_repo, "usb_file_locker.py")
     api_repo = validate_repo(api_repo, "main.py")
@@ -490,6 +725,7 @@ def publish_verified_candidate(app_repo, api_repo, owner_key_path, minimum_suppo
         "live_verified": True,
     }
     locker.write_text_atomic(PUBLISH_REPORT_FILE, json.dumps(publish_report, indent=2))
+    append_lab_history("release_published", "ok", publish_report)
     return publish_report
 
 
@@ -497,8 +733,8 @@ class OwnerUpdateLab(tk.Tk):
     def __init__(self, owner_key_path=""):
         super().__init__()
         self.title("VaultLink Owner Update Lab")
-        self.geometry("900x760")
-        self.minsize(820, 680)
+        self.geometry("1000x860")
+        self.minsize(900, 740)
         self.configure(bg=BG)
         self.owner_key_var = tk.StringVar(value=owner_key_path or find_default_owner_key())
         self.app_repo_var = tk.StringVar(value=str(default_repo_path("USBFileLockerApp")))
@@ -506,6 +742,7 @@ class OwnerUpdateLab(tk.Tk):
         self.minimum_var = tk.StringVar(value="2026.07.12.9")
         self.version_var = tk.StringVar(value=f"Candidate version: {locker.DESKTOP_APP_VERSION}")
         self.candidate_var = tk.StringVar(value="No verified candidate loaded.")
+        self.preflight_var = tk.StringVar(value="No owner preflight has run yet.")
         self.status_var = tk.StringVar(value="Owner authorization has not been checked yet.")
         self.results = queue.Queue()
         self.busy = False
@@ -529,7 +766,7 @@ class OwnerUpdateLab(tk.Tk):
             text="Testing stays local. Publishing requires the registered owner USB, this Windows account's signing key, and GitHub write access.",
             bg=BG,
             fg=MUTED,
-            wraplength=820,
+            wraplength=920,
             justify="left",
             font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(4, 14))
@@ -554,24 +791,41 @@ class OwnerUpdateLab(tk.Tk):
         state = tk.Frame(panel, bg="#11141b")
         state.pack(fill="x", padx=18, pady=(12, 0))
         tk.Label(state, text="CANDIDATE GATE", bg="#11141b", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=12, pady=(10, 2))
-        tk.Label(state, textvariable=self.candidate_var, bg="#11141b", fg=YELLOW, wraplength=780, justify="left", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(0, 10))
+        tk.Label(state, textvariable=self.candidate_var, bg="#11141b", fg=YELLOW, wraplength=880, justify="left", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12)
+        tk.Label(state, text="OWNER PREFLIGHT", bg="#11141b", fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
+        tk.Label(state, textvariable=self.preflight_var, bg="#11141b", fg=BLUE, wraplength=880, justify="left", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(0, 10))
 
         actions = tk.Frame(panel, bg=PANEL)
         actions.pack(fill="x", padx=18, pady=(12, 8))
+        self.preflight_button = tk.Button(actions, text="RUN 15-CHECK PREFLIGHT", command=self.start_preflight, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 9, "bold"))
+        self.preflight_button.pack(side="left", ipadx=12, ipady=9)
         self.test_button = tk.Button(actions, text="TEST CANDIDATE", command=self.start_test, bg=YELLOW, fg="#090b0f", relief="flat", font=("Segoe UI", 10, "bold"))
-        self.test_button.pack(side="left", ipadx=16, ipady=9)
+        self.test_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=9)
         self.publish_button = tk.Button(actions, text="PUBLISH VERIFIED UPDATE", command=self.start_publish, bg=GREEN, fg="#090b0f", relief="flat", font=("Segoe UI", 10, "bold"), state="disabled")
-        self.publish_button.pack(side="left", padx=(10, 0), ipadx=16, ipady=9)
+        self.publish_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=9)
         tk.Button(actions, text="REFRESH", command=self.refresh_candidate_state, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=12, ipady=8)
 
         secondary = tk.Frame(panel, bg=PANEL)
         secondary.pack(fill="x", padx=18, pady=(0, 8))
-        tk.Button(secondary, text="OPEN CANDIDATE FOLDER", command=self.open_candidate_folder, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", ipadx=10, ipady=6)
-        tk.Button(secondary, text="OPEN LIVE UPDATE CENTER", command=self.open_live_center, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        self.package_button = tk.Button(secondary, text="PACKAGE CONTENTS", command=self.show_package_contents, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.package_button.pack(side="left", ipadx=9, ipady=6)
+        self.export_button = tk.Button(secondary, text="EXPORT OWNER REPORT", command=self.export_owner_report, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.export_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+        self.copy_hash_button = tk.Button(secondary, text="COPY SHA-256", command=self.copy_candidate_hash, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.copy_hash_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+        tk.Button(secondary, text="RELEASE HISTORY", command=self.show_release_history, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
 
-        self.log = scrolledtext.ScrolledText(panel, height=9, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Consolas", 9), state="disabled", wrap="word")
+        links = tk.Frame(panel, bg=PANEL)
+        links.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Button(links, text="CANDIDATE FOLDER", command=self.open_candidate_folder, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", ipadx=8, ipady=6)
+        tk.Button(links, text="LIVE OWNER CONSOLE", command=self.open_owner_console, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
+        tk.Button(links, text="LIVE UPDATE CENTER", command=self.open_live_center, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
+        tk.Button(links, text="APP GITHUB", command=self.open_app_github, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
+        tk.Button(links, text="API GITHUB", command=self.open_api_github, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
+
+        self.log = scrolledtext.ScrolledText(panel, height=8, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Consolas", 9), state="disabled", wrap="word")
         self.log.pack(fill="both", expand=True, padx=18, pady=(0, 8))
-        tk.Label(panel, textvariable=self.status_var, bg=PANEL, fg=MUTED, wraplength=800, justify="left", font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(0, 14))
+        tk.Label(panel, textvariable=self.status_var, bg=PANEL, fg=MUTED, wraplength=900, justify="left", font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(0, 14))
 
     def add_path_row(self, parent, row, label, variable, command, file_mode=False):
         tk.Label(parent, text=label, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 8, 0))
@@ -602,9 +856,11 @@ class OwnerUpdateLab(tk.Tk):
         self.log.configure(state="disabled")
 
     def refresh_candidate_state(self):
+        owner_ready = False
         try:
             release_builder.authorize_owner_release(self.owner_key_var.get())
             owner_text = "Owner USB verified."
+            owner_ready = True
         except Exception as exc:
             owner_text = f"Owner authorization blocked: {exc}"
         report = load_candidate_report()
@@ -618,13 +874,36 @@ class OwnerUpdateLab(tk.Tk):
             )
         except Exception as exc:
             current, candidate_text = False, str(exc)
-        self.publish_button.configure(state="normal" if current and not self.busy and owner_text == "Owner USB verified." else "disabled")
+        try:
+            package_ready = bool(candidate_package_info(report))
+        except Exception:
+            package_ready = False
+        try:
+            preflight = json.loads(PREFLIGHT_REPORT_FILE.read_text(encoding="utf-8")) if PREFLIGHT_REPORT_FILE.is_file() else {}
+        except Exception:
+            preflight = {}
+        if preflight:
+            readiness = "READY" if preflight.get("ready_to_publish") else "NEEDS ATTENTION"
+            self.preflight_var.set(
+                f"Last preflight: {preflight.get('passed', 0)}/{preflight.get('total', 0)} passed | {readiness} | {preflight.get('tested_at_utc', 'unknown time')}"
+            )
+        else:
+            self.preflight_var.set("No owner preflight has run yet.")
+        active = not self.busy
+        self.publish_button.configure(state="normal" if current and active and owner_ready else "disabled")
+        self.package_button.configure(state="normal" if package_ready and active else "disabled")
+        self.copy_hash_button.configure(state="normal" if report and report.get("sha256") and active else "disabled")
+        self.export_button.configure(state="normal" if (report or preflight or HISTORY_FILE.is_file()) and active else "disabled")
         self.candidate_var.set(f"{owner_text}  {candidate_text}")
 
     def set_busy(self, enabled, status):
         self.busy = bool(enabled)
+        self.preflight_button.configure(state="disabled" if enabled else "normal")
         self.test_button.configure(state="disabled" if enabled else "normal")
         self.publish_button.configure(state="disabled")
+        self.package_button.configure(state="disabled" if enabled else self.package_button.cget("state"))
+        self.export_button.configure(state="disabled" if enabled else self.export_button.cget("state"))
+        self.copy_hash_button.configure(state="disabled" if enabled else self.copy_hash_button.cget("state"))
         self.status_var.set(status)
         if not enabled:
             self.refresh_candidate_state()
@@ -654,17 +933,54 @@ class OwnerUpdateLab(tk.Tk):
             return
         if error:
             self.append_log(f"{action} FAILED: {error}")
+            history_action = {
+                "Owner preflight": "owner_preflight",
+                "Candidate test": "candidate_test",
+                "Verified publish": "release_publish",
+            }.get(action, "owner_action")
+            try:
+                append_lab_history(history_action, "failed", {"version": locker.DESKTOP_APP_VERSION})
+            except Exception:
+                pass
             self.set_busy(False, f"{action} failed. Nothing was published." if action == "Candidate test" else f"{action} failed.")
             messagebox.showerror(f"{action} failed", error, parent=self)
             return
-        if action == "Candidate test":
+        if action == "Owner preflight":
+            failed = [item for item in result.get("checks", []) if not item.get("passed")]
+            self.append_log(f"Owner preflight passed {result['passed']}/{result['total']} checks.")
+            for item in result.get("checks", []):
+                self.append_log(f"{'PASS' if item['passed'] else 'FAIL'} | {item['name']} | {item['detail']}")
+            self.set_busy(False, "Owner preflight is ready." if result.get("ready_to_publish") else f"Owner preflight found {len(failed)} item(s) needing attention.")
+            if failed:
+                messagebox.showwarning("Preflight needs attention", f"{result['passed']}/{result['total']} checks passed. Review the failed checks in the private activity panel.", parent=self)
+            else:
+                messagebox.showinfo("Preflight ready", "Every owner release preflight check passed.", parent=self)
+        elif action == "Candidate test":
             self.append_log(f"Candidate {result['version']} passed {result['test_count']} tests, signature validation, and Defender scans.")
             self.set_busy(False, "Candidate verified locally. The Publish button is now available.")
             messagebox.showinfo("Candidate verified", "The signed candidate passed compile checks, tests, package validation, and Microsoft Defender. It is still private.", parent=self)
-        else:
+        elif action == "Verified publish":
             self.append_log(f"Published {result['version']} and verified the live download SHA-256.")
             self.set_busy(False, "Update published and live download verified.")
             messagebox.showinfo("Update published", f"VaultLink {result['version']} is live and its downloaded SHA-256 matches.", parent=self)
+
+    def server_url(self):
+        settings = locker.load_settings()
+        state = locker.load_license_state(settings)
+        return locker.validated_license_server_url(state.get("server_url") or locker.DEFAULT_LICENSE_SERVER)
+
+    def start_preflight(self):
+        self.run_background(
+            "Owner preflight",
+            lambda: owner_preflight(
+                self.app_repo_var.get(),
+                self.api_repo_var.get(),
+                self.owner_key_var.get(),
+                self.minimum_var.get().strip(),
+                self.notes_value(),
+                self.server_url(),
+            ),
+        )
 
     def start_test(self):
         self.run_background(
@@ -707,11 +1023,93 @@ class OwnerUpdateLab(tk.Tk):
         CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(CANDIDATE_DIR)
 
+    def show_text_window(self, title, heading, content):
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.geometry("760x560")
+        window.minsize(620, 420)
+        window.configure(bg=BG)
+        window.transient(self)
+        tk.Label(window, text=heading, bg=BG, fg=TEXT, font=("Segoe UI", 19, "bold")).pack(anchor="w", padx=22, pady=(20, 10))
+        view = scrolledtext.ScrolledText(window, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Consolas", 9), wrap="word")
+        view.pack(fill="both", expand=True, padx=22)
+        view.insert("1.0", content)
+        view.configure(state="disabled")
+        tk.Button(window, text="CLOSE", command=window.destroy, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(anchor="e", padx=22, pady=16, ipadx=16, ipady=7)
+
+    def show_package_contents(self):
+        try:
+            info = candidate_package_info()
+            lines = [
+                f"Version: {info['version']}",
+                f"Package: {info['package_filename']}",
+                f"SHA-256: {info['sha256']}",
+                f"Size: {info['size_bytes']} bytes",
+                f"Entries: {info['entry_count']} ({info['python_files']} Python files, {info['launchers']} launchers)",
+                f"Preserves LocalAppData: {'yes' if info['preserves_local_app_data'] else 'no'}",
+                "",
+                "SIGNED PACKAGE CONTENTS",
+                "-----------------------",
+                *info["entries"],
+            ]
+            self.show_text_window("Verified Package Contents", "Verified Package Contents", "\n".join(lines))
+        except Exception as exc:
+            messagebox.showerror("Could not inspect package", str(exc), parent=self)
+
+    def export_owner_report(self):
+        target = filedialog.asksaveasfilename(
+            title="Export privacy-safe owner release report",
+            defaultextension=".json",
+            initialfile=f"VaultLink-Owner-Report-{time.strftime('%Y%m%d-%H%M%S')}.json",
+            filetypes=[("JSON report", "*.json")],
+        )
+        if not target:
+            return
+        try:
+            locker.write_text_atomic(Path(target), json.dumps(owner_report_payload(), indent=2))
+            self.status_var.set("Exported a privacy-safe owner release report.")
+        except Exception as exc:
+            messagebox.showerror("Could not export report", str(exc), parent=self)
+
+    def copy_candidate_hash(self):
+        report = load_candidate_report() or {}
+        value = str(report.get("sha256", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            messagebox.showerror("No verified hash", "No verified candidate SHA-256 is available.", parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(value)
+        self.status_var.set("Copied the verified candidate SHA-256.")
+
+    def show_release_history(self):
+        entries, integrity = load_lab_history(limit=100)
+        lines = [
+            f"Integrity: {'VALID' if integrity['valid'] else 'FAILED'}",
+            integrity["message"],
+            "",
+        ]
+        for item in reversed(entries):
+            details = item.get("details") or {}
+            lines.append(
+                f"{item.get('time_utc', 'unknown')} | {item.get('result', 'unknown').upper()} | "
+                f"{str(item.get('action', 'event')).replace('_', ' ').upper()} | "
+                f"version {details.get('version', 'n/a')} | hash {str(details.get('sha256', ''))[:16] or 'n/a'}"
+            )
+        if not entries:
+            lines.append("No release events have been recorded yet.")
+        self.show_text_window("Owner Release History", "Owner Release History", "\n".join(lines))
+
+    def open_owner_console(self):
+        os.startfile(self.server_url() + "/owner")
+
     def open_live_center(self):
-        settings = locker.load_settings()
-        state = locker.load_license_state(settings)
-        server_url = locker.validated_license_server_url(state.get("server_url") or locker.DEFAULT_LICENSE_SERVER)
-        os.startfile(server_url + "/update")
+        os.startfile(self.server_url() + "/update")
+
+    def open_app_github(self):
+        os.startfile(PINNED_APP_REMOTE.removesuffix(".git"))
+
+    def open_api_github(self):
+        os.startfile(PINNED_API_REMOTE.removesuffix(".git"))
 
 
 def main():
