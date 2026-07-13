@@ -16,7 +16,7 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
-Release `2026.07.13.1` adds direct desktop links to the online Update Center and Recovery Readiness app and splits the crowded main toolbar into two fully visible rows. The readiness self-check accepts only seven yes-or-no values, stores nothing, and treats missing backups, an untested master USB, or no disposable-file round trip as hard blockers. The signed update replaces app files only and preserves keys, licenses, settings, vault data, and audit logs in `%LOCALAPPDATA%\USBFileLocker`.
+Release `2026.07.13.2` adds a private local Owner Update Lab. `TEST CANDIDATE` builds and signs outside the live API repo, runs both regression suites, verifies the Ed25519 manifest and ZIP hash, checks package contents, and scans the app, API, and candidate with Microsoft Defender. `PUBLISH VERIFIED UPDATE` repeats those gates, publishes the exact tested files through the pinned GitHub repositories, waits for Railway, and verifies the live download hash. Both actions require the registered removable owner USB and Windows-protected signing key. The lab and its launcher are deliberately excluded from customer update ZIPs; the customer app shows its launcher only in the local owner source folder. The API independently verifies the release signature as well as the package size and SHA-256 hash. Updates still replace app files only and preserve keys, licenses, settings, vault data, and audit logs in `%LOCALAPPDATA%\USBFileLocker`.
 
 ## Main desktop apps
 
@@ -34,6 +34,7 @@ Release `2026.07.13.1` adds direct desktop links to the online Update Center and
 - `quick_lock_note.py` - makes locked notes quickly
 - `vaultlink_updater.py` - separate signed-package installer that runs after the main app closes
 - `build_signed_update.py` - owner release builder; requires the DPAPI-protected signing key stored outside GitHub
+- `owner_update_lab.py` - local-only owner test and publish console; excluded from customer update packages
 
 ## API folder
 

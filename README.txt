@@ -18,6 +18,13 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.13.2 adds a private local OWNER UPDATE LAB. It tests the app,
+  API, signature, ZIP hash, package contents, and Defender scans before publish.
+  Publishing repeats the checks, sends the exact tested files through the pinned
+  GitHub repositories, waits for Railway, and verifies the live download hash.
+  Test and publish require the registered removable owner USB and the
+  Windows-protected signing key. The lab is not included in customer update ZIPs.
+  The API now verifies the Ed25519 signature, package size, and SHA-256 hash too.
 - Version 2026.07.13.1 adds direct desktop links to the online UPDATE CENTER
   and RECOVERY READINESS app, plus a two-row toolbar that keeps every main
   action visible. The readiness self-check stores nothing and marks missing

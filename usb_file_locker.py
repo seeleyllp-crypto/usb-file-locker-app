@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.13.1"
+DESKTOP_APP_VERSION = "2026.07.13.2"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -391,6 +391,7 @@ MUTED = "#a7adbb"
 GREEN = "#24e66f"
 YELLOW = "#ffd166"
 RED = "#ff5a66"
+BLUE = "#58b7e8"
 WHITE = "#ffffff"
 BLACK = "#050505"
 TEXT_VIEW_EXTS = {".txt", ".log", ".md", ".csv", ".json"}
@@ -4518,6 +4519,10 @@ class USBFileLocker(tk.Tk):
         self.breach_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.global_guard_button = tk.Button(top_tools, text="GLOBAL GUARD", command=self.open_global_breach_guard, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.global_guard_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
+        self.owner_update_button = None
+        if (SOURCE_DIR / "owner_update_lab.py").is_file():
+            self.owner_update_button = tk.Button(top_tools, text="OWNER UPDATE LAB", command=self.open_owner_update_lab, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+            self.owner_update_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.audit_button = tk.Button(top_tools, text="AUDIT LOG", command=self.open_log, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.audit_button.pack(side="right", ipadx=10, ipady=8)
 
@@ -5083,6 +5088,14 @@ class USBFileLocker(tk.Tk):
         if getattr(self, "busy", False):
             for button in self.busy_buttons:
                 button.configure(state="disabled")
+        owner_update_button = getattr(self, "owner_update_button", None)
+        if owner_update_button is not None:
+            owner_release_ready = bool(
+                self.settings.get("owner_usb_policy")
+                and self.owner_policy
+                and self.active_key_matches_owner_policy()
+            )
+            owner_update_button.configure(state="normal" if owner_release_ready else "disabled")
 
     def unload_session(self, reason, action_name, result):
         previous_key = self.key["key_id"] if self.key else ""
@@ -5145,6 +5158,29 @@ class USBFileLocker(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Apps Hub.")
             messagebox.showerror("Could not open Apps Hub", str(exc))
+
+    def open_owner_update_lab(self):
+        if not self.settings.get("owner_usb_policy") or not self.owner_policy:
+            messagebox.showerror("Owner mode required", "Enable owner USB mode before opening the Update Lab.", parent=self)
+            return
+        if not self.active_key_matches_owner_policy() or not self.key:
+            messagebox.showerror("Owner USB required", "Load the registered owner USB before opening the Update Lab.", parent=self)
+            return
+        try:
+            fresh_key = load_key_file(self.key["path"])
+            allowed, reason = owner_key_allowed(fresh_key, self.owner_policy)
+            if not allowed:
+                raise ValueError(reason)
+            origin = fresh_key.get("origin") or {}
+            if origin.get("drive_type") != DRIVE_REMOVABLE:
+                raise ValueError("The registered owner USB must currently be a removable drive.")
+            launch_companion_script("owner_update_lab.py", "--owner-key", fresh_key["path"])
+            self.status.set("Opened the private owner Update Lab.")
+            log_event("owner_update_lab_open", "local", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the owner Update Lab.")
+            log_event("owner_update_lab_open", "local", "failed")
+            messagebox.showerror("Could not open Update Lab", str(exc), parent=self)
 
     def open_support_center(self):
         if self.support_window is not None and self.support_window.winfo_exists():

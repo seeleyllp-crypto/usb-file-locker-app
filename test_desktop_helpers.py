@@ -14,6 +14,7 @@ import audit_log_viewer
 import build_signed_update
 import customer_hub
 import license_issuer
+import owner_update_lab
 import usb_file_locker as locker
 import vaultlink_updater
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -51,7 +52,7 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 12)
+        self.assertEqual(len(launchers), 13)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
@@ -59,7 +60,45 @@ class DesktopHelperTests(unittest.TestCase):
                 self.assertIn("%PYTHON_CMD%", content)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
+        self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
+        self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
+
+    def test_owner_release_authorization_requires_protected_policy_and_removable_usb(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_owner_auth_") as temp_dir:
+            key_path = Path(temp_dir) / "master_usb_file_locker.key"
+            key_path.write_text("test key placeholder", encoding="utf-8")
+            policy = {"key_id": "owner-test", "volume_serial": "USB-123"}
+            removable_key = {
+                "key_id": "owner-test",
+                "path": str(key_path),
+                "origin": {"drive_type": locker.DRIVE_REMOVABLE, "serial": "USB-123"},
+            }
+            encoded_policy = base64.b64encode(b"windows-protected-policy").decode("ascii")
+
+            with mock.patch.object(locker, "load_settings", return_value={}):
+                with self.assertRaisesRegex(ValueError, "Windows-protected owner USB policy"):
+                    build_signed_update.authorize_owner_release(key_path)
+
+            with mock.patch.object(locker, "load_settings", return_value={"owner_usb_policy": encoded_policy}), \
+                    mock.patch.object(locker, "dpapi_unprotect", return_value=json.dumps(policy).encode("utf-8")), \
+                    mock.patch.object(locker, "load_key_file", return_value=removable_key), \
+                    mock.patch.object(locker, "owner_key_allowed", return_value=(True, "")):
+                authorization = build_signed_update.authorize_owner_release(key_path)
+            self.assertEqual(authorization["key_id"], "owner-test")
+            self.assertEqual(authorization["volume_serial"], "USB-123")
+
+            fixed_key = dict(removable_key)
+            fixed_key["origin"] = {"drive_type": locker.DRIVE_FIXED, "serial": "USB-123"}
+            with mock.patch.object(locker, "load_settings", return_value={"owner_usb_policy": encoded_policy}), \
+                    mock.patch.object(locker, "dpapi_unprotect", return_value=json.dumps(policy).encode("utf-8")), \
+                    mock.patch.object(locker, "load_key_file", return_value=fixed_key), \
+                    mock.patch.object(locker, "owner_key_allowed", return_value=(True, "")):
+                with self.assertRaisesRegex(ValueError, "removable owner USB"):
+                    build_signed_update.authorize_owner_release(key_path)
+
+        self.assertTrue(callable(owner_update_lab.build_and_test_candidate))
+        self.assertTrue(callable(owner_update_lab.publish_verified_candidate))
 
     def test_license_key_validation_and_state_replacement(self):
         self.assertTrue(locker.valid_api_license_key(VALID_TEST_LICENSE))
