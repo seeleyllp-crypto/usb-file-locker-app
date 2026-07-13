@@ -82,10 +82,18 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(healthy["health"], "Healthy")
             self.assertEqual(healthy["key_match"], "match")
             self.assertEqual(healthy["format"], "Portable")
+            self.assertEqual(healthy["recovery"], "Key ID covered")
+
+            multi_key = vault_health_center.inspect_locked_file(
+                locked_path,
+                {"1111111111111111", key["key_id"]},
+            )
+            self.assertEqual(multi_key["key_match"], "match")
 
             wrong_key = vault_health_center.inspect_locked_file(locked_path, "fedcba9876543210")
             self.assertEqual(wrong_key["key_match"], "mismatch")
             self.assertEqual(wrong_key["health"], "Healthy")
+            self.assertEqual(wrong_key["recovery"], "Matching key needed")
 
             damaged_path = root / "damaged.locked"
             damaged_path.write_bytes(b"not-a-vaultlink-lock")
@@ -95,11 +103,14 @@ class DesktopHelperTests(unittest.TestCase):
             report = vault_health_center.build_privacy_safe_health_report(
                 [healthy, wrong_key, damaged],
                 scope="selected-folder",
-                loaded_key=True,
+                loaded_key=2,
             )
             self.assertEqual(report["locked_file_count"], 3)
+            self.assertEqual(report["loaded_key_count"], 2)
             self.assertEqual(report["key_match_counts"]["match"], 1)
             self.assertEqual(report["key_match_counts"]["mismatch"], 1)
+            self.assertEqual(report["recovery_counts"]["matching key needed"], 1)
+            self.assertEqual(report["key_coverage_percent"], 33.3)
             serialized = json.dumps(report).lower()
             for forbidden in (
                 "private-client-name",
@@ -108,6 +119,23 @@ class DesktopHelperTests(unittest.TestCase):
                 "private contents",
             ):
                 self.assertNotIn(forbidden, serialized)
+
+            previous = dict(report)
+            previous["health_counts"] = {"healthy": 1, "review": 1, "unreadable": 1}
+            comparison = vault_health_center.compare_health_reports(previous, report)
+            self.assertEqual(comparison["comparison_type"], "vaultlink-vault-health-aggregate")
+            self.assertEqual(comparison["trend"], "improved")
+            comparison_text = json.dumps(comparison).lower()
+            self.assertNotIn("private-client-name", comparison_text)
+            self.assertNotIn(str(root).lower(), comparison_text)
+
+    def test_locked_file_search_honors_stop_event_before_walking(self):
+        stop_event = mock.Mock()
+        stop_event.is_set.return_value = True
+        with tempfile.TemporaryDirectory(prefix="vaultlink_cancelled_scan_") as folder:
+            (Path(folder) / "sample.locked").write_bytes(b"not-read")
+            results = locker.find_locked_files_in_roots([folder], stop_event=stop_event)
+        self.assertEqual(results, [])
 
     def test_owner_release_authorization_requires_protected_policy_and_removable_usb(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_auth_") as temp_dir:

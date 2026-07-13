@@ -11,8 +11,32 @@ from tkinter import filedialog, messagebox, ttk
 import usb_file_locker as locker
 
 
-def inspect_locked_file(path, loaded_key_id=""):
+def normalize_key_ids(loaded_key_ids):
+    if not loaded_key_ids:
+        return set()
+    if isinstance(loaded_key_ids, str):
+        loaded_key_ids = [loaded_key_ids]
+    return {str(key_id).strip().lower() for key_id in loaded_key_ids if str(key_id).strip()}
+
+
+def recovery_status(row, key_check_enabled=False):
+    health = str(row.get("health", "")).lower()
+    if health == "unreadable":
+        return "Unreadable"
+    if health == "review":
+        return "Review"
+    if health == "legacy":
+        return "Upgrade first"
+    if not key_check_enabled:
+        return "Key not checked"
+    if row.get("key_match") == "match":
+        return "Key ID covered"
+    return "Matching key needed"
+
+
+def inspect_locked_file(path, loaded_key_ids=None):
     path = Path(path)
+    loaded_key_ids = normalize_key_ids(loaded_key_ids)
     row = {
         "path": str(path),
         "name": path.name,
@@ -23,6 +47,7 @@ def inspect_locked_file(path, loaded_key_id=""):
         "key_match": "not checked",
         "key_id": "",
         "security_profile": "unknown",
+        "recovery": "Unknown",
         "issues": [],
     }
     try:
@@ -50,9 +75,9 @@ def inspect_locked_file(path, loaded_key_id=""):
             locker.portable_crypto_from_header(header)
         else:
             row["issues"].append("Legacy lock should be upgraded to portable format")
-        if loaded_key_id:
+        if loaded_key_ids:
             if row["key_id"]:
-                row["key_match"] = "match" if row["key_id"] == loaded_key_id else "mismatch"
+                row["key_match"] = "match" if row["key_id"].lower() in loaded_key_ids else "mismatch"
             else:
                 row["key_match"] = "missing key ID"
         if not row["issues"]:
@@ -64,15 +89,21 @@ def inspect_locked_file(path, loaded_key_id=""):
     except Exception as exc:
         row["issues"] = [str(exc)]
         row["health"] = "Unreadable"
+    row["recovery"] = recovery_status(row, bool(loaded_key_ids))
     return row
 
 
 def build_privacy_safe_health_report(rows, scope="scan", loaded_key=False):
     rows = list(rows)
+    try:
+        loaded_key_count = max(0, int(loaded_key))
+    except (TypeError, ValueError):
+        loaded_key_count = 1 if loaded_key else 0
     health = Counter(str(row.get("health", "unknown")).lower() for row in rows)
     formats = Counter(str(row.get("format", "unknown")).lower() for row in rows)
     kinds = Counter(str(row.get("kind", "unknown")).lower() for row in rows)
     key_matches = Counter(str(row.get("key_match", "not checked")).lower() for row in rows)
+    recovery = Counter(str(row.get("recovery", "unknown")).lower() for row in rows)
     issue_counts = Counter()
     for row in rows:
         for issue in row.get("issues") or []:
@@ -103,12 +134,19 @@ def build_privacy_safe_health_report(rows, scope="scan", loaded_key=False):
         "report_type": "vaultlink-vault-health",
         "created_at_utc": locker.utc_now_text(),
         "scope": str(scope)[:40],
-        "loaded_key_compared": bool(loaded_key),
+        "loaded_key_compared": loaded_key_count > 0,
+        "loaded_key_count": loaded_key_count,
         "locked_file_count": len(rows),
         "health_counts": dict(sorted(health.items())),
         "format_counts": dict(sorted(formats.items())),
         "kind_counts": dict(sorted(kinds.items())),
         "key_match_counts": dict(sorted(key_matches.items())),
+        "recovery_counts": dict(sorted(recovery.items())),
+        "key_coverage_percent": (
+            round(100 * key_matches.get("match", 0) / len(rows), 1)
+            if rows and loaded_key_count > 0
+            else None
+        ),
         "issue_category_counts": dict(sorted(issue_counts.items())),
         "recommendations": recommendations,
         "limitations": [
@@ -119,6 +157,40 @@ def build_privacy_safe_health_report(rows, scope="scan", loaded_key=False):
             "This report excludes filenames, paths, original names, key IDs, USB secrets, PINs, passwords, "
             "license data, and file contents."
         ),
+    }
+
+
+def compare_health_reports(previous, current):
+    for label, report in (("Previous", previous), ("Current", current)):
+        if not isinstance(report, dict) or report.get("report_type") != "vaultlink-vault-health":
+            raise ValueError(f"{label} file is not a VaultLink privacy-safe health report.")
+
+    def count(report, group, name):
+        try:
+            return int((report.get(group) or {}).get(name, 0))
+        except (TypeError, ValueError):
+            return 0
+
+    previous_concerns = sum(count(previous, "health_counts", name) for name in ("legacy", "review", "unreadable"))
+    current_concerns = sum(count(current, "health_counts", name) for name in ("legacy", "review", "unreadable"))
+    if current_concerns < previous_concerns:
+        trend = "improved"
+    elif current_concerns > previous_concerns:
+        trend = "needs attention"
+    else:
+        trend = "unchanged"
+    return {
+        "schema_version": 1,
+        "comparison_type": "vaultlink-vault-health-aggregate",
+        "created_at_utc": locker.utc_now_text(),
+        "trend": trend,
+        "locked_file_count_delta": int(current.get("locked_file_count", 0)) - int(previous.get("locked_file_count", 0)),
+        "healthy_delta": count(current, "health_counts", "healthy") - count(previous, "health_counts", "healthy"),
+        "legacy_delta": count(current, "health_counts", "legacy") - count(previous, "health_counts", "legacy"),
+        "review_delta": count(current, "health_counts", "review") - count(previous, "health_counts", "review"),
+        "unreadable_delta": count(current, "health_counts", "unreadable") - count(previous, "health_counts", "unreadable"),
+        "key_covered_delta": count(current, "key_match_counts", "match") - count(previous, "key_match_counts", "match"),
+        "privacy_note": "The comparison uses aggregate counters only and contains no filenames, paths, key IDs, secrets, or contents.",
     }
 
 
@@ -134,14 +206,16 @@ class VaultHealthCenter(tk.Tk):
         self.configure(bg=locker.BG)
         self.rows = []
         self.filtered_rows = []
-        self.loaded_key_id = ""
+        self.loaded_key_ids = set()
         self.scope = "quick-scan"
         self.results = queue.Queue()
         self.busy = False
         self.closing = False
+        self.cancel_event = None
         self.status_var = tk.StringVar(value="Ready for a read-only locked-file health scan.")
-        self.key_var = tk.StringVar(value="KEY CHECK: NOT LOADED")
+        self.key_var = tk.StringVar(value="KEY COVERAGE: NO KEYS LOADED")
         self.summary_var = tk.StringVar(value="No scan has run yet.")
+        self.comparison_var = tk.StringVar(value="SAFE SNAPSHOT: Run a scan, export it, then compare a later scan.")
         self.search_var = tk.StringVar()
         self.scan_buttons = []
         self.build_ui()
@@ -185,26 +259,38 @@ class VaultHealthCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(anchor="w", pady=(4, 14))
 
-        toolbar = tk.Frame(outer, bg=locker.BG)
-        toolbar.pack(fill="x", pady=(0, 12))
-        actions = [
+        primary_toolbar = tk.Frame(outer, bg=locker.BG)
+        primary_toolbar.pack(fill="x", pady=(0, 7))
+        primary_actions = [
             ("QUICK SCAN", self.quick_scan, locker.GREEN, locker.BLACK),
             ("CHOOSE FOLDER", self.choose_folder_scan, locker.YELLOW, locker.BLACK),
-            ("LOAD KEY FOR MATCH CHECK", self.load_key, "#252936", locker.TEXT),
+        ]
+        for label, command, background, foreground in primary_actions:
+            button = tk.Button(primary_toolbar, text=label, command=command, bg=background, fg=foreground, relief="flat", font=("Segoe UI", 8, "bold"))
+            button.pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
+            self.scan_buttons.append(button)
+        self.stop_button = tk.Button(primary_toolbar, text="STOP SCAN", command=self.cancel_scan, state="disabled", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.stop_button.pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
+
+        secondary_toolbar = tk.Frame(outer, bg=locker.BG)
+        secondary_toolbar.pack(fill="x", pady=(0, 12))
+        secondary_actions = [
+            ("ADD KEY FOR COVERAGE", self.load_key, "#252936", locker.TEXT),
+            ("CLEAR KEY IDS", self.clear_keys, "#252936", locker.TEXT),
+            ("COMPARE SAFE SNAPSHOT", self.compare_snapshot, "#252936", locker.TEXT),
             ("EXPORT SAFE REPORT", self.export_report, "#252936", locker.TEXT),
             ("OPEN MAIN LOCKER", self.open_main_locker, "#252936", locker.TEXT),
             ("OPEN LOCKED BROWSER", self.open_locked_browser, "#252936", locker.TEXT),
         ]
-        for label, command, background, foreground in actions:
-            button = tk.Button(toolbar, text=label, command=command, bg=background, fg=foreground, relief="flat", font=("Segoe UI", 8, "bold"))
+        for label, command, background, foreground in secondary_actions:
+            button = tk.Button(secondary_toolbar, text=label, command=command, bg=background, fg=foreground, relief="flat", font=("Segoe UI", 8, "bold"))
             button.pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
-            if label in {"QUICK SCAN", "CHOOSE FOLDER"}:
-                self.scan_buttons.append(button)
 
         summary = tk.Frame(outer, bg=locker.PANEL)
         summary.pack(fill="x", pady=(0, 12))
         tk.Label(summary, textvariable=self.key_var, bg=locker.PANEL, fg=locker.YELLOW, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
-        tk.Label(summary, textvariable=self.summary_var, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 10, "bold"), wraplength=1050, justify="left").pack(anchor="w", padx=16, pady=(2, 12))
+        tk.Label(summary, textvariable=self.summary_var, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 10, "bold"), wraplength=1050, justify="left").pack(anchor="w", padx=16, pady=2)
+        tk.Label(summary, textvariable=self.comparison_var, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8), wraplength=1050, justify="left").pack(anchor="w", padx=16, pady=(2, 12))
 
         search_row = tk.Frame(outer, bg=locker.BG)
         search_row.pack(fill="x", pady=(0, 10))
@@ -220,18 +306,17 @@ class VaultHealthCenter(tk.Tk):
         body.add(left, stretch="always")
         body.add(right, minsize=330)
 
-        columns = ("name", "format", "kind", "health", "key", "folder")
+        columns = ("name", "format", "health", "key", "recovery")
         self.tree = ttk.Treeview(left, columns=columns, show="headings", height=20, style="VaultHealth.Treeview")
         for column, title, width in (
-            ("name", "Locked Item", 230),
-            ("format", "Format", 135),
-            ("kind", "Kind", 90),
-            ("health", "Health", 90),
-            ("key", "Key Check", 110),
-            ("folder", "Folder", 330),
+            ("name", "Locked Item", 180),
+            ("format", "Format", 110),
+            ("health", "Health", 70),
+            ("key", "Key Check", 90),
+            ("recovery", "Recovery", 150),
         ):
             self.tree.heading(column, text=title)
-            self.tree.column(column, width=width, anchor="w")
+            self.tree.column(column, width=width, anchor="w", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self.update_details())
         scroll = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
@@ -249,6 +334,7 @@ class VaultHealthCenter(tk.Tk):
         self.busy = bool(enabled)
         for button in self.scan_buttons:
             button.configure(state="disabled" if enabled else "normal")
+        self.stop_button.configure(state="normal" if enabled else "disabled")
 
     def quick_scan(self):
         self.start_scan(locker.common_user_dirs(), "quick-scan", 1200)
@@ -262,26 +348,38 @@ class VaultHealthCenter(tk.Tk):
         if self.busy:
             return
         self.scope = scope
+        self.cancel_event = threading.Event()
         self.set_busy(True)
         self.status_var.set("Scanning locked-file headers without decrypting file contents...")
-        key_id = self.loaded_key_id
+        key_ids = set(self.loaded_key_ids)
+        cancel_event = self.cancel_event
 
         def worker():
             try:
-                paths = locker.find_locked_files_in_roots(roots, max_results=max_results)
-                rows = [inspect_locked_file(path, key_id) for path in paths]
+                paths = locker.find_locked_files_in_roots(roots, max_results=max_results, stop_event=cancel_event)
+                rows = []
+                for path in paths:
+                    if cancel_event.is_set():
+                        break
+                    rows.append(inspect_locked_file(path, key_ids))
                 error = ""
             except Exception as exc:
                 rows = []
                 error = str(exc)
-            self.results.put((rows, error))
+            self.results.put((rows, error, cancel_event.is_set()))
 
         threading.Thread(target=worker, name="VaultHealthScan", daemon=True).start()
         self.after(75, self.poll_results)
 
+    def cancel_scan(self):
+        if self.busy and self.cancel_event is not None:
+            self.cancel_event.set()
+            self.stop_button.configure(state="disabled")
+            self.status_var.set("Stopping the read-only scan safely...")
+
     def poll_results(self):
         try:
-            rows, error = self.results.get_nowait()
+            rows, error, cancelled = self.results.get_nowait()
         except queue.Empty:
             if self.busy and not self.closing:
                 self.after(75, self.poll_results)
@@ -293,15 +391,26 @@ class VaultHealthCenter(tk.Tk):
             return
         self.rows = sorted(rows, key=lambda row: row["path"].lower())
         self.apply_filter()
-        report = build_privacy_safe_health_report(self.rows, self.scope, bool(self.loaded_key_id))
+        self.update_summary()
+        if cancelled:
+            self.status_var.set(f"Scan stopped safely after checking {len(self.rows)} locked item(s). No file was modified.")
+            locker.log_event("vault_health_scan", "scan", "cancelled")
+        else:
+            self.status_var.set("Read-only vault health scan complete. No locked file was modified or decrypted.")
+            locker.log_event("vault_health_scan", "scan", "ok")
+
+    def update_summary(self):
+        report = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
         counts = report["health_counts"]
+        recovery = report["recovery_counts"]
+        coverage = report["key_coverage_percent"]
+        coverage_text = "not checked" if coverage is None else f"{coverage:.1f}%"
         self.summary_var.set(
-            f"Locked items: {len(self.rows)} | Healthy: {counts.get('healthy', 0)} | "
+            f"Locked: {len(self.rows)} | Healthy: {counts.get('healthy', 0)} | "
             f"Legacy: {counts.get('legacy', 0)} | Review: {counts.get('review', 0)} | "
-            f"Unreadable: {counts.get('unreadable', 0)}"
+            f"Unreadable: {counts.get('unreadable', 0)} | Key coverage: {coverage_text} | "
+            f"Key needed: {recovery.get('matching key needed', 0)}"
         )
-        self.status_var.set("Read-only vault health scan complete. No locked file was modified or decrypted.")
-        locker.log_event("vault_health_scan", "scan", "ok")
 
     def load_key(self):
         path = filedialog.askopenfilename(title="Choose master USB key for ID matching", filetypes=[("USB locker key", "*.key"), ("All files", "*.*")], parent=self)
@@ -309,17 +418,29 @@ class VaultHealthCenter(tk.Tk):
             return
         try:
             key = locker.load_key_file(path)
-            self.loaded_key_id = key["key_id"]
-            self.key_var.set(f"KEY CHECK: LOADED ID {self.loaded_key_id}")
-            self.status_var.set("Loaded the key ID for compatibility checks. File contents remain encrypted.")
+            self.loaded_key_ids.add(key["key_id"].lower())
+            key_count = len(self.loaded_key_ids)
+            self.key_var.set(f"KEY COVERAGE: {key_count} KEY ID{'S' if key_count != 1 else ''} LOADED")
+            self.status_var.set("Added a key ID for aggregate coverage checks. The USB secret is not retained by this window.")
             if self.rows:
-                self.rows = [inspect_locked_file(row["path"], self.loaded_key_id) for row in self.rows]
+                self.rows = [inspect_locked_file(row["path"], self.loaded_key_ids) for row in self.rows]
                 self.apply_filter()
+                self.update_summary()
             locker.log_event("vault_health_key_check", "key", "ok")
         except Exception as exc:
             self.status_var.set("Could not load the selected key for compatibility checking.")
             locker.log_event("vault_health_key_check", "key", "failed")
             messagebox.showerror("Key check failed", str(exc), parent=self)
+
+    def clear_keys(self):
+        self.loaded_key_ids.clear()
+        self.key_var.set("KEY COVERAGE: NO KEYS LOADED")
+        if self.rows:
+            self.rows = [inspect_locked_file(row["path"]) for row in self.rows]
+            self.apply_filter()
+            self.update_summary()
+        self.status_var.set("Cleared all loaded key IDs from this window. Locked files were not changed.")
+        locker.log_event("vault_health_key_check", "clear", "ok")
 
     def apply_filter(self):
         needle = self.search_var.get().strip().lower()
@@ -331,12 +452,13 @@ class VaultHealthCenter(tk.Tk):
                 or needle in row["format"].lower()
                 or needle in row["health"].lower()
                 or needle in row["key_match"].lower()
+                or needle in row["recovery"].lower()
             ]
         else:
             self.filtered_rows = list(self.rows)
         self.tree.delete(*self.tree.get_children())
         for index, row in enumerate(self.filtered_rows):
-            self.tree.insert("", "end", iid=str(index), values=(row["name"], row["format"], row["kind"], row["health"], row["key_match"], row["folder"]))
+            self.tree.insert("", "end", iid=str(index), values=(row["name"], row["format"], row["health"], row["key_match"], row["recovery"]))
         if self.filtered_rows:
             self.tree.selection_set("0")
         self.update_details()
@@ -364,6 +486,7 @@ class VaultHealthCenter(tk.Tk):
                 f"Kind: {row['kind']}",
                 f"Health: {row['health']}",
                 f"Key check: {row['key_match']}",
+                f"Recovery: {row['recovery']}",
                 f"Security profile: {row['security_profile']}",
                 "",
                 "Issues:",
@@ -375,7 +498,7 @@ class VaultHealthCenter(tk.Tk):
         self.details.configure(state="disabled")
 
     def export_report(self):
-        report = build_privacy_safe_health_report(self.rows, self.scope, bool(self.loaded_key_id))
+        report = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
         target = filedialog.asksaveasfilename(
             title="Export privacy-safe vault health report",
             defaultextension=".json",
@@ -392,6 +515,33 @@ class VaultHealthCenter(tk.Tk):
         except Exception as exc:
             locker.log_event("vault_health_report_export", "report", "failed")
             messagebox.showerror("Report export failed", str(exc), parent=self)
+
+    def compare_snapshot(self):
+        if not self.rows:
+            messagebox.showinfo("Run a scan first", "Run a vault health scan before comparing a previous safe snapshot.", parent=self)
+            return
+        path = filedialog.askopenfilename(
+            title="Choose previous privacy-safe vault health report",
+            filetypes=[("Vault health report", "*.json")],
+            parent=self,
+        )
+        if not path:
+            return
+        try:
+            previous = json.loads(Path(path).read_text(encoding="utf-8"))
+            current = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
+            comparison = compare_health_reports(previous, current)
+            self.comparison_var.set(
+                f"SAFE SNAPSHOT: {comparison['trend'].upper()} | Files {comparison['locked_file_count_delta']:+d} | "
+                f"Healthy {comparison['healthy_delta']:+d} | Legacy {comparison['legacy_delta']:+d} | "
+                f"Review {comparison['review_delta']:+d} | Unreadable {comparison['unreadable_delta']:+d} | "
+                f"Key covered {comparison['key_covered_delta']:+d}"
+            )
+            self.status_var.set("Compared aggregate privacy-safe counters. No filenames, paths, or key IDs were imported.")
+            locker.log_event("vault_health_snapshot_compare", "report", "ok")
+        except Exception as exc:
+            locker.log_event("vault_health_snapshot_compare", "report", "failed")
+            messagebox.showerror("Snapshot comparison failed", str(exc), parent=self)
 
     def open_selected_folder(self):
         row = self.selected_row()
@@ -417,6 +567,8 @@ class VaultHealthCenter(tk.Tk):
 
     def close_requested(self):
         self.closing = True
+        if self.cancel_event is not None:
+            self.cancel_event.set()
         self.destroy()
 
 

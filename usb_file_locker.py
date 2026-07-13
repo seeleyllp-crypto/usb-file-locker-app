@@ -3050,10 +3050,12 @@ def scan_personal_file_candidates():
     return results
 
 
-def find_locked_files_in_roots(roots, max_results=MAX_SCAN_RESULTS):
+def find_locked_files_in_roots(roots, max_results=MAX_SCAN_RESULTS, stop_event=None):
     results = []
     seen_roots = set()
     for root in roots:
+        if stop_event is not None and stop_event.is_set():
+            return results
         try:
             root = Path(root).resolve()
         except Exception:
@@ -3062,8 +3064,12 @@ def find_locked_files_in_roots(roots, max_results=MAX_SCAN_RESULTS):
             continue
         seen_roots.add(root)
         for dirpath, dirnames, filenames in os.walk(root):
+            if stop_event is not None and stop_event.is_set():
+                return results
             dirnames[:] = [name for name in dirnames if name.lower() not in WALK_SKIP_DIRS]
             for filename in filenames:
+                if stop_event is not None and stop_event.is_set():
+                    return results
                 if filename.lower().endswith((".locked", ".lookeed")):
                     results.append(str(Path(dirpath) / filename))
                     if len(results) >= max_results:

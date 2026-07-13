@@ -19,8 +19,10 @@ First run:
 
 Updates:
 - Version 2026.07.13.3 adds VAULT HEALTH CENTER for read-only locked-file
-  structure checks, legacy-format review, key compatibility, and aggregate
-  privacy-safe reports. It also adds signed release details, SHA-256 copy,
+  structure checks, legacy review, recovery status, multi-key coverage, safe
+  scan cancellation, and aggregate snapshot comparison. Reports exclude names,
+  paths, key IDs, secrets, and contents. It also adds signed release details,
+  SHA-256 copy,
   verification receipts, local readiness, verified download-only mode, anonymous
   update activity, rollback-backup access, and app-data backup to UPDATE CENTER.
   The private OWNER UPDATE LAB adds a 15-check preflight, package inspector,
