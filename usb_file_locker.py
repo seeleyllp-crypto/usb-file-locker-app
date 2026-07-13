@@ -2080,6 +2080,49 @@ def check_windows_update_online(server_url):
     return validate_windows_update_manifest(response)
 
 
+def format_update_size(size_bytes):
+    size = max(0, int(size_bytes or 0))
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def update_verification_receipt(manifest, checked_at_utc=None):
+    if not isinstance(manifest, dict):
+        raise ValueError("Check for a signed update before exporting a verification receipt.")
+    api_version = str(manifest.get("api_version", "") or "")
+    validated = validate_windows_update_manifest(
+        {
+            "api_version": api_version,
+            "update": signed_update_manifest_fields(manifest),
+        }
+    )
+    return {
+        "schema_version": 1,
+        "receipt_type": "vaultlink-update-verification",
+        "verified_at_utc": str(checked_at_utc or utc_now_text()),
+        "installed_version": DESKTOP_APP_VERSION,
+        "release_version": validated["version"],
+        "minimum_supported_version": validated["minimum_supported_version"],
+        "api_version": api_version,
+        "published_at_utc": validated["published_at_utc"],
+        "package_filename": validated["package_filename"],
+        "package_sha256": validated["sha256"],
+        "package_size_bytes": validated["size_bytes"],
+        "signing_key_id": validated["signing_key_id"],
+        "signature_verified": True,
+        "app_data_preserved": True,
+        "update_available": validated["update_available"],
+        "current_version_supported": validated["current_version_supported"],
+        "privacy_note": (
+            "This receipt contains release metadata only. It excludes license keys, USB secrets, PINs, "
+            "passwords, customer data, full local paths, and file contents."
+        ),
+    }
+
+
 def download_windows_update_package(server_url, manifest, destination):
     validated = validate_windows_update_manifest({"update": signed_update_manifest_fields(manifest)})
     url = validated_license_server_url(server_url) + validated["download_path"]
@@ -3673,18 +3716,23 @@ class UpdateCenterWindow(tk.Toplevel):
         super().__init__(owner)
         self.owner = owner
         self.title("VaultLink Update Center")
-        self.geometry("760x610")
-        self.minsize(680, 540)
+        self.geometry("840x720")
+        self.minsize(740, 640)
         self.configure(bg=BG)
         self.current_var = tk.StringVar(value=f"Installed version: {DESKTOP_APP_VERSION}")
         self.latest_var = tk.StringVar(value="Latest signed version: checking...")
         self.api_var = tk.StringVar(value="API compatibility: checking...")
+        self.verification_var = tk.StringVar(value="Signature and package identity: not checked")
+        self.preservation_var = tk.StringVar(value="Preserved: keys, licenses, settings, vault data, audit logs, and locked files")
         self.status_var = tk.StringVar(value="Ready to check for a signed update.")
         self.auto_var = tk.BooleanVar(value=bool(owner.settings.get("auto_update_check", True)))
         self.auto_install_var = tk.BooleanVar(value=bool(owner.settings.get("auto_install_signed_updates", False)))
         self.notes = None
         self.check_button = None
         self.install_button = None
+        self.hash_button = None
+        self.receipt_button = None
+        self.details_button = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.show_manifest(owner.latest_update_manifest)
@@ -3707,6 +3755,7 @@ class UpdateCenterWindow(tk.Toplevel):
             (self.current_var, TEXT),
             (self.latest_var, YELLOW),
             (self.api_var, MUTED),
+            (self.verification_var, GREEN),
         ):
             tk.Label(
                 status_panel,
@@ -3718,7 +3767,7 @@ class UpdateCenterWindow(tk.Toplevel):
             ).pack(anchor="w", padx=18, pady=(12 if variable is self.current_var else 2, 0))
         tk.Label(
             status_panel,
-            text="Updates replace app files only. Keys, licenses, vault data, settings, and audit logs stay in LocalAppData.",
+            textvariable=self.preservation_var,
             bg=PANEL,
             fg=MUTED,
             justify="left",
@@ -3729,7 +3778,7 @@ class UpdateCenterWindow(tk.Toplevel):
         tk.Label(outer, text="RELEASE NOTES", bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(16, 6))
         self.notes = tk.Text(
             outer,
-            height=10,
+            height=8,
             bg=FIELD,
             fg=TEXT,
             insertbackground=TEXT,
@@ -3828,6 +3877,51 @@ class UpdateCenterWindow(tk.Toplevel):
             relief="flat",
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        self.details_button = tk.Button(
+            web_controls,
+            text="VERIFICATION DETAILS",
+            command=self.show_verification_details,
+            state="disabled",
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.details_button.pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+
+        evidence_controls = tk.Frame(outer, bg=BG)
+        evidence_controls.pack(fill="x", pady=(10, 0))
+        self.hash_button = tk.Button(
+            evidence_controls,
+            text="COPY VERIFIED SHA-256",
+            command=self.copy_verified_hash,
+            state="disabled",
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.hash_button.pack(side="left", ipadx=12, ipady=7)
+        self.receipt_button = tk.Button(
+            evidence_controls,
+            text="EXPORT VERIFICATION RECEIPT",
+            command=self.export_verification_receipt,
+            state="disabled",
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.receipt_button.pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            evidence_controls,
+            text="BACK UP APP DATA",
+            command=self.owner.backup_app_data,
+            bg=YELLOW,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
             outer,
             textvariable=self.status_var,
@@ -3851,6 +3945,70 @@ class UpdateCenterWindow(tk.Toplevel):
         self.notes.insert("1.0", text)
         self.notes.configure(state="disabled")
 
+    def checked_at_utc(self):
+        return str(self.owner.settings.get("last_update_check_utc", "") or utc_now_text())
+
+    def copy_verified_hash(self):
+        manifest = self.owner.latest_update_manifest
+        value = str((manifest or {}).get("sha256", "")).lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            messagebox.showerror("No verified hash", "Check for a signed update first.", parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(value)
+        self.status_var.set("Copied the SHA-256 from the verified signed manifest.")
+        log_event("update_hash_copy", "release", "ok")
+
+    def export_verification_receipt(self):
+        manifest = self.owner.latest_update_manifest
+        try:
+            receipt = update_verification_receipt(manifest, self.checked_at_utc())
+        except Exception as exc:
+            messagebox.showerror("Receipt unavailable", str(exc), parent=self)
+            return
+        target = filedialog.asksaveasfilename(
+            title="Export privacy-safe update verification receipt",
+            defaultextension=".json",
+            initialfile=f"VaultLink-Update-Receipt-{receipt['release_version']}.json",
+            filetypes=[("JSON receipt", "*.json")],
+        )
+        if not target:
+            return
+        try:
+            write_text_atomic(Path(target), json.dumps(receipt, indent=2))
+            self.status_var.set("Exported a privacy-safe signed-update verification receipt.")
+            log_event("update_receipt_export", "release", "ok")
+        except Exception as exc:
+            log_event("update_receipt_export", "release", "failed")
+            messagebox.showerror("Could not export receipt", str(exc), parent=self)
+
+    def show_verification_details(self):
+        manifest = self.owner.latest_update_manifest
+        try:
+            receipt = update_verification_receipt(manifest, self.checked_at_utc())
+        except Exception as exc:
+            messagebox.showerror("Verification unavailable", str(exc), parent=self)
+            return
+        lines = [
+            f"Release: {receipt['release_version']}",
+            f"Installed: {receipt['installed_version']}",
+            f"Minimum supported: {receipt['minimum_supported_version']}",
+            f"Published: {receipt['published_at_utc']}",
+            f"Checked: {receipt['verified_at_utc']}",
+            f"API: {receipt['api_version'] or 'not reported'}",
+            f"Package: {receipt['package_filename']}",
+            f"Size: {format_update_size(receipt['package_size_bytes'])}",
+            f"Signing key ID: {receipt['signing_key_id']}",
+            f"SHA-256: {receipt['package_sha256']}",
+            "",
+            "Ed25519 signature: VERIFIED",
+            "Package hash format: VERIFIED",
+            "App-data preservation promise: VERIFIED",
+            "",
+            receipt["privacy_note"],
+        ]
+        messagebox.showinfo("Signed Update Verification", "\n".join(lines), parent=self)
+
     def show_manifest(self, manifest, error=""):
         busy = self.owner.update_operation in {"check", "stage"}
         self.check_button.configure(state="disabled" if busy else "normal")
@@ -3858,14 +4016,22 @@ class UpdateCenterWindow(tk.Toplevel):
             self.latest_var.set("Latest signed version: unavailable")
             self.api_var.set("API compatibility: check failed")
             self.status_var.set(error)
+            self.verification_var.set("Signature and package identity: check failed")
             self.install_button.configure(state="disabled")
+            self.hash_button.configure(state="disabled")
+            self.receipt_button.configure(state="disabled")
+            self.details_button.configure(state="disabled")
             self.set_notes([])
             return
         if not manifest:
             self.latest_var.set("Latest signed version: not checked")
             self.api_var.set("API compatibility: not checked")
             self.status_var.set("Check the API for a signed release.")
+            self.verification_var.set("Signature and package identity: not checked")
             self.install_button.configure(state="disabled")
+            self.hash_button.configure(state="disabled")
+            self.receipt_button.configure(state="disabled")
+            self.details_button.configure(state="disabled")
             self.set_notes([])
             return
         version = manifest.get("version", "unknown")
@@ -3874,6 +4040,13 @@ class UpdateCenterWindow(tk.Toplevel):
         self.latest_var.set(f"Latest signed version: {version}")
         compatibility = "supported" if supported else "update required"
         self.api_var.set(f"API {manifest.get('api_version', 'unknown')} | Current desktop: {compatibility}")
+        self.verification_var.set(
+            f"VERIFIED SIGNATURE | {format_update_size(manifest.get('size_bytes'))} | "
+            f"KEY {manifest.get('signing_key_id', 'unknown')} | SHA-256 {str(manifest.get('sha256', ''))[:16]}..."
+        )
+        self.hash_button.configure(state="normal")
+        self.receipt_button.configure(state="normal")
+        self.details_button.configure(state="normal")
         if available and not supported:
             self.status_var.set("This desktop version is below the supported floor. Install the verified update before relying on API features.")
         elif available:

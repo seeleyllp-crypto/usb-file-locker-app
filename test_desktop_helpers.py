@@ -497,6 +497,63 @@ class DesktopHelperTests(unittest.TestCase):
                     )
                 self.assertEqual(saved.read_bytes(), package_bytes)
 
+    def test_update_verification_receipt_is_signed_and_privacy_safe(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        manifest = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.2",
+            "minimum_supported_version": "2026.07.12.9",
+            "published_at_utc": "2026-07-13T20:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.2.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": "a" * 64,
+            "size_bytes": 4096,
+            "signing_key_id": key_id,
+            "notes": ["Privacy-safe receipt test"],
+            "preserves_local_app_data": True,
+        }
+        manifest["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(locker.canonical_update_manifest_bytes(manifest))
+        ).rstrip(b"=").decode("ascii")
+        validated = dict(manifest, api_version="test-api")
+        with (
+            mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
+            mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
+        ):
+            receipt = locker.update_verification_receipt(validated, "2026-07-13T21:00:00Z")
+        self.assertTrue(receipt["signature_verified"])
+        self.assertTrue(receipt["app_data_preserved"])
+        self.assertEqual(receipt["package_sha256"], "a" * 64)
+        self.assertEqual(receipt["verified_at_utc"], "2026-07-13T21:00:00Z")
+        serialized = json.dumps(receipt).lower()
+        for forbidden in (
+            '"license_key":',
+            '"usb_secret":',
+            '"pin":',
+            '"password":',
+            "do-not-store-secret-value",
+            "c:\\\\users",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+        tampered = dict(validated, package_filename="VaultLink-Windows-tampered.zip")
+        with (
+            mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
+            mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
+        ):
+            with self.assertRaisesRegex(ValueError, "signature did not verify"):
+                locker.update_verification_receipt(tampered)
+
+    def test_update_size_formatting(self):
+        self.assertEqual(locker.format_update_size(511), "511 bytes")
+        self.assertEqual(locker.format_update_size(1536), "1.5 KB")
+        self.assertEqual(locker.format_update_size(3 * 1024 * 1024), "3.0 MB")
+
     def test_updater_rejects_zip_slip_and_preserves_local_app_data(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_updater_safety_") as folder:
             root = Path(folder)
