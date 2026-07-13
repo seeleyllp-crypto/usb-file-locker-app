@@ -45,10 +45,10 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Update Lab adds a 15-check preflight, package inspection, report export, and hash-chained release history.",
+    "Update Center adds signed release details, verified SHA-256 copy, and privacy-safe verification receipt export.",
+    "Customers can start an app-data backup directly before installing an update.",
     "Private owner tools remain excluded from customer update packages.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
-    "This private candidate must pass tests, signature checks, package inspection, and Microsoft Defender before publishing.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
