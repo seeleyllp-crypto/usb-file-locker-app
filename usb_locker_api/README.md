@@ -13,6 +13,9 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - Rank-targeted, scheduled, read-only Owner Announcements with desktop delivery
 - Public informational service status with automatic licensed-desktop notices
 - A tamper-evident, hash-chained owner activity ledger with scoped JSON downloads
+- Anonymous client release-adoption counts and coarse 24-hour sync freshness
+- A public customer status page at `/status` with service and signed-release details
+- Owner-issued time-limited promotional giveaway licenses
 - Privacy-safe audit report upload with signed, expiring downloads
 - Server-calculated breach summaries plus direct admin log downloads on the owner website
 - A public seven-rank shop at `/shop` using allowlisted provider-hosted checkout links
@@ -33,6 +36,8 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - Announcements cannot run commands, access customer files, or change customer settings
 - Service status is informational and cannot remotely control or disable customer PCs
 - API activity records exclude keys, tokens, notes, messages, customer labels, file data, and full paths
+- Client health never exposes PC names or raw machine ids; it reports only anonymous counts, app versions, and coarse freshness
+- Giveaway tooling does not select winners, collect entries, process payments, or provide contest-law compliance
 - It does not collect card numbers, store payment secrets, or treat a checkout receipt as a license key
 
 ## Railway setup

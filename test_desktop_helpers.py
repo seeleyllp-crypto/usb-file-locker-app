@@ -255,6 +255,19 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn(state["license_key"], shop_url)
         self.assertNotIn(state["receipt"], shop_url)
 
+        app = SimpleNamespace(status=FakeVar())
+        with (
+            mock.patch.object(locker, "load_settings", return_value={}),
+            mock.patch.object(locker, "load_license_state", return_value=state),
+            mock.patch.object(locker.os, "startfile") as startfile,
+            mock.patch.object(locker, "log_event"),
+        ):
+            locker.USBFileLocker.open_customer_status(app)
+        status_url = startfile.call_args.args[0]
+        self.assertEqual(status_url, locker.DEFAULT_LICENSE_SERVER + "/status")
+        self.assertNotIn(state["license_key"], status_url)
+        self.assertNotIn(state["receipt"], status_url)
+
     def test_stale_feature_gate_enforces_revocation_but_keeps_valid_cache_on_outage(self):
         active = locker.normalize_license_state(
             {
@@ -362,6 +375,43 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual((target / "usb_file_locker.py").read_text(encoding="utf-8"), "new app")
             self.assertEqual((target / "settings.json").read_text(encoding="utf-8"), "private settings")
             self.assertEqual((backup / "usb_file_locker.py").read_text(encoding="utf-8"), "old app")
+
+    def test_opt_in_auto_update_starts_only_after_verified_check(self):
+        app = SimpleNamespace(settings={}, status=FakeVar())
+        with (
+            mock.patch.object(locker, "save_settings") as save,
+            mock.patch.object(locker, "log_event") as log,
+        ):
+            locker.USBFileLocker.set_auto_install_updates(app, True)
+        self.assertTrue(app.settings["auto_update_check"])
+        self.assertTrue(app.settings["auto_install_signed_updates"])
+        save.assert_called_once()
+        log.assert_called_once()
+
+        manifest = {
+            "version": "9999.1",
+            "update_available": True,
+            "current_version_supported": True,
+        }
+        app = SimpleNamespace(
+            update_results=queue.Queue(),
+            update_operation="check",
+            update_button=FakeButton(state="disabled"),
+            latest_update_manifest=None,
+            settings={"auto_install_signed_updates": True},
+            status=FakeVar(),
+            refresh_update_window=mock.Mock(),
+            install_latest_update=mock.Mock(),
+        )
+        app.update_results.put(("check", manifest, "", True))
+        with (
+            mock.patch.object(locker, "save_settings"),
+            mock.patch.object(locker, "log_event"),
+            mock.patch.object(locker.messagebox, "askyesno") as ask,
+        ):
+            locker.USBFileLocker.poll_update_results(app)
+        app.install_latest_update.assert_called_once_with(automatic=True)
+        ask.assert_not_called()
 
     def test_updater_extracts_into_mkdtemp_directory_and_rejects_nonempty_reuse(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_updater_mkdtemp_") as folder:

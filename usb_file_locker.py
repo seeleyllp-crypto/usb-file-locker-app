@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.6"
+DESKTOP_APP_VERSION = "2026.07.12.7"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -3659,6 +3659,7 @@ class UpdateCenterWindow(tk.Toplevel):
         self.api_var = tk.StringVar(value="API compatibility: checking...")
         self.status_var = tk.StringVar(value="Ready to check for a signed update.")
         self.auto_var = tk.BooleanVar(value=bool(owner.settings.get("auto_update_check", True)))
+        self.auto_install_var = tk.BooleanVar(value=bool(owner.settings.get("auto_install_signed_updates", False)))
         self.notes = None
         self.check_button = None
         self.install_button = None
@@ -3717,6 +3718,33 @@ class UpdateCenterWindow(tk.Toplevel):
         )
         self.notes.pack(fill="both", expand=True)
 
+        options = tk.Frame(outer, bg=BG)
+        options.pack(fill="x", pady=(12, 0))
+        tk.Checkbutton(
+            options,
+            text="AUTO-CHECK DAILY",
+            variable=self.auto_var,
+            command=lambda: self.owner.set_auto_update_check(self.auto_var.get()),
+            bg=BG,
+            fg=TEXT,
+            selectcolor=FIELD,
+            activebackground=BG,
+            activeforeground=TEXT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        tk.Checkbutton(
+            options,
+            text="AUTO-INSTALL VERIFIED UPDATES",
+            variable=self.auto_install_var,
+            command=self.set_auto_install,
+            bg=BG,
+            fg=TEXT,
+            selectcolor=FIELD,
+            activebackground=BG,
+            activeforeground=TEXT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(16, 0))
+
         controls = tk.Frame(outer, bg=BG)
         controls.pack(fill="x", pady=(14, 0))
         self.check_button = tk.Button(
@@ -3740,18 +3768,15 @@ class UpdateCenterWindow(tk.Toplevel):
             font=("Segoe UI", 9, "bold"),
         )
         self.install_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
-        tk.Checkbutton(
+        tk.Button(
             controls,
-            text="AUTO-CHECK DAILY",
-            variable=self.auto_var,
-            command=lambda: self.owner.set_auto_update_check(self.auto_var.get()),
-            bg=BG,
+            text="SERVICE STATUS",
+            command=self.owner.open_customer_status,
+            bg="#252936",
             fg=TEXT,
-            selectcolor=FIELD,
-            activebackground=BG,
-            activeforeground=TEXT,
-            font=("Segoe UI", 8, "bold"),
-        ).pack(side="left", padx=(14, 0))
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(
             controls,
             text="CLOSE",
@@ -3770,6 +3795,12 @@ class UpdateCenterWindow(tk.Toplevel):
             wraplength=700,
             font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(12, 0))
+
+    def set_auto_install(self):
+        enabled = bool(self.auto_install_var.get())
+        if enabled:
+            self.auto_var.set(True)
+        self.owner.set_auto_install_updates(enabled)
 
     def set_notes(self, lines):
         text = "\n".join(f"- {line}" for line in lines) if lines else "No release notes were supplied."
@@ -4567,6 +4598,18 @@ class USBFileLocker(tk.Tk):
         save_settings(self.settings)
         self.status.set("Automatic daily update checks enabled." if enabled else "Automatic update checks turned off.")
 
+    def set_auto_install_updates(self, enabled):
+        self.settings["auto_install_signed_updates"] = bool(enabled)
+        if enabled:
+            self.settings["auto_update_check"] = True
+        save_settings(self.settings)
+        self.status.set(
+            "Verified updates will install automatically after a successful signature and hash check."
+            if enabled
+            else "Automatic update installation turned off."
+        )
+        log_event("auto_update_setting", "local", "ok", f"enabled={int(bool(enabled))}")
+
     def auto_check_for_updates(self):
         if not self.settings.get("auto_update_check", True):
             return
@@ -4589,6 +4632,18 @@ class USBFileLocker(tk.Tk):
         if self.latest_update_manifest is None and not self.update_operation:
             self.start_update_check(silent=False)
         return self.update_window
+
+    def open_customer_status(self):
+        try:
+            state = load_license_state(load_settings())
+            server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+            os.startfile(server + "/status")
+            self.status.set("Opened the public VaultLink customer status page.")
+            log_event("customer_status_open", "api", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the customer status page.")
+            log_event("customer_status_open", "api", "failed")
+            messagebox.showerror("Could not open Customer Status", str(exc), parent=self)
 
     def refresh_update_window(self, error=""):
         if self.update_window is None:
@@ -4658,6 +4713,11 @@ class USBFileLocker(tk.Tk):
             save_settings(self.settings)
             if available and silent:
                 version = str(payload.get("version", ""))
+                if self.settings.get("auto_install_signed_updates", False):
+                    self.status.set(f"Verified update {version} found. Preparing automatic installation...")
+                    log_event("application_auto_update", "api", "ok", f"verified={version}")
+                    self.install_latest_update(automatic=True)
+                    return
                 if self.settings.get("last_update_notice_version") != version:
                     self.settings["last_update_notice_version"] = version
                     save_settings(self.settings)
@@ -4677,7 +4737,11 @@ class USBFileLocker(tk.Tk):
             if error:
                 self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
                 self.refresh_update_window(error=error)
-                messagebox.showerror("Update download failed", error, parent=self)
+                if silent:
+                    self.status.set(f"Automatic update could not be installed: {error}")
+                    log_event("application_auto_update", "api", "failed")
+                else:
+                    messagebox.showerror("Update download failed", error, parent=self)
                 return
             stage_dir, manifest_path, package_path = payload
             try:
@@ -4696,7 +4760,7 @@ class USBFileLocker(tk.Tk):
                 self.refresh_update_window(error=str(exc))
                 messagebox.showerror("Could not start updater", str(exc), parent=self)
 
-    def install_latest_update(self):
+    def install_latest_update(self, automatic=False):
         manifest = self.latest_update_manifest
         if not manifest or not manifest.get("update_available"):
             messagebox.showinfo("No update ready", "Check for an update first.", parent=self)
@@ -4704,15 +4768,18 @@ class USBFileLocker(tk.Tk):
         if self.update_operation:
             return
         if (RUNTIME_DIR / ".git").exists():
-            messagebox.showinfo(
-                "Git folder detected",
-                "Automatic installation is disabled in a Git working folder. Use git pull, or run the clean release folder.",
-                parent=self,
-            )
+            if automatic:
+                self.status.set("A verified update is available, but Git working folders must be updated with git pull.")
+            else:
+                messagebox.showinfo(
+                    "Git folder detected",
+                    "Automatic installation is disabled in a Git working folder. Use git pull, or run the clean release folder.",
+                    parent=self,
+                )
             return
         version = str(manifest.get("version", "unknown"))
         size_mb = int(manifest.get("size_bytes", 0)) / (1024 * 1024)
-        confirmed = messagebox.askyesno(
+        confirmed = automatic or messagebox.askyesno(
             "Install verified update",
             f"Install VaultLink {version} ({size_mb:.1f} MB)?\n\n"
             "The Ed25519 signature and SHA-256 package hash will be checked again. "
@@ -4736,7 +4803,7 @@ class USBFileLocker(tk.Tk):
             except Exception as exc:
                 staged = None
                 error = str(exc)
-            self.update_results.put(("stage", staged, error, False))
+            self.update_results.put(("stage", staged, error, bool(automatic)))
 
         threading.Thread(target=worker, name="VaultLinkUpdateDownload", daemon=True).start()
         self.after(75, self.poll_update_results)

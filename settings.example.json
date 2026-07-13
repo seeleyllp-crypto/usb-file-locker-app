@@ -1,4 +1,6 @@
 {
   "last_key_path": "",
-  "owner_usb_policy": ""
+  "owner_usb_policy": "",
+  "auto_update_check": true,
+  "auto_install_signed_updates": false
 }

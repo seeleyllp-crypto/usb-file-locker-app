@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.11.0"
+API_VERSION = "0.12.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -1160,6 +1160,7 @@ def docs_payload():
         "routes": [
             {"method": "GET", "path": "/", "purpose": "HTML homepage"},
             {"method": "GET", "path": "/shop", "purpose": "Public seven-tier shop with provider-hosted checkout"},
+            {"method": "GET", "path": "/status", "purpose": "Public customer service and signed-release status"},
             {"method": "GET", "path": "/owner", "purpose": "Owner-only key and note web console"},
             {"method": "GET", "path": "/docs", "purpose": "JSON route index"},
             {"method": "GET", "path": "/health", "purpose": "Health check"},
@@ -1314,7 +1315,8 @@ def windows_update_payload():
         "security": {
             "manifest_signature": "Ed25519",
             "package_integrity": "SHA-256",
-            "automatic_install_requires_user_confirmation": True,
+            "manual_install_requires_confirmation": True,
+            "automatic_install_requires_local_opt_in": True,
         },
         "server_time_utc": utc_now(),
     }
@@ -1515,6 +1517,7 @@ def homepage_html():
       <p>{product['tagline']}</p>
       <div class="cta">
         <a class="primary" href="/shop">Open Shop</a>
+        <a href="/status">Customer Status</a>
         <a href="/docs">Open Route Index</a>
         <a href="/owner">Owner Console</a>
         <a href="/api/v1/product">Product JSON</a>
@@ -1542,6 +1545,67 @@ def homepage_html():
       </div>
     </section>
   </div>
+</body>
+</html>"""
+
+
+def customer_status_html():
+    service = service_status_payload()
+    try:
+        manifest, _package = load_windows_update_release()
+        desktop_version = str(manifest.get("version", "")) or "Not published"
+        published_at = str(manifest.get("published_at_utc", "")) or "Unknown"
+        notes = list(manifest.get("notes", []))[:8]
+    except (FileNotFoundError, OSError, ValueError):
+        desktop_version = "Not published"
+        published_at = "Unknown"
+        notes = []
+    note_html = "".join(f"<li>{html_escape(str(note))}</li>" for note in notes)
+    if not note_html:
+        note_html = "<li>No signed desktop release notes are available.</li>"
+    mode = str(service.get("mode", "normal"))
+    mode_label = mode.upper()
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaultLink Customer Status</title>
+  <style>
+    :root {{ --bg:#111317; --panel:#1a1e25; --line:#303844; --text:#f1f3f5; --muted:#aeb7c4; --green:#74e27f; --yellow:#ffd166; --red:#ff7b72; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI",Arial,sans-serif; }}
+    header {{ border-bottom:1px solid var(--line); }}
+    header div, main {{ width:min(920px,calc(100% - 32px)); margin:0 auto; }}
+    header div {{ min-height:68px; display:flex; align-items:center; justify-content:space-between; gap:16px; }}
+    header a {{ color:var(--muted); text-decoration:none; }}
+    main {{ padding:32px 0 52px; }}
+    h1 {{ margin:0; font-size:2rem; letter-spacing:0; }}
+    .lead {{ margin:8px 0 24px; color:var(--muted); line-height:1.6; }}
+    .grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }}
+    section {{ border:1px solid var(--line); background:var(--panel); padding:20px; border-radius:8px; min-width:0; }}
+    section.full {{ grid-column:1 / -1; }}
+    label {{ display:block; color:var(--muted); font-size:.76rem; font-weight:700; text-transform:uppercase; }}
+    strong {{ display:block; margin-top:8px; font-size:1.35rem; overflow-wrap:anywhere; }}
+    .mode {{ color:{'var(--green)' if mode == 'normal' else 'var(--yellow)' if mode == 'degraded' else 'var(--red)'}; }}
+    p,li {{ color:var(--muted); line-height:1.55; overflow-wrap:anywhere; }}
+    ul {{ padding-left:20px; }}
+    @media(max-width:620px) {{ .grid {{ grid-template-columns:1fr; }} section.full {{ grid-column:auto; }} header div {{ align-items:flex-start; flex-direction:column; padding:16px 0; }} }}
+  </style>
+</head>
+<body>
+  <header><div><strong>VaultLink</strong><nav><a href="/">HOME</a> &nbsp; <a href="/shop">SHOP</a></nav></div></header>
+  <main>
+    <h1>Customer Status</h1>
+    <p class="lead">Public service and signed-release information. This page does not request or display license keys, device identifiers, files, or account data.</p>
+    <div class="grid">
+      <section><label>Service mode</label><strong class="mode">{html_escape(mode_label)}</strong><p>{html_escape(str(service.get('message', '')))}</p></section>
+      <section><label>Latest signed desktop release</label><strong>{html_escape(desktop_version)}</strong><p>Published {html_escape(published_at)}</p></section>
+      <section><label>API version</label><strong>{API_VERSION}</strong><p>Live service metadata only.</p></section>
+      <section><label>Update protection</label><strong>Ed25519 + SHA-256</strong><p>Automatic installation requires a local opt-in and remains blocked in Git working folders.</p></section>
+      <section class="full"><label>Release notes</label><ul>{note_html}</ul></section>
+    </div>
+  </main>
 </body>
 </html>"""
 
@@ -1719,7 +1783,14 @@ def owner_portal_html():
         <div class="stat"><label>Active announcements</label><strong id="statAnnouncements">-</strong></div>
         <div class="stat"><label>Service status</label><strong id="statService">-</strong></div>
         <div class="stat"><label>Activity integrity</label><strong id="statActivity">-</strong></div>
+        <div class="stat"><label>Current release clients</label><strong id="statCurrentClients">-</strong></div>
+        <div class="stat"><label>Stale clients, 24h</label><strong id="statStaleClients">-</strong></div>
       </div>
+    </section>
+
+    <section>
+      <div class="record-head"><h2>Client Release Adoption</h2><div id="clientHealthSummary" class="meta">Connect to load anonymous client health.</div></div>
+      <div id="clientVersionRecords"><div class="empty">No client version data loaded.</div></div>
     </section>
 
     <section>
@@ -1748,6 +1819,18 @@ def owner_portal_html():
         <label for="latestKey">Latest key</label>
         <div class="latest"><textarea id="latestKey" readonly></textarea><button id="copyLatest" class="warn">COPY KEY</button></div>
       </div>
+    </section>
+
+    <section>
+      <h2>Giveaway License</h2>
+      <div class="grid">
+        <div><label for="giveawayWinner">Winner alias</label><input id="giveawayWinner" maxlength="80" placeholder="Public alias, not a full legal name"></div>
+        <div><label for="giveawayRank">Rank</label><select id="giveawayRank"></select></div>
+        <div><label for="giveawayDays">Duration in days</label><input id="giveawayDays" type="number" min="1" max="365" value="30"></div>
+        <div><label for="giveawayDevices">Maximum devices</label><input id="giveawayDevices" type="number" min="1" max="10" value="1"></div>
+        <div class="split"><button id="issueGiveaway" class="primary" disabled>ISSUE GIVEAWAY LICENSE</button></div>
+      </div>
+      <div class="status">This issues a promotional license only. It does not select winners, collect entries, process payment, or provide contest-law compliance.</div>
     </section>
 
     <section>
@@ -1800,6 +1883,7 @@ def owner_portal_html():
       $("apiState").textContent = value ? "CONNECTED" : "DISCONNECTED";
       $("apiState").style.color = value ? "var(--green)" : "var(--muted)";
       $("issue").disabled = !value || state.busy;
+      $("issueGiveaway").disabled = !value || state.busy;
       $("refresh").disabled = !value || state.busy;
       $("refreshSupport").disabled = !value || state.busy;
       $("refreshLogs").disabled = !value || state.busy;
@@ -1823,14 +1907,20 @@ def owner_portal_html():
     async function loadRanks() {
       const payload = await api("/api/v1/ranks");
       const select = $("rank");
+      const giveaway = $("giveawayRank");
       const audience = $("announcementRank");
       select.replaceChildren();
+      giveaway.replaceChildren();
       audience.replaceChildren();
       for (const plan of payload.items || []) {
         const option = document.createElement("option");
         option.value = plan.id;
         option.textContent = `Rank ${plan.rank}: ${plan.name} (${plan.price_label})`;
         select.append(option);
+        const giveawayOption = document.createElement("option");
+        giveawayOption.value = plan.id;
+        giveawayOption.textContent = `Rank ${plan.rank}: ${plan.name}`;
+        giveaway.append(giveawayOption);
         const audienceOption = document.createElement("option");
         audienceOption.value = String(plan.rank);
         audienceOption.textContent = plan.rank === 1 ? "ALL RANKS" : `RANK ${plan.rank} AND ABOVE`;
@@ -1887,6 +1977,7 @@ def owner_portal_html():
       const announcements = dashboard?.announcements || {};
       const service = dashboard?.service_status || {};
       const activity = dashboard?.api_activity || {};
+      const clients = dashboard?.client_health || {};
       $("statLicenses").textContent = dashboard ? String(licenses.active || 0) : "-";
       $("statDevices").textContent = dashboard ? String(devices.active || 0) : "-";
       $("statCapacity").textContent = dashboard ? String(devices.capacity || 0) : "-";
@@ -1900,6 +1991,51 @@ def owner_portal_html():
       $("statAnnouncements").textContent = dashboard ? String(announcements.active || 0) : "-";
       $("statService").textContent = dashboard ? String(service.mode || "normal").toUpperCase() : "-";
       $("statActivity").textContent = dashboard ? (activity.integrity_valid ? "VALID" : "CHECK") : "-";
+      $("statCurrentClients").textContent = dashboard ? `${String(clients.current_release_devices || 0)}/${String(clients.active_devices || 0)}` : "-";
+      $("statStaleClients").textContent = dashboard ? String(clients.stale_24h || 0) : "-";
+      renderClientHealth(dashboard ? clients : null);
+    }
+
+    function renderClientHealth(clients) {
+      const host = $("clientVersionRecords");
+      host.replaceChildren();
+      const summary = $("clientHealthSummary");
+      if (!clients) {
+        summary.textContent = "Connect to load anonymous client health.";
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No client version data loaded.";
+        host.append(empty);
+        return;
+      }
+      summary.textContent = `release ${clients.current_release || "none"} | ${clients.current_release_devices || 0} current | ${clients.other_version_devices || 0} other | ${clients.unknown_version_devices || 0} unknown | ${clients.stale_24h || 0} stale`;
+      const versions = Array.isArray(clients.version_counts) ? clients.version_counts : [];
+      if (!versions.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No active licensed clients have reported an app version yet.";
+        host.append(empty);
+        return;
+      }
+      for (const item of versions) {
+        const row = document.createElement("article");
+        row.className = "record activity-row";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = item.version || "UNKNOWN";
+        const detail = document.createElement("div");
+        detail.className = "meta";
+        detail.textContent = `${item.devices || 0} anonymous active device(s)`;
+        identity.append(title, detail);
+        const release = document.createElement("div");
+        release.className = "meta";
+        release.textContent = item.current_release ? "Matches published desktop release" : "Different reported release";
+        const badge = document.createElement("span");
+        badge.className = `badge ${item.current_release ? "resolved" : "open"}`;
+        badge.textContent = item.current_release ? "CURRENT" : "OTHER";
+        row.append(identity, release, badge);
+        host.append(row);
+      }
     }
 
     function actionButton(text, className, action) {
@@ -2198,6 +2334,35 @@ def owner_portal_html():
       finally { state.busy = false; setConnected(state.connected); }
     }
 
+    async function issueGiveaway() {
+      if (!state.connected || state.busy) return;
+      const winner = $("giveawayWinner").value.trim();
+      const days = Number($("giveawayDays").value || 30);
+      const devices = Number($("giveawayDevices").value || 1);
+      if (winner.length < 2) return setStatus("Enter a winner alias with at least 2 characters.", "bad");
+      if (!Number.isInteger(days) || days < 1 || days > 365) return setStatus("Giveaway duration must be 1 to 365 days.", "bad");
+      if (!Number.isInteger(devices) || devices < 1 || devices > 10) return setStatus("Giveaway devices must be 1 to 10.", "bad");
+      if (!confirm(`ISSUE A ${days}-DAY GIVEAWAY LICENSE TO ${winner}?`)) return;
+      state.busy = true; setConnected(true); setStatus("Issuing giveaway license...");
+      try {
+        const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+        const result = await api("/api/v1/licenses/issue", { method:"POST", body:JSON.stringify({
+          plan_id: $("giveawayRank").value,
+          max_devices: devices,
+          customer_label: `Giveaway: ${winner}`,
+          customer_email: "",
+          license_note: `Promotional giveaway license | ${days} day(s) | no payment recorded`,
+          expires_at_utc: expires
+        }) });
+        $("latestKey").value = result.license_key || "";
+        $("latestWrap").hidden = false;
+        $("giveawayWinner").value = "";
+        await loadLicenses(true);
+        setStatus(`Giveaway license issued for ${winner}. Copy the latest key.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+      finally { state.busy = false; setConnected(state.connected); }
+    }
+
     async function publishAnnouncement() {
       if (!state.connected || state.busy) return;
       const title = $("announcementTitle").value.trim();
@@ -2386,6 +2551,7 @@ def owner_portal_html():
     $("connect").addEventListener("click", connect);
     $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.announcementItems=[]; state.activityItems=[]; state.activityIntegrity=null; state.serviceStatus=null; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); renderAnnouncements(); renderActivity(); setStatus("Admin token cleared from page memory."); });
     $("issue").addEventListener("click", issueLicense);
+    $("issueGiveaway").addEventListener("click", issueGiveaway);
     $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshSupport").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshLogs").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
@@ -4115,6 +4281,7 @@ def admin_dashboard_summary():
     active_devices = 0
     device_capacity = 0
     notes_saved = 0
+    active_client_records = []
     for item in license_inventory.get("items", []):
         if item.get("status") == "revoked":
             revoked_licenses += 1
@@ -4125,6 +4292,11 @@ def admin_dashboard_summary():
             else:
                 active_licenses += 1
                 device_capacity += int(item.get("max_devices", 1) or 1)
+                license_id = str(item.get("license_id", ""))
+                if license_id:
+                    active_client_records.extend(
+                        record for record in activation_records(license_id) if activation_record_is_active(record)
+                    )
         active_devices += int(item.get("active_devices", 0) or 0)
         notes_saved += bool(str(item.get("license_note", "")).strip())
     breach_levels = {"clear": 0, "warning": 0, "high": 0, "critical": 0}
@@ -4142,6 +4314,31 @@ def admin_dashboard_summary():
         desktop_release = str(update_manifest.get("version", ""))
     except (FileNotFoundError, OSError, ValueError):
         desktop_release = ""
+    version_counts = {}
+    stale_24h = 0
+    unknown_version_devices = 0
+    for record in active_client_records:
+        version = str(record.get("app_version", "")).strip()[:40]
+        if version:
+            version_counts[version] = version_counts.get(version, 0) + 1
+        else:
+            unknown_version_devices += 1
+        last_seen = (
+            parse_utc(record.get("last_seen_at_utc"))
+            or parse_utc(record.get("updated_at_utc"))
+            or parse_utc(record.get("activated_at_utc"))
+        )
+        if last_seen is None or (now - last_seen).total_seconds() > 24 * 60 * 60:
+            stale_24h += 1
+    current_release_devices = int(version_counts.get(desktop_release, 0)) if desktop_release else 0
+    version_rows = [
+        {
+            "version": version,
+            "devices": count,
+            "current_release": bool(desktop_release and version == desktop_release),
+        }
+        for version, count in sorted(version_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    ]
     return {
         "ok": True,
         "licenses": {
@@ -4154,6 +4351,16 @@ def admin_dashboard_summary():
         "devices": {
             "active": active_devices,
             "capacity": device_capacity,
+        },
+        "client_health": {
+            "active_devices": len(active_client_records),
+            "current_release": desktop_release,
+            "current_release_devices": current_release_devices,
+            "other_version_devices": max(0, len(active_client_records) - current_release_devices - unknown_version_devices),
+            "unknown_version_devices": unknown_version_devices,
+            "stale_24h": stale_24h,
+            "version_counts": version_rows,
+            "privacy": "Only anonymous device counts, reported app versions, and coarse sync freshness are shown.",
         },
         "audit_exports": {
             "total": int(audit_inventory.get("count", 0) or 0),
@@ -4339,6 +4546,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/shop":
             self.send_html(shop_html())
+            return
+        if path == "/status":
+            self.send_html(customer_status_html())
             return
         if path == "/docs":
             self.send_json(docs_payload())

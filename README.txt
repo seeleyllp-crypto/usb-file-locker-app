@@ -18,6 +18,10 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.12.7 adds a local AUTO-INSTALL VERIFIED UPDATES option.
+  It installs only after the signed manifest and package hash verify, preserves
+  LocalAppData, and remains disabled inside Git working folders.
+- CUSTOMER STATUS opens a public page with service and signed-release details.
 - Version 2026.07.12.6 adds automatic on-screen owner announcements, service
   notices, and owner API activity visibility. Each notice appears once per PC.
 - It includes the 2026.07.12.5 WinError 183 temporary extraction-folder fix.
