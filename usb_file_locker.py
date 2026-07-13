@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.3"
+DESKTOP_APP_VERSION = "2026.07.12.4"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -2434,6 +2434,20 @@ def list_my_support_tickets_online(state):
     )
 
 
+def list_owner_announcements_online(state):
+    current, payload = support_license_payload(state)
+    return license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/announcements/mine",
+        payload,
+    )
+
+
+def shop_url_for_state(state=None):
+    current = normalize_license_state(state or {})
+    return validated_license_server_url(current.get("server_url") or DEFAULT_LICENSE_SERVER) + "/shop"
+
+
 def upload_audit_report_online(state, report=None):
     current = normalize_license_state(state)
     current["license_key"] = require_valid_api_license_key(current.get("license_key"))
@@ -3745,6 +3759,151 @@ class UpdateCenterWindow(tk.Toplevel):
         self.set_notes(manifest.get("notes") or [])
 
 
+class OwnerNewsWindow(tk.Toplevel):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.title("VaultLink Owner News")
+        self.geometry("720x620")
+        self.minsize(640, 520)
+        self.configure(bg=BG)
+        self.status_var = tk.StringVar(value="Checking for owner announcements...")
+        self.results = queue.Queue()
+        self.busy = False
+        self.news_box = None
+        self.refresh_button = None
+        self.build_ui()
+        self.after(150, self.refresh_news)
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        tk.Label(outer, text="Owner News", bg=BG, fg=TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="READ-ONLY MESSAGES FOR YOUR LICENSE RANK | MESSAGES CANNOT RUN COMMANDS OR ACCESS FILES",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+            wraplength=660,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 14))
+
+        self.news_box = tk.Text(
+            outer,
+            bg=FIELD,
+            fg=TEXT,
+            relief="flat",
+            wrap="word",
+            font=("Segoe UI", 10),
+            padx=14,
+            pady=12,
+            state="disabled",
+        )
+        self.news_box.pack(fill="both", expand=True)
+
+        controls = tk.Frame(outer, bg=BG)
+        controls.pack(fill="x", pady=(12, 0))
+        self.refresh_button = tk.Button(
+            controls,
+            text="REFRESH NEWS",
+            command=self.refresh_news,
+            bg="#58b7e8",
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.refresh_button.pack(side="left", ipadx=14, ipady=8)
+        tk.Button(
+            controls,
+            text="OPEN SHOP",
+            command=self.owner.open_shop,
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
+        tk.Button(
+            controls,
+            text="CLOSE",
+            command=self.destroy,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=14, ipady=8)
+        tk.Label(
+            outer,
+            textvariable=self.status_var,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+            wraplength=660,
+            justify="left",
+        ).pack(anchor="w", pady=(10, 0))
+
+    def refresh_news(self):
+        if self.busy:
+            return
+        self.owner.settings = load_settings()
+        self.owner.update_license_state_ui(load_license_state(self.owner.settings))
+        state = self.owner.license_state
+        self.busy = True
+        self.refresh_button.configure(state="disabled", text="CHECKING...")
+        self.status_var.set("Checking the API for active owner announcements...")
+
+        def worker():
+            try:
+                result = list_owner_announcements_online(state)
+                error = ""
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self.results.put((result, error))
+
+        threading.Thread(target=worker, name="OwnerAnnouncementList", daemon=True).start()
+        self.after(60, self.poll_results)
+
+    def poll_results(self):
+        try:
+            result, error = self.results.get_nowait()
+        except queue.Empty:
+            if self.busy and self.winfo_exists():
+                self.after(60, self.poll_results)
+            return
+        self.busy = False
+        self.refresh_button.configure(state="normal", text="REFRESH NEWS")
+        if error:
+            self.status_var.set(error)
+            log_event("owner_announcement_view", "api", "failed")
+            messagebox.showerror("Owner News API error", error, parent=self)
+            return
+        items = (result or {}).get("items") or []
+        self.render_news(items)
+        rank = int((result or {}).get("plan_rank", 1) or 1)
+        self.status_var.set(f"Loaded {len(items)} active message(s) for Rank {rank}.")
+        log_event("owner_announcement_view", "api", "ok")
+
+    def render_news(self, items):
+        blocks = []
+        for item in items:
+            severity = str(item.get("severity", "info") or "info").upper()
+            block = [
+                f"[{severity}] {item.get('title', 'Owner announcement')}",
+                f"Audience: {item.get('audience', 'All ranks')}",
+                f"Published: {item.get('created_at_utc', '')}",
+            ]
+            if item.get("expires_at_utc"):
+                block.append(f"Expires: {item.get('expires_at_utc')}")
+            block.extend(["", str(item.get("message", ""))])
+            blocks.append("\n".join(block))
+        text = "\n\n".join(blocks) if blocks else "There are no active owner announcements for this license rank."
+        self.news_box.configure(state="normal")
+        self.news_box.delete("1.0", "end")
+        self.news_box.insert("1.0", text)
+        self.news_box.configure(state="disabled")
+
+
 class SupportCenterWindow(tk.Toplevel):
     CATEGORIES = {
         "BUG": "bug",
@@ -4003,6 +4162,7 @@ class USBFileLocker(tk.Tk):
         self.latest_update_manifest = None
         self.update_window = None
         self.support_window = None
+        self.news_window = None
         self.update_button = None
         self.cloud_audit_results = queue.Queue()
         self.cloud_audit_in_progress = False
@@ -4101,6 +4261,10 @@ class USBFileLocker(tk.Tk):
         self.owner_verify_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.support_button = tk.Button(owner_row, text="BUG CENTER", command=self.open_support_center, bg="#58b7e8", fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.support_button.pack(side="right", ipadx=10, ipady=6)
+        self.news_button = tk.Button(owner_row, text="OWNER NEWS", command=self.open_owner_news, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.news_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
+        self.shop_button = tk.Button(owner_row, text="SHOP", command=self.open_shop, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.shop_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
 
         storage_row = tk.Frame(panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
@@ -4649,6 +4813,27 @@ class USBFileLocker(tk.Tk):
         self.support_window = SupportCenterWindow(self)
         self.register_secondary_window(self.support_window)
         self.status.set("Opened Bug Center.")
+
+    def open_owner_news(self):
+        if self.news_window is not None and self.news_window.winfo_exists():
+            self.news_window.lift()
+            self.news_window.focus_force()
+            return
+        self.news_window = OwnerNewsWindow(self)
+        self.register_secondary_window(self.news_window)
+        self.status.set("Opened Owner News.")
+
+    def open_shop(self):
+        try:
+            state = load_license_state(load_settings())
+            url = shop_url_for_state(state)
+            os.startfile(url)
+            self.status.set("Opened the VaultLink Shop in your browser.")
+            log_event("shop_open", "api", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the VaultLink Shop.")
+            log_event("shop_open", "api", "failed")
+            messagebox.showerror("Could not open Shop", str(exc), parent=self)
 
     def schedule_license_refresh(self, delay_ms=None):
         if self.license_refresh_after_id is not None:

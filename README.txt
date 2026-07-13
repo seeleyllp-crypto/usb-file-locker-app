@@ -166,6 +166,10 @@ Companion apps:
   configures an allowlisted provider-hosted HTTPS checkout link. VaultLink never
   collects card numbers. The owner confirms payment separately and then issues the
   matching license; checkout does not automatically create a key.
+- OWNER NEWS shows active read-only messages published from the owner website for
+  your license rank. Messages can be scheduled or expired by the owner, and they
+  cannot run commands, read files, or change settings. SHOP opens the public shop
+  without putting a license key or activation receipt in the browser URL.
 
 License Center:
 - REMOVE FROM THIS PC deactivates that machine receipt through the API and clears

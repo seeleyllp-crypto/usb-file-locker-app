@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.9.0"
+API_VERSION = "0.10.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -81,6 +81,7 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "open_temp_unlocked_file",
         "open_temp_unlocked_text",
         "owner_usb_removed",
+        "owner_announcement_view",
         "panic_lock",
         "perm_unlock_workbench_relock",
         "perm_unlock_workbench_relock_copy",
@@ -92,6 +93,7 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "scan_personal_files",
         "support_ticket_submit",
         "support_ticket_view",
+        "shop_open",
         "unlock",
         "unlock_double_click",
         "upgrade_legacy_lock",
@@ -131,6 +133,8 @@ MAX_SUPPORT_TICKETS = 1000
 MAX_SUPPORT_TICKETS_PER_DAY = 10
 SUPPORT_TICKET_STATUSES = frozenset({"open", "acknowledged", "in_progress", "resolved", "closed"})
 SUPPORT_TICKET_CATEGORIES = frozenset({"bug", "crash", "licensing", "update", "security", "idea", "other"})
+ANNOUNCEMENT_SEVERITIES = frozenset({"info", "update", "maintenance", "security"})
+MAX_ANNOUNCEMENTS = 250
 LICENSE_STATE_LOCK = threading.RLock()
 
 
@@ -1180,6 +1184,10 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/admin/support-tickets", "purpose": "Admin-only encrypted support inbox"},
             {"method": "POST", "path": "/api/v1/admin/support-tickets/action", "purpose": "Admin-only acknowledge, resolve, close, note, and reply action"},
             {"method": "POST", "path": "/api/v1/admin/support-tickets/delete", "purpose": "Admin-only permanent support-ticket deletion"},
+            {"method": "POST", "path": "/api/v1/announcements/mine", "purpose": "Licensed read-only owner announcements for this plan rank"},
+            {"method": "GET", "path": "/api/v1/admin/announcements", "purpose": "Admin-only announcement inventory"},
+            {"method": "POST", "path": "/api/v1/admin/announcements/create", "purpose": "Admin-only rank-targeted announcement publishing"},
+            {"method": "POST", "path": "/api/v1/admin/announcements/delete", "purpose": "Admin-only announcement deletion"},
             {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
             {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
             {"method": "GET", "path": "/api/v1/admin/audit-exports", "purpose": "Admin-only list of stored audit reports and breach levels"},
@@ -1697,6 +1705,7 @@ def owner_portal_html():
         <div class="stat"><label>Client sync</label><strong id="statSync">-</strong></div>
         <div class="stat"><label>Bugs needing action</label><strong id="statSupport">-</strong></div>
         <div class="stat"><label>Shop links live</label><strong id="statShop">-</strong></div>
+        <div class="stat"><label>Active announcements</label><strong id="statAnnouncements">-</strong></div>
       </div>
     </section>
 
@@ -1718,6 +1727,21 @@ def owner_portal_html():
     </section>
 
     <section>
+      <h2>Owner Announcements</h2>
+      <div class="grid">
+        <div><label for="announcementSeverity">Type</label><select id="announcementSeverity"><option value="info">INFO</option><option value="update">UPDATE</option><option value="maintenance">MAINTENANCE</option><option value="security">SECURITY</option></select></div>
+        <div><label for="announcementRank">Audience</label><select id="announcementRank"><option value="1">ALL RANKS</option></select></div>
+        <div><label for="announcementStarts">Starts, optional</label><input id="announcementStarts" type="datetime-local"></div>
+        <div><label for="announcementExpires">Expires, optional</label><input id="announcementExpires" type="datetime-local"></div>
+        <div class="split"><label for="announcementTitle">Title</label><input id="announcementTitle" maxlength="120"></div>
+        <div class="split"><label for="announcementMessage">Message</label><textarea id="announcementMessage" maxlength="2000"></textarea></div>
+        <div class="split"><button id="publishAnnouncement" class="primary" disabled>PUBLISH ANNOUNCEMENT</button></div>
+      </div>
+      <div class="record-head"><h2>Published Messages</h2><div id="announcementStorage" class="meta"></div><button id="refreshAnnouncements" disabled>REFRESH MESSAGES</button></div>
+      <div id="announcementRecords"><div class="empty">Connect to load owner announcements.</div></div>
+    </section>
+
+    <section>
       <div class="record-head"><h2>Keys And Notes</h2><div id="storage" class="meta"></div><button id="refresh" disabled>REFRESH</button></div>
       <div id="records"><div class="empty">Connect to load licenses.</div></div>
     </section>
@@ -1734,7 +1758,7 @@ def owner_portal_html():
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { token: "", connected: false, busy: false, loading: false, items: [], supportItems: [], auditItems: [], dashboard: null };
+    const state = { token: "", connected: false, busy: false, loading: false, items: [], supportItems: [], auditItems: [], announcementItems: [], dashboard: null };
     const AUTO_REFRESH_MS = 30000;
 
     function setStatus(message, kind="") {
@@ -1750,6 +1774,8 @@ def owner_portal_html():
       $("refresh").disabled = !value || state.busy;
       $("refreshSupport").disabled = !value || state.busy;
       $("refreshLogs").disabled = !value || state.busy;
+      $("publishAnnouncement").disabled = !value || state.busy;
+      $("refreshAnnouncements").disabled = !value || state.busy;
     }
 
     async function api(path, options={}) {
@@ -1765,12 +1791,18 @@ def owner_portal_html():
     async function loadRanks() {
       const payload = await api("/api/v1/ranks");
       const select = $("rank");
+      const audience = $("announcementRank");
       select.replaceChildren();
+      audience.replaceChildren();
       for (const plan of payload.items || []) {
         const option = document.createElement("option");
         option.value = plan.id;
         option.textContent = `Rank ${plan.rank}: ${plan.name} (${plan.price_label})`;
         select.append(option);
+        const audienceOption = document.createElement("option");
+        audienceOption.value = String(plan.rank);
+        audienceOption.textContent = plan.rank === 1 ? "ALL RANKS" : `RANK ${plan.rank} AND ABOVE`;
+        audience.append(audienceOption);
       }
     }
 
@@ -1778,25 +1810,29 @@ def owner_portal_html():
       if (state.loading) return;
       state.loading = true;
       try {
-      const [payload, dashboard, support, audits] = await Promise.all([
+      const [payload, dashboard, support, audits, announcements] = await Promise.all([
         api("/api/v1/admin/licenses"),
         api("/api/v1/admin/dashboard"),
         api("/api/v1/admin/support-tickets"),
-        api("/api/v1/admin/audit-exports")
+        api("/api/v1/admin/audit-exports"),
+        api("/api/v1/admin/announcements")
       ]);
       state.items = payload.items || [];
       state.supportItems = support.items || [];
       state.auditItems = audits.items || [];
+      state.announcementItems = announcements.items || [];
       state.dashboard = dashboard;
       $("storage").textContent = payload.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE";
       $("supportStorage").textContent = support.storage === "persistent_configured" ? "ENCRYPTED PERSISTENT STORAGE" : "TEMPORARY STORAGE";
       $("auditStorage").textContent = `${audits.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE"} | ${audits.retention_hours || 0}H RETENTION`;
+      $("announcementStorage").textContent = announcements.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE";
       renderDashboard(dashboard);
       renderRecords();
       renderSupport();
       renderAudits();
+      renderAnnouncements();
       setConnected(true);
-      if (!silent) setStatus(`Loaded ${payload.count || 0} license(s), ${support.count || 0} bug report(s), and ${audits.count || 0} audit log(s).`, "good");
+      if (!silent) setStatus(`Loaded ${payload.count || 0} license(s), ${support.count || 0} bug report(s), ${audits.count || 0} audit log(s), and ${announcements.count || 0} announcement(s).`, "good");
       } finally {
         state.loading = false;
       }
@@ -1809,6 +1845,7 @@ def owner_portal_html():
       const levels = audits.breach_levels || {};
       const support = dashboard?.support_tickets || {};
       const shop = dashboard?.shop || {};
+      const announcements = dashboard?.announcements || {};
       $("statLicenses").textContent = dashboard ? String(licenses.active || 0) : "-";
       $("statDevices").textContent = dashboard ? String(devices.active || 0) : "-";
       $("statCapacity").textContent = dashboard ? String(devices.capacity || 0) : "-";
@@ -1819,6 +1856,7 @@ def owner_portal_html():
       $("statSync").textContent = dashboard ? `${String((dashboard.release || {}).license_sync_seconds || 60)}s` : "-";
       $("statSupport").textContent = dashboard ? String(support.needs_action || 0) : "-";
       $("statShop").textContent = dashboard ? `${String(shop.configured || 0)}/${String(shop.total || 0)}` : "-";
+      $("statAnnouncements").textContent = dashboard ? String(announcements.active || 0) : "-";
     }
 
     function actionButton(text, className, action) {
@@ -1987,6 +2025,47 @@ def owner_portal_html():
       }
     }
 
+    function renderAnnouncements() {
+      const host = $("announcementRecords");
+      host.replaceChildren();
+      if (!state.announcementItems.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No owner announcements have been published.";
+        host.append(empty);
+        return;
+      }
+      for (const item of state.announcementItems) {
+        const record = document.createElement("article");
+        record.className = "record";
+        const head = document.createElement("div");
+        head.className = "record-head";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = item.title || item.announcement_id || "Owner announcement";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.announcement_id || "unknown"} | ${item.audience || "all ranks"} | created ${item.created_at_utc || "unknown"}`;
+        identity.append(title, meta);
+        const schedule = document.createElement("div");
+        schedule.className = "meta";
+        schedule.textContent = `starts ${item.starts_at_utc || "now"} | expires ${item.expires_at_utc || "never"}`;
+        const badge = document.createElement("span");
+        badge.className = `badge ${item.active ? "resolved" : "revoked"}`;
+        badge.textContent = item.active ? item.severity || "info" : "inactive";
+        head.append(identity, schedule, badge);
+        const message = document.createElement("div");
+        message.className = "ticket-copy";
+        message.textContent = item.message || "No message supplied.";
+        const actions = document.createElement("div");
+        actions.className = "record-head";
+        const spacer = document.createElement("div");
+        actions.append(spacer, document.createElement("div"), actionButton("DELETE", "danger", () => deleteAnnouncement(item)));
+        record.append(head, message, actions);
+        host.append(record);
+      }
+    }
+
     async function connect() {
       state.token = $("token").value.trim();
       if (!state.token) return setStatus("Enter the Railway LICENSE_ADMIN_TOKEN.", "bad");
@@ -2023,6 +2102,44 @@ def owner_portal_html():
         setStatus("License issued and stored. Copy the key for the customer.", "good");
       } catch (error) { setStatus(error.message, "bad"); }
       finally { state.busy = false; setConnected(state.connected); }
+    }
+
+    async function publishAnnouncement() {
+      if (!state.connected || state.busy) return;
+      const title = $("announcementTitle").value.trim();
+      const message = $("announcementMessage").value.trim();
+      if (title.length < 3) return setStatus("Announcement title must be at least 3 characters.", "bad");
+      if (message.length < 5) return setStatus("Announcement message must be at least 5 characters.", "bad");
+      if (!confirm(`PUBLISH \"${title}\" TO THE SELECTED LICENSE RANKS?`)) return;
+      state.busy = true; setConnected(true); setStatus("Publishing announcement...");
+      try {
+        const starts = $("announcementStarts").value;
+        const expires = $("announcementExpires").value;
+        const result = await api("/api/v1/admin/announcements/create", { method:"POST", body:JSON.stringify({
+          severity:$("announcementSeverity").value,
+          minimum_rank:Number($("announcementRank").value || 1),
+          title,
+          message,
+          starts_at_utc:starts ? new Date(starts).toISOString() : "",
+          expires_at_utc:expires ? new Date(expires).toISOString() : ""
+        }) });
+        $("announcementTitle").value = "";
+        $("announcementMessage").value = "";
+        $("announcementStarts").value = "";
+        $("announcementExpires").value = "";
+        await loadLicenses(true);
+        setStatus(result.message || "Announcement published.", "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+      finally { state.busy = false; setConnected(state.connected); }
+    }
+
+    async function deleteAnnouncement(item) {
+      if (!confirm(`PERMANENTLY DELETE ${item.announcement_id}?`)) return;
+      try {
+        const result = await api("/api/v1/admin/announcements/delete", { method:"POST", body:JSON.stringify({ announcement_id:item.announcement_id }) });
+        await loadLicenses(true);
+        setStatus(result.message || `Deleted ${item.announcement_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
     }
 
     async function saveNote(item, note) {
@@ -2139,11 +2256,13 @@ def owner_portal_html():
     }
 
     $("connect").addEventListener("click", connect);
-    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); setStatus("Admin token cleared from page memory."); });
+    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.announcementItems=[]; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); renderAnnouncements(); setStatus("Admin token cleared from page memory."); });
     $("issue").addEventListener("click", issueLicense);
     $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshSupport").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshLogs").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("publishAnnouncement").addEventListener("click", publishAnnouncement);
+    $("refreshAnnouncements").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("copyLatest").addEventListener("click", () => copyText($("latestKey").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
     window.setInterval(autoRefresh, AUTO_REFRESH_MS);
@@ -2906,6 +3025,185 @@ def admin_delete_support_ticket(payload):
     }
 
 
+def validated_announcement_id(value):
+    text = str(value or "").strip().upper()
+    if (
+        not text.startswith("ANN-")
+        or not 12 <= len(text) <= 64
+        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in text)
+    ):
+        raise ValueError("Choose a valid announcement id.")
+    return text
+
+
+def announcement_path(announcement_id):
+    return LICENSE_STATE_DIR / "announcements" / f"{validated_announcement_id(announcement_id)}.json"
+
+
+def read_announcement(announcement_id):
+    clean_id = validated_announcement_id(announcement_id)
+    path = announcement_path(clean_id)
+    if not path.is_file():
+        raise FileNotFoundError("Announcement was not found.")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or record.get("announcement_id") != clean_id:
+        raise ValueError("Stored announcement identity did not verify.")
+    return record
+
+
+def announcement_records():
+    folder = LICENSE_STATE_DIR / "announcements"
+    if not folder.is_dir():
+        return []
+    paths = sorted(
+        folder.glob("ANN-*.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )[:MAX_ANNOUNCEMENTS]
+    records = []
+    for path in paths:
+        try:
+            records.append(read_announcement(path.stem))
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            continue
+    return records
+
+
+def announcement_is_active(record, moment=None):
+    if not bool(record.get("active", True)):
+        return False
+    now = moment or datetime.now(timezone.utc)
+    starts_at = parse_utc(record.get("starts_at_utc"))
+    expires_at = parse_utc(record.get("expires_at_utc"))
+    if starts_at and starts_at > now:
+        return False
+    if expires_at and expires_at <= now:
+        return False
+    return True
+
+
+def announcement_view(record):
+    minimum_rank = int(record.get("minimum_rank", 1) or 1)
+    audience = "All ranks" if minimum_rank == 1 else f"Rank {minimum_rank} and above"
+    return {
+        "announcement_id": str(record.get("announcement_id", "")),
+        "severity": str(record.get("severity", "info")),
+        "title": str(record.get("title", "")),
+        "message": str(record.get("message", "")),
+        "minimum_rank": minimum_rank,
+        "audience": audience,
+        "starts_at_utc": str(record.get("starts_at_utc", "")),
+        "expires_at_utc": str(record.get("expires_at_utc", "")),
+        "created_at_utc": str(record.get("created_at_utc", "")),
+        "updated_at_utc": str(record.get("updated_at_utc", "")),
+        "active": announcement_is_active(record),
+    }
+
+
+def admin_create_announcement(payload):
+    severity = str(payload.get("severity", "info") or "info").strip().lower()
+    if severity not in ANNOUNCEMENT_SEVERITIES:
+        raise ValueError("Choose a valid announcement severity.")
+    title = clean_support_text(payload.get("title"), 120, "title", required=True, minimum=3)
+    message = clean_support_text(payload.get("message"), 2000, "message", required=True, minimum=5)
+    try:
+        minimum_rank = int(payload.get("minimum_rank", 1) or 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("minimum_rank must be a whole number from 1 to 7.") from exc
+    if not 1 <= minimum_rank <= len(PLAN_TIERS):
+        raise ValueError("minimum_rank must be a whole number from 1 to 7.")
+    starts_at = parse_utc(payload.get("starts_at_utc"))
+    expires_at = parse_utc(payload.get("expires_at_utc"))
+    now = datetime.now(timezone.utc)
+    if expires_at and expires_at <= now:
+        raise ValueError("expires_at_utc must be in the future.")
+    if starts_at and expires_at and starts_at >= expires_at:
+        raise ValueError("expires_at_utc must be later than starts_at_utc.")
+    if expires_at and expires_at > now + timedelta(days=366):
+        raise ValueError("expires_at_utc cannot be more than 366 days in the future.")
+    announcement_id = f"ANN-{secrets.token_hex(8).upper()}"
+    now_text = format_utc(now)
+    record = {
+        "schema_version": 1,
+        "announcement_id": announcement_id,
+        "severity": severity,
+        "title": title,
+        "message": message,
+        "minimum_rank": minimum_rank,
+        "starts_at_utc": format_utc(starts_at) if starts_at else "",
+        "expires_at_utc": format_utc(expires_at) if expires_at else "",
+        "created_at_utc": now_text,
+        "updated_at_utc": now_text,
+        "active": True,
+    }
+    with LICENSE_STATE_LOCK:
+        write_private_json(announcement_path(announcement_id), record)
+    return {
+        "ok": True,
+        "created": True,
+        "announcement": announcement_view(record),
+        "message": f"Announcement {announcement_id} published.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def list_admin_announcements():
+    items = []
+    damaged_count = 0
+    for record in announcement_records():
+        try:
+            items.append(announcement_view(record))
+        except (OSError, TypeError, ValueError):
+            damaged_count += 1
+    return {
+        "ok": True,
+        "count": len(items),
+        "active_count": sum(bool(item.get("active")) for item in items),
+        "damaged_count": damaged_count,
+        "items": items,
+        "storage": "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral",
+        "server_time_utc": utc_now(),
+    }
+
+
+def list_my_announcements(payload):
+    verification = require_active_support_license(payload)
+    plan_rank = int((verification.get("plan") or {}).get("rank", 1) or 1)
+    items = []
+    for record in announcement_records():
+        try:
+            if announcement_is_active(record) and int(record.get("minimum_rank", 1) or 1) <= plan_rank:
+                items.append(announcement_view(record))
+        except (OSError, TypeError, ValueError):
+            continue
+        if len(items) >= 50:
+            break
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,
+        "plan_rank": plan_rank,
+        "privacy_notice": "Announcements are read-only text and never execute commands or access local files.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def admin_delete_announcement(payload):
+    announcement_id = validated_announcement_id(payload.get("announcement_id"))
+    with LICENSE_STATE_LOCK:
+        path = announcement_path(announcement_id)
+        if not path.is_file():
+            raise FileNotFoundError("Announcement was not found.")
+        path.unlink()
+    return {
+        "ok": True,
+        "deleted": True,
+        "announcement_id": announcement_id,
+        "message": f"Announcement {announcement_id} deleted.",
+        "server_time_utc": utc_now(),
+    }
+
+
 def clean_audit_text(value, limit):
     text = "".join(
         character if ord(character) >= 32 and ord(character) != 127 else " "
@@ -3389,6 +3687,7 @@ def admin_dashboard_summary():
     license_inventory = list_admin_license_records()
     audit_inventory = list_admin_audit_exports()
     support_inventory = list_admin_support_tickets()
+    announcement_inventory = list_admin_announcements()
     shop = shop_payload()
     now = datetime.now(timezone.utc)
     active_licenses = 0
@@ -3446,6 +3745,11 @@ def admin_dashboard_summary():
             "statuses": support_statuses,
             "needs_action": support_statuses.get("open", 0) + support_statuses.get("acknowledged", 0),
         },
+        "announcements": {
+            "total": int(announcement_inventory.get("count", 0) or 0),
+            "active": int(announcement_inventory.get("active_count", 0) or 0),
+            "damaged": int(announcement_inventory.get("damaged_count", 0) or 0),
+        },
         "shop": {
             "configured": int(shop.get("configured_count", 0) or 0),
             "total": int(shop.get("count", 0) or 0),
@@ -3456,6 +3760,7 @@ def admin_dashboard_summary():
             "licenses": license_inventory.get("storage", "local_ephemeral"),
             "audit_exports": audit_inventory.get("storage", "local_ephemeral"),
             "support_tickets": support_inventory.get("storage", "local_ephemeral"),
+            "announcements": announcement_inventory.get("storage", "local_ephemeral"),
         },
         "release": {
             "api_version": API_VERSION,
@@ -3640,6 +3945,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral"
                     ),
                     "support_ticket_private_fields_encrypted": True,
+                    "owner_announcements_enabled": True,
+                    "owner_announcement_storage": (
+                        "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral"
+                    ),
                     "shop_enabled": True,
                     "shop_checkout_links_configured": shop_payload()["configured_count"],
                     "shop_card_data_collected_by_vaultlink": False,
@@ -3682,6 +3991,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "admin-protected audit export list and download",
                         "licensed encrypted bug reports and customer-visible owner replies",
                         "admin support-ticket status, reply, private note, and deletion actions",
+                        "admin rank-targeted read-only owner announcements",
                         "public shop catalog and validated provider-hosted checkout links",
                     ],
                     "banned_remote_actions": [
@@ -3713,6 +4023,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "No files, local logs, secrets, raw machine ids, or PC names are attached automatically.",
                         "A per-device daily submission limit reduces spam.",
                         "Only the admin token can read all tickets, add private notes, reply, change status, or delete tickets.",
+                    ],
+                    "announcement_controls": [
+                        "Only the admin token can publish or delete announcements.",
+                        "Customers need an active machine-bound license and receive only notices allowed for their rank.",
+                        "Announcements are plain read-only text; they cannot run commands, open files, or change settings.",
+                        "Scheduled and expired notices are filtered by the server.",
                     ],
                     "shop_controls": [
                         "VaultLink never collects card numbers; checkout occurs on a separately hosted payment page.",
@@ -3807,6 +4123,21 @@ class ApiHandler(BaseHTTPRequestHandler):
             try:
                 self.require_admin_token()
                 self.send_json(list_admin_support_tickets())
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if path == "/api/v1/admin/announcements":
+            try:
+                self.require_admin_token()
+                self.send_json(list_admin_announcements())
             except PermissionError as exc:
                 self.send_json(
                     {"ok": False, "error": "forbidden", "message": str(exc)},
@@ -3956,6 +4287,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/support-tickets/mine": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/admin/support-tickets/action": MAX_SUPPORT_JSON_BODY_BYTES,
             "/api/v1/admin/support-tickets/delete": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/announcements/mine": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/admin/announcements/create": MAX_SUPPORT_JSON_BODY_BYTES,
+            "/api/v1/admin/announcements/delete": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/admin/audit-exports/download-link": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
         }
@@ -4020,6 +4354,17 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/admin/support-tickets/delete":
                 self.require_admin_token()
                 self.send_json(admin_delete_support_ticket(payload))
+                return
+            if path == "/api/v1/announcements/mine":
+                self.send_json(list_my_announcements(payload))
+                return
+            if path == "/api/v1/admin/announcements/create":
+                self.require_admin_token()
+                self.send_json(admin_create_announcement(payload), status=HTTPStatus.CREATED)
+                return
+            if path == "/api/v1/admin/announcements/delete":
+                self.require_admin_token()
+                self.send_json(admin_delete_announcement(payload))
                 return
             if path == "/api/v1/admin/audit-exports/download-link":
                 self.require_admin_token()

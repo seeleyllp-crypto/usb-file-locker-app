@@ -97,13 +97,13 @@ class DesktopHelperTests(unittest.TestCase):
             "license": {"license_id": "LIC-SYNC"},
             "activation": {"valid_until_utc": "2099-01-01T00:00:00Z"},
             "device_usage": {"active": 2, "maximum": 4},
-            "api_version": "0.9.0",
+            "api_version": "0.10.0",
             "sync": {
                 "recommended_interval_seconds": 60,
                 "decision_id": "0123456789abcdef",
             },
             "release": {
-                "latest_version": "2026.07.12.3",
+                "latest_version": "2026.07.12.4",
                 "minimum_supported_version": "2026.07.11.3",
                 "update_available": False,
             },
@@ -114,10 +114,10 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[1], "/api/v1/licenses/sync")
         self.assertEqual(post.call_args.kwargs["timeout"], 5)
         self.assertTrue(locker.license_is_active(updated))
-        self.assertEqual(updated["api_version"], "0.9.0")
+        self.assertEqual(updated["api_version"], "0.10.0")
         self.assertEqual(updated["last_decision_id"], "0123456789abcdef")
         self.assertEqual((updated["device_active"], updated["device_maximum"]), (2, 4))
-        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.3")
+        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.4")
 
     def test_bug_report_api_sends_only_explicit_text_and_license_proof(self):
         state = locker.normalize_license_state(
@@ -155,6 +155,47 @@ class DesktopHelperTests(unittest.TestCase):
             listed = locker.list_my_support_tickets_online(state)
         self.assertEqual(listed["count"], 1)
         self.assertEqual(post.call_args.args[1], "/api/v1/support-tickets/mine")
+
+    def test_owner_news_uses_license_proof_and_shop_url_has_no_credentials(self):
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "features": [],
+                "receipt_expires_at": "2099-01-01T00:00:00Z",
+                "last_checked_utc": locker.utc_now_text(),
+                "server_url": locker.DEFAULT_LICENSE_SERVER,
+            }
+        )
+        response = {
+            "ok": True,
+            "count": 1,
+            "plan_rank": 1,
+            "items": [
+                {
+                    "announcement_id": "ANN-TEST12345678",
+                    "severity": "info",
+                    "title": "Owner news",
+                    "message": "A safe read-only message.",
+                }
+            ],
+        }
+        with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
+            result = locker.list_owner_announcements_online(state)
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(post.call_args.args[1], "/api/v1/announcements/mine")
+        payload = post.call_args.args[2]
+        self.assertEqual(payload["app_version"], locker.DESKTOP_APP_VERSION)
+        self.assertIn("license_key", payload)
+        self.assertIn("receipt", payload)
+        for forbidden in ("logs", "files", "paths", "pin", "password", "usb_secret"):
+            self.assertNotIn(forbidden, payload)
+
+        shop_url = locker.shop_url_for_state(state)
+        self.assertEqual(shop_url, locker.DEFAULT_LICENSE_SERVER + "/shop")
+        self.assertNotIn(state["license_key"], shop_url)
+        self.assertNotIn(state["receipt"], shop_url)
 
     def test_stale_feature_gate_enforces_revocation_but_keeps_valid_cache_on_outage(self):
         active = locker.normalize_license_state(

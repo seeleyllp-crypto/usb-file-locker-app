@@ -8,6 +8,8 @@ The main app's `BUG CENTER` lets a customer explicitly send a category, subject,
 
 The API also provides a public `/shop` page for all seven ranks. Buy buttons appear only for allowlisted provider-hosted HTTPS checkout links, so VaultLink never collects card numbers. A missing or invalid checkout link stays visibly unavailable. Payment confirmation and license issuance remain separate owner actions; this release does not claim automatic fulfillment.
 
+`OWNER NEWS` opens rank-targeted announcements published from the owner website. These messages are read-only text, require an active license, respect scheduled start and expiration times, and cannot execute commands, access files, or change settings. `SHOP` opens the public shop without placing the license key or activation receipt in the URL.
+
 ## First run
 
 Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for Python 3.9 or newer and imports the pinned `cryptography` package. If that package is missing, the launcher installs it from `requirements.txt`, verifies the import, and then opens the selected app. The first setup needs an internet connection; later starts do not reinstall it.
@@ -40,7 +42,7 @@ That folder is also safe to copy into its own separate repo if you want a standa
 
 ## Issuing licenses
 
-Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, set its maximum device count, add an optional private owner note, and issue the key. The API enforces that device limit with anonymous machine hashes. `KEYS + NOTES WEBSITE` opens the owner console, where the same admin token can view dashboard totals and shop readiness, see automatic-sync policy, inspect anonymous device seats with throttled last-heartbeat/app-version details, remove one device without resetting every seat, reset all seats for lost PCs, list encrypted-at-rest keys and notes, copy keys, update notes, revoke a whole license, restore it, manage the Bug Inbox, or download API audit logs. The owner page refreshes itself every 30 seconds while no field is being edited. `REVOKE LATEST` handles the newest key directly in the issuer. `API LOGS` remains available in the issuer too.
+Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, set its maximum device count, add an optional private owner note, and issue the key. The API enforces that device limit with anonymous machine hashes. `KEYS + NOTES WEBSITE` opens the owner console, where the same admin token can view dashboard totals and shop readiness, publish scheduled rank-targeted Owner Announcements, see automatic-sync policy, inspect anonymous device seats with throttled last-heartbeat/app-version details, remove one device without resetting every seat, reset all seats for lost PCs, list encrypted-at-rest keys and notes, copy keys, update notes, revoke a whole license, restore it, manage the Bug Inbox, or download API audit logs. The owner page refreshes itself every 30 seconds while no field is being edited. `REVOKE LATEST` handles the newest key directly in the issuer. `API LOGS` remains available in the issuer too.
 
 To download an API log in the website, open the live owner page, enter the Railway admin token, scroll to `Audit Logs`, and choose `DOWNLOAD JSON` beside the report.
 
