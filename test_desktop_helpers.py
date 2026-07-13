@@ -100,6 +100,20 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(callable(owner_update_lab.build_and_test_candidate))
         self.assertTrue(callable(owner_update_lab.publish_verified_candidate))
 
+    def test_owner_candidate_verifier_returns_the_validated_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_candidate_verify_") as temp_dir:
+            temp_path = Path(temp_dir)
+            manifest_path = temp_path / "windows-manifest.json"
+            package_path = temp_path / "VaultLink-Windows-test.zip"
+            manifest = {"version": "9999.1", "preserves_local_app_data": True}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with zipfile.ZipFile(package_path, "w") as archive:
+                archive.writestr("README.txt", "safe test package")
+            with mock.patch.object(owner_update_lab.vaultlink_updater, "validate_manifest", return_value=None) as validate:
+                validated = owner_update_lab.verify_candidate_files(manifest_path, package_path)
+            validate.assert_called_once_with(manifest, package_path)
+            self.assertEqual(validated, manifest)
+
     def test_license_key_validation_and_state_replacement(self):
         self.assertTrue(locker.valid_api_license_key(VALID_TEST_LICENSE))
         self.assertFalse(locker.valid_api_license_key("PSI-OLD-STYLE-KEY"))

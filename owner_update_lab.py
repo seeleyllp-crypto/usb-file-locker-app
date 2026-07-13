@@ -179,11 +179,11 @@ def package_sensitive_entries(package_path):
 
 def verify_candidate_files(manifest_path, package_path):
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    validated = vaultlink_updater.validate_manifest(manifest, package_path)
+    vaultlink_updater.validate_manifest(manifest, package_path)
     blocked = package_sensitive_entries(package_path)
     if blocked:
         raise ValueError("The candidate package contains private app-data files.")
-    return validated
+    return manifest
 
 
 def safe_reset_candidate_dir():
