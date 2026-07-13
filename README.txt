@@ -18,6 +18,10 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.13.1 adds direct desktop links to the online UPDATE CENTER
+  and RECOVERY READINESS app, plus a two-row toolbar that keeps every main
+  action visible. The readiness self-check stores nothing and marks missing
+  backup, USB-key test, or disposable-file round trip as blockers.
 - Version 2026.07.12.9 adds a standalone CUSTOMER HUB for every rank, earlier
   owner announcements, draft Terms and Privacy pages, and temporary LIMITED or
   BLOCK owner controls. LIMITED never remotely disables unlock or recovery.

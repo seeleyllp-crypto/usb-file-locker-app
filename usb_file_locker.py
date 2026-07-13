@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.9"
+DESKTOP_APP_VERSION = "2026.07.13.1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -3807,6 +3807,26 @@ class UpdateCenterWindow(tk.Toplevel):
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="right", ipadx=14, ipady=8)
+        web_controls = tk.Frame(outer, bg=BG)
+        web_controls.pack(fill="x", pady=(10, 0))
+        tk.Button(
+            web_controls,
+            text="WEB UPDATE CHECK",
+            command=self.owner.open_web_update_center,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", ipadx=12, ipady=7)
+        tk.Button(
+            web_controls,
+            text="RECOVERY READINESS",
+            command=self.owner.open_recovery_readiness,
+            bg=YELLOW,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
             outer,
             textvariable=self.status_var,
@@ -4487,15 +4507,18 @@ class USBFileLocker(tk.Tk):
         self.register_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.license_button = tk.Button(top, text="LICENSE CENTER", command=self.open_license_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.license_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        self.apps_hub_button = tk.Button(top, text="APPS HUB", command=self.open_apps_hub, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+
+        top_tools = tk.Frame(panel, bg=PANEL)
+        top_tools.pack(fill="x", padx=18, pady=(0, 10))
+        self.apps_hub_button = tk.Button(top_tools, text="APPS HUB", command=self.open_apps_hub, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.apps_hub_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        self.recovery_button = tk.Button(top, text="RECOVERY CENTER", command=self.open_recovery_center, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.recovery_button = tk.Button(top_tools, text="RECOVERY CENTER", command=self.open_recovery_center, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.recovery_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        self.breach_button = tk.Button(top, text="BREACH CHECK", command=self.open_breach_check, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.breach_button = tk.Button(top_tools, text="BREACH CHECK", command=self.open_breach_check, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.breach_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        self.global_guard_button = tk.Button(top, text="GLOBAL GUARD", command=self.open_global_breach_guard, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.global_guard_button = tk.Button(top_tools, text="GLOBAL GUARD", command=self.open_global_breach_guard, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.global_guard_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        self.audit_button = tk.Button(top, text="AUDIT LOG", command=self.open_log, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.audit_button = tk.Button(top_tools, text="AUDIT LOG", command=self.open_log, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.audit_button.pack(side="right", ipadx=10, ipady=8)
 
         owner_row = tk.Frame(panel, bg=PANEL)
@@ -4521,6 +4544,8 @@ class USBFileLocker(tk.Tk):
         self.customer_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
         self.customer_status_button = tk.Button(customer_row, text="PUBLIC STATUS", command=self.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.customer_status_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.readiness_button = tk.Button(customer_row, text="RECOVERY READINESS", command=self.open_recovery_readiness, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.readiness_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
         storage_row = tk.Frame(panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
@@ -4803,6 +4828,30 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open the customer status page.")
             log_event("customer_status_open", "api", "failed")
             messagebox.showerror("Could not open Customer Status", str(exc), parent=self)
+
+    def open_web_update_center(self):
+        try:
+            state = load_license_state(load_settings())
+            server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+            os.startfile(server + "/update")
+            self.status.set("Opened the online VaultLink Update Center.")
+            log_event("web_update_center_open", "api", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the online Update Center.")
+            log_event("web_update_center_open", "api", "failed")
+            messagebox.showerror("Could not open Update Center", str(exc), parent=self)
+
+    def open_recovery_readiness(self):
+        try:
+            state = load_license_state(load_settings())
+            server = validated_license_server_url(state.get("server_url") or DEFAULT_LICENSE_SERVER)
+            os.startfile(server + "/readiness")
+            self.status.set("Opened VaultLink Recovery Readiness.")
+            log_event("recovery_readiness_open", "api", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Recovery Readiness.")
+            log_event("recovery_readiness_open", "api", "failed")
+            messagebox.showerror("Could not open Recovery Readiness", str(exc), parent=self)
 
     def refresh_update_window(self, error=""):
         if self.update_window is None:
