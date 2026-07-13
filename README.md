@@ -16,6 +16,8 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, asks before installing, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. Every installed build with Update Center uses the same published API release. Automatic installation is disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.12.5` fixes the Windows updater extraction failure that reported `WinError 183` when its securely created temporary folder already existed. The updater now accepts only an empty, non-link extraction directory and still rejects non-empty reuse.
+
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window

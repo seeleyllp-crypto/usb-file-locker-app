@@ -125,7 +125,13 @@ def safe_member_path(name):
 
 
 def extract_verified_package(package_path, destination):
-    destination.mkdir(parents=True, exist_ok=False)
+    if destination.exists():
+        if not destination.is_dir() or destination.is_symlink():
+            raise ValueError("Update extraction destination is not a safe directory.")
+        if any(destination.iterdir()):
+            raise ValueError("Update extraction destination must be empty.")
+    else:
+        destination.mkdir(parents=True, exist_ok=False)
     destination_root = destination.resolve()
     with zipfile.ZipFile(package_path, "r") as archive:
         infos = archive.infolist()

@@ -103,7 +103,7 @@ class DesktopHelperTests(unittest.TestCase):
                 "decision_id": "0123456789abcdef",
             },
             "release": {
-                "latest_version": "2026.07.12.4",
+                "latest_version": "2026.07.12.5",
                 "minimum_supported_version": "2026.07.11.3",
                 "update_available": False,
             },
@@ -117,7 +117,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(updated["api_version"], "0.10.0")
         self.assertEqual(updated["last_decision_id"], "0123456789abcdef")
         self.assertEqual((updated["device_active"], updated["device_maximum"]), (2, 4))
-        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.4")
+        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.5")
 
     def test_bug_report_api_sends_only_explicit_text_and_license_proof(self):
         state = locker.normalize_license_state(
@@ -304,6 +304,24 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual((target / "usb_file_locker.py").read_text(encoding="utf-8"), "new app")
             self.assertEqual((target / "settings.json").read_text(encoding="utf-8"), "private settings")
             self.assertEqual((backup / "usb_file_locker.py").read_text(encoding="utf-8"), "old app")
+
+    def test_updater_extracts_into_mkdtemp_directory_and_rejects_nonempty_reuse(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_updater_mkdtemp_") as folder:
+            root = Path(folder)
+            package = root / "update.zip"
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("usb_file_locker.py", "updated app")
+
+            extracted = Path(tempfile.mkdtemp(prefix="vaultlink-update-extracted-", dir=root))
+            count = vaultlink_updater.extract_verified_package(package, extracted)
+            self.assertEqual(count, 1)
+            self.assertEqual((extracted / "usb_file_locker.py").read_text(encoding="utf-8"), "updated app")
+
+            reused = root / "reused"
+            reused.mkdir()
+            (reused / "unexpected.txt").write_text("do not overwrite", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be empty"):
+                vaultlink_updater.extract_verified_package(package, reused)
 
     def test_api_url_requires_https_except_localhost(self):
         self.assertEqual(
