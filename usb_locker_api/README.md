@@ -9,8 +9,10 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - Persistent anonymous device-seat enforcement using each license's `max_devices` value
 - Per-license anonymous device inventory with throttled last-heartbeat/app-version details and one-device removal without resetting every seat
 - An owner-only keys and private notes website at `/owner` with 30-second automatic refresh
+- An encrypted customer Bug Inbox with owner status actions, private notes, replies, and deletion
 - Privacy-safe audit report upload with signed, expiring downloads
-- Server-calculated breach summaries plus admin-protected report listing and downloads
+- Server-calculated breach summaries plus direct admin log downloads on the owner website
+- A public seven-rank shop at `/shop` using allowlisted provider-hosted checkout links
 - A homepage at `/`
 - A route index at `/docs`
 - A health endpoint at `/health`
@@ -24,6 +26,8 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - It does not move the Windows desktop security logic onto the public internet
 - It does not store PC names or raw machine identifiers in the device-seat ledger
 - It does not accept raw files, file contents, full paths, USB secrets, passwords, or PINs in audit exports
+- Bug reports never attach local files or logs automatically, and raw machine ids are not stored
+- It does not collect card numbers, store payment secrets, or treat a checkout receipt as a license key
 
 ## Railway setup
 
@@ -36,10 +40,12 @@ Recommended Railway environment variables:
 
 - `LICENSE_SIGNING_SECRET` = a long random secret used to sign license keys and receipts
 - `LICENSE_ADMIN_TOKEN` = a long random admin token used for owner-only license and audit routes
-- `LICENSE_STATE_DIR` = persistent folder for revocations, device deactivations, encrypted keys, and private owner notes
-- `LICENSE_RECORDS_SECRET` = a separate long secret used to encrypt saved keys and owner notes; retain it across deployments
+- `LICENSE_STATE_DIR` = persistent folder for revocations, device deactivations, encrypted keys, private owner notes, and support tickets
+- `LICENSE_RECORDS_SECRET` = a separate long secret used to derive separate encryption keys for saved license data and support-ticket text; retain it across deployments
 - `AUDIT_EXPORT_DIR` = optional persistent folder for audit exports; mount a Railway Volume and point this variable at it
 - `AUDIT_EXPORT_RETENTION_HOURS` = optional lifetime for stored exports, from 1 to 2160 hours; default 168
+- `SHOP_CHECKOUT_STARTER_URL`, `SHOP_CHECKOUT_HOME_URL`, `SHOP_CHECKOUT_PERSONAL_PLUS_URL`, `SHOP_CHECKOUT_FAMILY_SAFETY_URL`, `SHOP_CHECKOUT_SMALL_OFFICE_URL`, `SHOP_CHECKOUT_FAMILY_OFFICE_URL`, and `SHOP_CHECKOUT_PRO_BASELINE_URL` = optional provider-hosted HTTPS links for each tier
+- `SHOP_CHECKOUT_ALLOWED_HOSTS` = optional comma-separated host allowlist; defaults to `buy.stripe.com,checkout.stripe.com`
 
 Railway will start the service with:
 
@@ -58,7 +64,18 @@ Then open:
 
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/shop`
 - `http://127.0.0.1:8000/owner`
+
+## Shop
+
+- `GET /shop` shows all seven ranks and their cumulative features.
+- `GET /api/v1/shop` returns the same catalog plus checkout readiness.
+- A tier has a buy button only when its environment variable contains a valid HTTPS URL on the checkout-host allowlist. Missing, insecure, spoofed, credential-bearing, or malformed URLs leave that tier marked `NOT ON SALE YET`.
+- Payment happens entirely on the checkout provider's page. VaultLink does not receive or store card numbers.
+- License delivery is manual: after independently confirming payment in the provider dashboard, the owner issues the matching license from `/owner`.
+
+Use an adult-owned merchant account and follow the payment provider's age, identity, tax, refund, and business requirements. This release does not include webhook-based payment verification or automatic license fulfillment.
 
 ## License endpoints
 
@@ -88,11 +105,27 @@ Then open:
 - `GET /api/v1/admin/licenses/{license_id}/devices`
   - Admin-only anonymous seat inventory. Returns only a one-way machine hash, status, dates, last successful heartbeat, and app version, never a PC name or raw hardware identity. Last-seen writes are throttled to protect the storage volume.
 - `GET /api/v1/admin/dashboard`
-  - Admin-only license, device-capacity, audit-export, breach-level, storage, and release totals.
+  - Admin-only license, device-capacity, audit-export, breach-level, shop-readiness, storage, and release totals.
 
-Open `/owner` to view the API dashboard, issue keys, enforce device limits, inspect and remove one anonymous device, reset all lost-device seats, copy keys, save private notes, revoke licenses, and restore licenses. Once connected, the page refreshes owner data every 30 seconds. The admin token stays in page memory, is sent only in the `X-License-Admin-Token` header, and is not placed in a URL.
+Open `/owner` to view the API dashboard, issue keys, enforce device limits, inspect and remove one anonymous device, reset all lost-device seats, copy keys, save private notes, revoke licenses, manage the Bug Inbox, and download privacy-safe audit logs. Once connected, the page refreshes owner data every 30 seconds unless an input is being edited. The admin token stays in page memory, is sent only in the `X-License-Admin-Token` header, and is not placed in a URL.
 
-Without `LICENSE_STATE_DIR`, Railway uses local ephemeral storage and a restart can forget revocations and owner records. Mount a Railway Volume and use paths such as `/data/license_state` and `/data/audit_exports`. Keep `LICENSE_RECORDS_SECRET` stable; changing or losing it makes previously encrypted keys and private notes unreadable.
+Without `LICENSE_STATE_DIR`, Railway uses local ephemeral storage and a restart can forget revocations, owner records, and bug reports. Mount a Railway Volume and use paths such as `/data/license_state` and `/data/audit_exports`. Keep `LICENSE_RECORDS_SECRET` stable; changing or losing it makes previously encrypted keys, private notes, and support-ticket text unreadable.
+
+## Support ticket endpoints
+
+- `POST /api/v1/support-tickets`
+  - Requires an active machine-bound license. Accepts only the category, subject, description, optional reproduction steps, and app version that the customer explicitly submits.
+  - Ticket text is encrypted at rest. No files, logs, PINs, passwords, USB secrets, client names, full paths, PC names, or raw machine ids are attached automatically.
+- `POST /api/v1/support-tickets/mine`
+  - Returns status and owner replies only for tickets from the same licensed anonymous device.
+- `GET /api/v1/admin/support-tickets`
+  - Admin-only Bug Inbox listing.
+- `POST /api/v1/admin/support-tickets/action`
+  - Admin-only status, customer reply, and private owner-note update.
+- `POST /api/v1/admin/support-tickets/delete`
+  - Admin-only permanent ticket deletion.
+
+The API limits each anonymous licensed device to 10 new support tickets per 24 hours.
 
 ## Audit export endpoints
 
@@ -109,6 +142,10 @@ Without `LICENSE_STATE_DIR`, Railway uses local ephemeral storage and a restart 
 - `GET /api/v1/admin/audit-exports/{export_id}/download`
   - Admin-only download of a selected stored privacy-safe report.
   - The admin token is never accepted in the URL.
+- `POST /api/v1/admin/audit-exports/download-link`
+  - Admin-only exchange for a two-minute, report-scoped browser download link. The temporary signed token is not an admin token and cannot access other owner routes.
+
+To download logs without commands, open `/owner`, connect with the admin token, scroll to **Audit Logs**, and click **DOWNLOAD JSON** beside a report.
 
 Without `AUDIT_EXPORT_DIR`, Railway stores exports on the service's local ephemeral filesystem. Upload, owner listing, and download work, but a restart can remove pending exports. For restart-safe retention, mount a Railway Volume and set `AUDIT_EXPORT_DIR` to that mount, such as `/data/audit_exports`.
 

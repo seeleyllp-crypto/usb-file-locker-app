@@ -97,13 +97,13 @@ class DesktopHelperTests(unittest.TestCase):
             "license": {"license_id": "LIC-SYNC"},
             "activation": {"valid_until_utc": "2099-01-01T00:00:00Z"},
             "device_usage": {"active": 2, "maximum": 4},
-            "api_version": "0.8.0",
+            "api_version": "0.9.0",
             "sync": {
                 "recommended_interval_seconds": 60,
                 "decision_id": "0123456789abcdef",
             },
             "release": {
-                "latest_version": "2026.07.12.2",
+                "latest_version": "2026.07.12.3",
                 "minimum_supported_version": "2026.07.11.3",
                 "update_available": False,
             },
@@ -114,10 +114,47 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[1], "/api/v1/licenses/sync")
         self.assertEqual(post.call_args.kwargs["timeout"], 5)
         self.assertTrue(locker.license_is_active(updated))
-        self.assertEqual(updated["api_version"], "0.8.0")
+        self.assertEqual(updated["api_version"], "0.9.0")
         self.assertEqual(updated["last_decision_id"], "0123456789abcdef")
         self.assertEqual((updated["device_active"], updated["device_maximum"]), (2, 4))
-        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.2")
+        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.3")
+
+    def test_bug_report_api_sends_only_explicit_text_and_license_proof(self):
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "features": [],
+                "receipt_expires_at": "2099-01-01T00:00:00Z",
+                "last_checked_utc": locker.utc_now_text(),
+            }
+        )
+        response = {"ok": True, "created": True, "ticket": {"ticket_id": "TKT-TEST12345678"}}
+        with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
+            result = locker.create_support_ticket_online(
+                state,
+                "bug",
+                "Button stopped",
+                "The lock button stopped after two files.",
+                "Add files, then click LOCK COPY.",
+            )
+        self.assertTrue(result["created"])
+        self.assertEqual(post.call_args.args[1], "/api/v1/support-tickets")
+        payload = post.call_args.args[2]
+        self.assertEqual(payload["subject"], "Button stopped")
+        self.assertEqual(payload["app_version"], locker.DESKTOP_APP_VERSION)
+        for forbidden in ("logs", "files", "paths", "pin", "password", "usb_secret"):
+            self.assertNotIn(forbidden, payload)
+
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={"ok": True, "count": 1, "items": [response["ticket"]]},
+        ) as post:
+            listed = locker.list_my_support_tickets_online(state)
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(post.call_args.args[1], "/api/v1/support-tickets/mine")
 
     def test_stale_feature_gate_enforces_revocation_but_keeps_valid_cache_on_outage(self):
         active = locker.normalize_license_state(

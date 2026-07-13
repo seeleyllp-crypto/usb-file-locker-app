@@ -162,11 +162,22 @@ Companion apps:
   30 seconds after the owner connects.
   REVOKE LATEST removes the newest key. API LOGS lists stored breach reports and
   downloads a selected report. The Railway admin token is masked and never saved.
+- The API /shop page shows all seven ranks. A BUY button appears only when the owner
+  configures an allowlisted provider-hosted HTTPS checkout link. VaultLink never
+  collects card numbers. The owner confirms payment separately and then issues the
+  matching license; checkout does not automatically create a key.
 
 License Center:
 - REMOVE FROM THIS PC deactivates that machine receipt through the API and clears
   the saved local key and receipt after the server confirms it.
 - CLEAR LOCAL COPY ONLY is an offline fallback and does not notify the API.
+- BUG CENTER sends only the category, subject, description, and optional steps that
+  the customer types. It never attaches files or local logs automatically. Customers
+  can use CHECK OWNER REPLIES from the same licensed PC.
+- On the owner website, BUG INBOX lets the owner acknowledge, mark in progress,
+  resolve, close, reply, save a private note, or permanently delete a report.
+- To download API logs, open the owner website, connect with the Railway admin token,
+  scroll to AUDIT LOGS, and click DOWNLOAD JSON. API LOGS in License Issuer also works.
 - Run Text Log Processor.bat
   Pastes or loads table-style text logs, counts actions, spots failures and duplicate sequence numbers, and exports a cleaner report.
 - Run Global Breach Guard.bat

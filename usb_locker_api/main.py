@@ -6,16 +6,18 @@ import os
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.8.0"
+API_VERSION = "0.9.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -27,6 +29,7 @@ UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
 MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_LICENSE_JSON_BODY_BYTES = 64 * 1024
+MAX_SUPPORT_JSON_BODY_BYTES = 32 * 1024
 LICENSE_SYNC_INTERVAL_SECONDS = 60
 DEVICE_LAST_SEEN_WRITE_SECONDS = 300
 MAX_AUDIT_JSON_BODY_BYTES = 4 * 1024 * 1024
@@ -87,6 +90,8 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "restore_app_data",
         "save_personal_vault",
         "scan_personal_files",
+        "support_ticket_submit",
+        "support_ticket_view",
         "unlock",
         "unlock_double_click",
         "upgrade_legacy_lock",
@@ -121,6 +126,11 @@ LICENSE_STATE_DIR = Path(
 MAX_LICENSE_NOTE_CHARS = 2000
 MAX_LICENSE_RECORDS = 500
 LICENSE_RECORD_AAD = b"VaultLinkLicenseRecordV1"
+SUPPORT_TICKET_AAD = b"VaultLinkSupportTicketV1"
+MAX_SUPPORT_TICKETS = 1000
+MAX_SUPPORT_TICKETS_PER_DAY = 10
+SUPPORT_TICKET_STATUSES = frozenset({"open", "acknowledged", "in_progress", "resolved", "closed"})
+SUPPORT_TICKET_CATEGORIES = frozenset({"bug", "crash", "licensing", "update", "security", "idea", "other"})
 LICENSE_STATE_LOCK = threading.RLock()
 
 
@@ -416,6 +426,16 @@ PLAN_TIERS = [
 
 
 PLAN_INDEX = {item["id"]: item for item in PLAN_TIERS}
+SHOP_CHECKOUT_ENV_BY_PLAN = {
+    "starter": "SHOP_CHECKOUT_STARTER_URL",
+    "home": "SHOP_CHECKOUT_HOME_URL",
+    "personal-plus": "SHOP_CHECKOUT_PERSONAL_PLUS_URL",
+    "family-safety": "SHOP_CHECKOUT_FAMILY_SAFETY_URL",
+    "small-office": "SHOP_CHECKOUT_SMALL_OFFICE_URL",
+    "family-office": "SHOP_CHECKOUT_FAMILY_OFFICE_URL",
+    "pro-baseline": "SHOP_CHECKOUT_PRO_BASELINE_URL",
+}
+DEFAULT_SHOP_CHECKOUT_HOSTS = frozenset({"buy.stripe.com", "checkout.stripe.com"})
 LEGACY_PLAN_ALIASES = {
     "plus": "personal-plus",
     "pro": "family-safety",
@@ -476,6 +496,76 @@ def public_plan_payload(plan):
         "rank": plan["rank"],
         "includes": list(plan["includes"]),
         "entitlements": plan_entitlements(plan["id"]),
+    }
+
+
+def shop_checkout_allowed_hosts():
+    configured = os.getenv("SHOP_CHECKOUT_ALLOWED_HOSTS", "").strip()
+    if not configured:
+        return set(DEFAULT_SHOP_CHECKOUT_HOSTS)
+    hosts = set()
+    for item in configured.split(","):
+        host = item.strip().lower().rstrip(".")
+        if host and len(host) <= 253 and all(character.isalnum() or character in ".-" for character in host):
+            hosts.add(host)
+    return hosts or set(DEFAULT_SHOP_CHECKOUT_HOSTS)
+
+
+def validated_shop_checkout_url(plan_id):
+    env_name = SHOP_CHECKOUT_ENV_BY_PLAN.get(canonical_plan_id(plan_id), "")
+    raw_url = os.getenv(env_name, "").strip() if env_name else ""
+    if not raw_url or len(raw_url) > 2048:
+        return ""
+    if any(character.isspace() or ord(character) < 32 for character in raw_url):
+        return ""
+    try:
+        parsed = urlparse(raw_url)
+        port = parsed.port
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme.lower() != "https"
+        or not host
+        or host not in shop_checkout_allowed_hosts()
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port not in (None, 443)
+        or parsed.path in ("", "/")
+    ):
+        return ""
+    return raw_url
+
+
+def shop_plan_payload(plan):
+    payload = public_plan_payload(plan)
+    checkout_url = validated_shop_checkout_url(plan["id"])
+    payload.update(
+        {
+            "checkout_available": bool(checkout_url),
+            "checkout_url": checkout_url,
+            "checkout_provider": "hosted checkout",
+            "fulfillment": "owner_issues_license_after_payment_confirmation",
+        }
+    )
+    return payload
+
+
+def shop_payload():
+    items = [shop_plan_payload(item) for item in sorted(PLAN_TIERS, key=lambda item: item["rank"])]
+    configured_count = sum(bool(item["checkout_available"]) for item in items)
+    return {
+        "ok": True,
+        "name": "VaultLink Shop",
+        "items": items,
+        "count": len(items),
+        "configured_count": configured_count,
+        "ready": configured_count > 0,
+        "payment_handling": "provider_hosted_checkout_only",
+        "card_data_collected_by_vaultlink": False,
+        "license_fulfillment": "manual_owner_confirmation",
+        "server_time_utc": utc_now(),
     }
 
 
@@ -645,6 +735,39 @@ def decrypt_license_private_fields(record):
     payload = json.loads(plain.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Stored private license data is invalid.")
+    return payload
+
+
+def support_ticket_encryption_key():
+    material = ("vaultlink-support-tickets-v1\0" + license_records_secret()).encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def encrypt_support_private_fields(payload):
+    nonce = os.urandom(12)
+    encrypted = AESGCM(support_ticket_encryption_key()).encrypt(
+        nonce,
+        canonical_json_bytes(payload),
+        SUPPORT_TICKET_AAD,
+    )
+    return b64url_encode(nonce + encrypted)
+
+
+def decrypt_support_private_fields(record):
+    encoded = str(record.get("private_blob", "")).strip()
+    if not encoded:
+        return {}
+    packed = b64url_decode(encoded)
+    if len(packed) < 29:
+        raise ValueError("Stored support ticket data is damaged.")
+    plain = AESGCM(support_ticket_encryption_key()).decrypt(
+        packed[:12],
+        packed[12:],
+        SUPPORT_TICKET_AAD,
+    )
+    payload = json.loads(plain.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Stored support ticket data is invalid.")
     return payload
 
 
@@ -1027,6 +1150,7 @@ def docs_payload():
         "license_mode": "signed_tokens_with_revocation_ledger",
         "routes": [
             {"method": "GET", "path": "/", "purpose": "HTML homepage"},
+            {"method": "GET", "path": "/shop", "purpose": "Public seven-tier shop with provider-hosted checkout"},
             {"method": "GET", "path": "/owner", "purpose": "Owner-only key and note web console"},
             {"method": "GET", "path": "/docs", "purpose": "JSON route index"},
             {"method": "GET", "path": "/health", "purpose": "Health check"},
@@ -1035,6 +1159,7 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/companions", "purpose": "Companion app catalog"},
             {"method": "GET", "path": "/api/v1/plans", "purpose": "Plan and entitlement catalog"},
             {"method": "GET", "path": "/api/v1/ranks", "purpose": "Complete ordered license-rank comparison"},
+            {"method": "GET", "path": "/api/v1/shop", "purpose": "Public shop readiness and validated checkout links"},
             {"method": "GET", "path": "/api/v1/security", "purpose": "Public security and licensing notes"},
             {"method": "GET", "path": "/api/v1/deploy", "purpose": "Railway deploy hints"},
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
@@ -1050,10 +1175,16 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/admin/licenses", "purpose": "Admin-only encrypted key and note inventory"},
             {"method": "GET", "path": "/api/v1/admin/licenses/{license_id}/devices", "purpose": "Admin-only anonymous device-seat inventory"},
             {"method": "GET", "path": "/api/v1/admin/dashboard", "purpose": "Admin-only license, device, audit, breach, and release totals"},
+            {"method": "POST", "path": "/api/v1/support-tickets", "purpose": "Licensed privacy-safe customer bug report submission"},
+            {"method": "POST", "path": "/api/v1/support-tickets/mine", "purpose": "Licensed customer ticket status and owner replies"},
+            {"method": "GET", "path": "/api/v1/admin/support-tickets", "purpose": "Admin-only encrypted support inbox"},
+            {"method": "POST", "path": "/api/v1/admin/support-tickets/action", "purpose": "Admin-only acknowledge, resolve, close, note, and reply action"},
+            {"method": "POST", "path": "/api/v1/admin/support-tickets/delete", "purpose": "Admin-only permanent support-ticket deletion"},
             {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
             {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
             {"method": "GET", "path": "/api/v1/admin/audit-exports", "purpose": "Admin-only list of stored audit reports and breach levels"},
             {"method": "GET", "path": "/api/v1/admin/audit-exports/{export_id}/download", "purpose": "Admin-only stored audit report download"},
+            {"method": "POST", "path": "/api/v1/admin/audit-exports/download-link", "purpose": "Admin-only two-minute report-scoped browser download link"},
             {"method": "GET", "path": "/api/v1/updates/windows", "purpose": "Signed Windows desktop update manifest and compatibility data"},
             {"method": "GET", "path": "/api/v1/updates/windows/download", "purpose": "SHA-256-pinned Windows desktop update package"},
         ],
@@ -1065,6 +1196,8 @@ def docs_payload():
             {"name": "LICENSE_RECORDS_SECRET", "required": False, "purpose": "Separate encryption secret for saved owner keys and private notes; defaults to the signing secret"},
             {"name": "AUDIT_EXPORT_DIR", "required": False, "purpose": "Persistent audit-export folder; mount a Railway Volume here for durable retention"},
             {"name": "AUDIT_EXPORT_RETENTION_HOURS", "required": False, "purpose": "Stored export lifetime from 1 to 2160 hours; default 168"},
+            {"name": "SHOP_CHECKOUT_*_URL", "required": False, "purpose": "Provider-hosted HTTPS checkout URL for each plan; missing tiers stay unavailable"},
+            {"name": "SHOP_CHECKOUT_ALLOWED_HOSTS", "required": False, "purpose": "Comma-separated checkout host allowlist; defaults to Stripe hosted-checkout domains"},
         ],
         "request_limits": {
             "license_routes_bytes": MAX_LICENSE_JSON_BODY_BYTES,
@@ -1363,7 +1496,8 @@ def homepage_html():
       </div>
       <p>{product['tagline']}</p>
       <div class="cta">
-        <a class="primary" href="/docs">Open Route Index</a>
+        <a class="primary" href="/shop">Open Shop</a>
+        <a href="/docs">Open Route Index</a>
         <a href="/owner">Owner Console</a>
         <a href="/api/v1/product">Product JSON</a>
         <a href="/api/v1/ranks">All Ranks JSON</a>
@@ -1394,6 +1528,89 @@ def homepage_html():
 </html>"""
 
 
+def shop_html():
+    shop = shop_payload()
+    cards = []
+    for item in shop["items"]:
+        included = "".join(f"<li>{html_escape(str(value))}</li>" for value in item["includes"])
+        if item["checkout_available"]:
+            action = (
+                f'<a class="buy" href="{html_escape(item["checkout_url"], quote=True)}" '
+                'target="_blank" rel="noopener noreferrer">BUY THROUGH SECURE CHECKOUT</a>'
+            )
+        else:
+            action = '<span class="unavailable" aria-disabled="true">NOT ON SALE YET</span>'
+        cards.append(
+            f'<article class="plan rank-{item["rank"]}">'
+            f'<div class="rank">RANK {item["rank"]}</div>'
+            f'<h2>{html_escape(item["name"])}</h2>'
+            f'<div class="price">{html_escape(item["price_label"])}</div>'
+            f'<p>{html_escape(item["best_for"])}</p>'
+            f'<ul>{included}</ul>'
+            f'<div class="entitlements">{len(item["entitlements"])} cumulative entitlements</div>'
+            f'{action}</article>'
+        )
+    readiness = (
+        f'{shop["configured_count"]} of {shop["count"]} checkout links are live.'
+        if shop["configured_count"]
+        else "Checkout is not open yet. No tier can accept payment until the owner configures its hosted link."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaultLink Shop</title>
+  <style>
+    :root {{ --bg:#101216; --surface:#191d23; --line:#303741; --text:#f5f6f7; --muted:#b5bec9; --green:#72e184; --blue:#69bce8; --yellow:#ffd166; --red:#ff8278; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI",Arial,sans-serif; }}
+    header {{ border-bottom:1px solid var(--line); background:#14171c; }}
+    header > div, main, footer > div {{ width:min(1180px,calc(100% - 32px)); margin:0 auto; }}
+    header > div {{ display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:72px; }}
+    .brand {{ font-size:1.05rem; font-weight:800; }}
+    nav {{ display:flex; gap:10px; flex-wrap:wrap; }}
+    nav a {{ color:var(--text); text-decoration:none; padding:9px 12px; border:1px solid var(--line); border-radius:6px; }}
+    main {{ padding:42px 0 54px; }}
+    .intro {{ max-width:800px; margin-bottom:26px; }}
+    h1 {{ margin:0; font-size:clamp(2.1rem,5vw,4rem); line-height:1; letter-spacing:0; }}
+    .intro p {{ color:var(--muted); line-height:1.6; margin:14px 0 0; }}
+    .ready {{ display:inline-block; margin-top:16px; padding:8px 10px; border-left:4px solid var(--yellow); background:#212026; color:var(--text); }}
+    .plans {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }}
+    .plan {{ display:flex; min-width:0; flex-direction:column; padding:20px; background:var(--surface); border:1px solid var(--line); border-top:4px solid var(--green); border-radius:8px; }}
+    .plan.rank-2 {{ border-top-color:var(--blue); }} .plan.rank-3 {{ border-top-color:var(--yellow); }} .plan.rank-4 {{ border-top-color:#ef98bd; }}
+    .plan.rank-5 {{ border-top-color:var(--red); }} .plan.rank-6 {{ border-top-color:#bca3ff; }} .plan.rank-7 {{ border-top-color:#f5f6f7; }}
+    .rank {{ color:var(--muted); font-size:.75rem; font-weight:800; }}
+    h2 {{ margin:7px 0 0; font-size:1.2rem; letter-spacing:0; }}
+    .price {{ margin-top:10px; font-size:1.8rem; font-weight:800; color:var(--green); }}
+    .plan p {{ min-height:72px; color:var(--muted); line-height:1.5; }}
+    ul {{ flex:1; margin:0; padding-left:19px; color:var(--muted); line-height:1.55; }}
+    .entitlements {{ margin:17px 0 12px; padding-top:12px; border-top:1px solid var(--line); font-size:.82rem; font-weight:700; }}
+    .buy,.unavailable {{ display:block; width:100%; min-height:44px; padding:12px; border-radius:6px; text-align:center; font-size:.82rem; font-weight:800; }}
+    .buy {{ background:var(--green); color:#071109; text-decoration:none; }}
+    .buy:hover {{ background:#8aeb96; }}
+    .unavailable {{ border:1px solid var(--line); color:var(--muted); background:#12151a; }}
+    footer {{ border-top:1px solid var(--line); background:#14171c; }}
+    footer > div {{ padding:24px 0 32px; color:var(--muted); line-height:1.6; }}
+    footer strong {{ color:var(--text); }}
+    @media (max-width:620px) {{ header > div {{ align-items:flex-start; flex-direction:column; padding:16px 0; }} main {{ padding-top:28px; }} .plans {{ grid-template-columns:1fr; }} .plan p {{ min-height:0; }} }}
+  </style>
+</head>
+<body>
+  <header><div><div class="brand">VaultLink</div><nav><a href="/">HOME</a><a href="/owner">OWNER</a></nav></div></header>
+  <main>
+    <section class="intro">
+      <h1>VaultLink Shop</h1>
+      <p>Choose a Windows USB File Locker rank. Payments open only on the payment provider's hosted checkout page; this site does not collect card numbers.</p>
+      <div class="ready">{html_escape(readiness)}</div>
+    </section>
+    <section class="plans">{''.join(cards)}</section>
+  </main>
+  <footer><div><strong>How delivery works:</strong> after the payment provider confirms payment, the owner issues the matching VaultLink license. A checkout receipt is not itself a license key. The plans are software packages, not HIPAA certification or a guarantee against data loss, malware, or legal risk.</div></footer>
+</body>
+</html>"""
+
+
 def owner_portal_html():
     return """<!doctype html>
 <html lang="en">
@@ -1413,12 +1630,14 @@ def owner_portal_html():
     .api-state { color:var(--muted); font-weight:700; }
     main { padding:24px 0 44px; }
     section { padding:20px 0 24px; border-bottom:1px solid var(--line); }
-    .auth, .grid, .latest, .record-head, .record-actions, .stats { display:grid; gap:10px; align-items:end; }
+    .auth, .grid, .latest, .record-head, .record-actions, .ticket-actions, .audit-row, .stats { display:grid; gap:10px; align-items:end; }
     .auth { grid-template-columns:minmax(220px,1fr) auto auto; }
     .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .latest { grid-template-columns:minmax(0,1fr) auto; }
     .record-head { grid-template-columns:minmax(180px,1fr) minmax(160px,.7fr) auto; align-items:start; }
     .record-actions { grid-template-columns:minmax(180px,1fr) auto auto auto auto auto; }
+    .ticket-actions { grid-template-columns:minmax(130px,.45fr) minmax(200px,1fr) minmax(200px,1fr) auto auto; align-items:start; }
+    .audit-row { grid-template-columns:minmax(180px,1fr) minmax(140px,.5fr) auto; align-items:center; }
     .stats { grid-template-columns:repeat(4,minmax(0,1fr)); align-items:stretch; }
     .stat { min-width:0; padding:12px 10px; border-left:3px solid var(--blue); background:var(--panel); }
     .stat strong { display:block; margin-top:3px; font-size:20px; overflow-wrap:anywhere; }
@@ -1440,12 +1659,16 @@ def owner_portal_html():
     .meta { color:var(--muted); font-size:12px; margin-top:4px; }
     .badge { display:inline-block; min-width:72px; padding:4px 8px; border-radius:4px; text-align:center; text-transform:uppercase; font-size:11px; font-weight:800; background:#25302a; color:var(--green); }
     .badge.revoked { background:#392126; color:#ff9aa2; }
+    .badge.open { background:#352f1d; color:var(--yellow); }
+    .badge.acknowledged, .badge.in_progress { background:#1d3039; color:var(--blue); }
+    .badge.resolved, .badge.closed { background:#25302a; color:var(--green); }
+    .ticket-copy { margin:10px 0 0; padding:10px; background:var(--field); color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }
     .device-list { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
     .device-row { display:grid; grid-template-columns:minmax(180px,1fr) minmax(120px,.6fr) auto; gap:10px; align-items:center; padding:8px 0; }
     .empty { padding:26px 0; color:var(--muted); }
     .split { grid-column:1 / -1; }
     @media (max-width:900px) { .stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
+    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.ticket-actions,.audit-row,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
   </style>
 </head>
 <body>
@@ -1472,6 +1695,8 @@ def owner_portal_html():
         <div class="stat"><label>Desktop release</label><strong id="statRelease">-</strong></div>
         <div class="stat"><label>API version</label><strong id="statApi">-</strong></div>
         <div class="stat"><label>Client sync</label><strong id="statSync">-</strong></div>
+        <div class="stat"><label>Bugs needing action</label><strong id="statSupport">-</strong></div>
+        <div class="stat"><label>Shop links live</label><strong id="statShop">-</strong></div>
       </div>
     </section>
 
@@ -1496,10 +1721,20 @@ def owner_portal_html():
       <div class="record-head"><h2>Keys And Notes</h2><div id="storage" class="meta"></div><button id="refresh" disabled>REFRESH</button></div>
       <div id="records"><div class="empty">Connect to load licenses.</div></div>
     </section>
+
+    <section>
+      <div class="record-head"><h2>Bug Inbox</h2><div id="supportStorage" class="meta"></div><button id="refreshSupport" disabled>REFRESH BUGS</button></div>
+      <div id="supportRecords"><div class="empty">Connect to load customer bug reports.</div></div>
+    </section>
+
+    <section>
+      <div class="record-head"><h2>Audit Logs</h2><div id="auditStorage" class="meta"></div><button id="refreshLogs" disabled>REFRESH LOGS</button></div>
+      <div id="auditRecords"><div class="empty">Connect to load privacy-safe API logs.</div></div>
+    </section>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { token: "", connected: false, busy: false, loading: false, items: [], dashboard: null };
+    const state = { token: "", connected: false, busy: false, loading: false, items: [], supportItems: [], auditItems: [], dashboard: null };
     const AUTO_REFRESH_MS = 30000;
 
     function setStatus(message, kind="") {
@@ -1513,6 +1748,8 @@ def owner_portal_html():
       $("apiState").style.color = value ? "var(--green)" : "var(--muted)";
       $("issue").disabled = !value || state.busy;
       $("refresh").disabled = !value || state.busy;
+      $("refreshSupport").disabled = !value || state.busy;
+      $("refreshLogs").disabled = !value || state.busy;
     }
 
     async function api(path, options={}) {
@@ -1541,17 +1778,25 @@ def owner_portal_html():
       if (state.loading) return;
       state.loading = true;
       try {
-      const [payload, dashboard] = await Promise.all([
+      const [payload, dashboard, support, audits] = await Promise.all([
         api("/api/v1/admin/licenses"),
-        api("/api/v1/admin/dashboard")
+        api("/api/v1/admin/dashboard"),
+        api("/api/v1/admin/support-tickets"),
+        api("/api/v1/admin/audit-exports")
       ]);
       state.items = payload.items || [];
+      state.supportItems = support.items || [];
+      state.auditItems = audits.items || [];
       state.dashboard = dashboard;
       $("storage").textContent = payload.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE";
+      $("supportStorage").textContent = support.storage === "persistent_configured" ? "ENCRYPTED PERSISTENT STORAGE" : "TEMPORARY STORAGE";
+      $("auditStorage").textContent = `${audits.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE"} | ${audits.retention_hours || 0}H RETENTION`;
       renderDashboard(dashboard);
       renderRecords();
+      renderSupport();
+      renderAudits();
       setConnected(true);
-      if (!silent) setStatus(`Loaded ${payload.count || 0} license record(s). Automatic refresh is on.`, "good");
+      if (!silent) setStatus(`Loaded ${payload.count || 0} license(s), ${support.count || 0} bug report(s), and ${audits.count || 0} audit log(s).`, "good");
       } finally {
         state.loading = false;
       }
@@ -1562,6 +1807,8 @@ def owner_portal_html():
       const devices = dashboard?.devices || {};
       const audits = dashboard?.audit_exports || {};
       const levels = audits.breach_levels || {};
+      const support = dashboard?.support_tickets || {};
+      const shop = dashboard?.shop || {};
       $("statLicenses").textContent = dashboard ? String(licenses.active || 0) : "-";
       $("statDevices").textContent = dashboard ? String(devices.active || 0) : "-";
       $("statCapacity").textContent = dashboard ? String(devices.capacity || 0) : "-";
@@ -1570,6 +1817,8 @@ def owner_portal_html():
       $("statRelease").textContent = dashboard ? String((dashboard.release || {}).desktop_version || "none") : "-";
       $("statApi").textContent = dashboard ? String((dashboard.release || {}).api_version || "unknown") : "-";
       $("statSync").textContent = dashboard ? `${String((dashboard.release || {}).license_sync_seconds || 60)}s` : "-";
+      $("statSupport").textContent = dashboard ? String(support.needs_action || 0) : "-";
+      $("statShop").textContent = dashboard ? `${String(shop.configured || 0)}/${String(shop.total || 0)}` : "-";
     }
 
     function actionButton(text, className, action) {
@@ -1639,6 +1888,105 @@ def owner_portal_html():
       }
     }
 
+    function renderSupport() {
+      const host = $("supportRecords");
+      host.replaceChildren();
+      if (!state.supportItems.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No customer bug reports yet.";
+        host.append(empty);
+        return;
+      }
+      for (const item of state.supportItems) {
+        const record = document.createElement("article");
+        record.className = "record";
+        const head = document.createElement("div");
+        head.className = "record-head";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = item.subject || item.ticket_id || "Bug report";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.ticket_id || "unknown"} | ${item.category || "other"} | ${item.license_id || "unknown license"} | ${item.created_at_utc || "unknown time"}`;
+        identity.append(title, meta);
+        const source = document.createElement("div");
+        source.className = "meta";
+        source.textContent = `device ${item.machine_hash || "anonymous"} | app ${item.app_version || "unknown"}`;
+        const badge = document.createElement("span");
+        badge.className = `badge ${item.status || "open"}`;
+        badge.textContent = (item.status || "open").replace("_", " ");
+        head.append(identity, source, badge);
+
+        const message = document.createElement("div");
+        message.className = "ticket-copy";
+        message.textContent = item.message || "No description supplied.";
+        record.append(head, message);
+        if (item.steps) {
+          const stepsLabel = document.createElement("label");
+          stepsLabel.textContent = "Steps to reproduce";
+          const steps = document.createElement("div");
+          steps.className = "ticket-copy";
+          steps.textContent = item.steps;
+          record.append(stepsLabel, steps);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "ticket-actions";
+        const status = document.createElement("select");
+        for (const value of ["open", "acknowledged", "in_progress", "resolved", "closed"]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value.replace("_", " ").toUpperCase();
+          option.selected = value === item.status;
+          status.append(option);
+        }
+        const reply = document.createElement("textarea");
+        reply.maxLength = 4000;
+        reply.placeholder = "Reply visible to the customer";
+        reply.value = item.owner_reply || "";
+        const note = document.createElement("textarea");
+        note.maxLength = 4000;
+        note.placeholder = "Private owner note";
+        note.value = item.owner_note || "";
+        actions.append(status, reply, note);
+        actions.append(actionButton("SAVE ACTION", "blue", () => saveSupport(item, status.value, reply.value, note.value)));
+        actions.append(actionButton("DELETE", "danger", () => deleteSupport(item)));
+        record.append(actions);
+        host.append(record);
+      }
+    }
+
+    function renderAudits() {
+      const host = $("auditRecords");
+      host.replaceChildren();
+      if (!state.auditItems.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No API audit logs are stored right now.";
+        host.append(empty);
+        return;
+      }
+      for (const item of state.auditItems) {
+        const row = document.createElement("article");
+        row.className = "record audit-row";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = item.export_id || "Audit report";
+        const source = item.source || {};
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.uploaded_at_utc || "unknown time"} | ${source.license_id || "unknown license"} | ${item.event_count || 0} event(s)`;
+        identity.append(title, meta);
+        const level = String((item.breach_summary || {}).level || "clear").toLowerCase();
+        const badge = document.createElement("span");
+        badge.className = `badge ${level === "high" || level === "critical" ? "revoked" : "resolved"}`;
+        badge.textContent = level;
+        row.append(identity, badge, actionButton("DOWNLOAD JSON", "warn", () => downloadAudit(item)));
+        host.append(row);
+      }
+    }
+
     async function connect() {
       state.token = $("token").value.trim();
       if (!state.token) return setStatus("Enter the Railway LICENSE_ADMIN_TOKEN.", "bad");
@@ -1647,6 +1995,7 @@ def owner_portal_html():
 
     async function autoRefresh() {
       if (!state.connected || state.busy || state.loading) return;
+      if (document.activeElement && document.activeElement.matches("input, textarea, select")) return;
       try {
         await loadLicenses(true);
         setStatus(`Owner data refreshed automatically at ${new Date().toLocaleTimeString()}.`, "good");
@@ -1743,6 +2092,46 @@ def owner_portal_html():
       } catch (error) { setStatus(error.message, "bad"); }
     }
 
+    async function saveSupport(item, status, ownerReply, ownerNote) {
+      try {
+        const result = await api("/api/v1/admin/support-tickets/action", { method:"POST", body:JSON.stringify({
+          ticket_id:item.ticket_id,
+          status,
+          owner_reply:ownerReply,
+          owner_note:ownerNote
+        }) });
+        await loadLicenses(true);
+        setStatus(result.message || `Updated ${item.ticket_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function deleteSupport(item) {
+      if (!confirm(`PERMANENTLY DELETE ${item.ticket_id}? This removes the report and owner reply.`)) return;
+      try {
+        const result = await api("/api/v1/admin/support-tickets/delete", { method:"POST", body:JSON.stringify({ ticket_id:item.ticket_id }) });
+        await loadLicenses(true);
+        setStatus(result.message || `Deleted ${item.ticket_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function downloadAudit(item) {
+      try {
+        const result = await api("/api/v1/admin/audit-exports/download-link", {
+          method:"POST",
+          body:JSON.stringify({ export_id:item.export_id })
+        });
+        const link = document.createElement("a");
+        link.href = result.download_path;
+        link.download = result.filename || `vaultlink-audit-${item.export_id}.json`;
+        document.body.append(link);
+        link.click();
+        window.setTimeout(() => {
+          link.remove();
+        }, 1500);
+        setStatus(`Downloaded ${item.export_id}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
     async function copyText(text) {
       if (!text) return setStatus("No key is available to copy.", "bad");
       try { await navigator.clipboard.writeText(text); setStatus("License key copied.", "good"); }
@@ -1750,9 +2139,11 @@ def owner_portal_html():
     }
 
     $("connect").addEventListener("click", connect);
-    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); setStatus("Admin token cleared from page memory."); });
+    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); setStatus("Admin token cleared from page memory."); });
     $("issue").addEventListener("click", issueLicense);
     $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("refreshSupport").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("refreshLogs").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("copyLatest").addEventListener("click", () => copyText($("latestKey").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
     window.setInterval(autoRefresh, AUTO_REFRESH_MS);
@@ -2258,6 +2649,263 @@ def admin_remove_license_device(payload):
     }
 
 
+def clean_support_text(value, limit, field_name, required=False, minimum=1):
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(
+        character if ord(character) >= 32 or character in {"\n", "\t"} else " "
+        for character in text
+    ).strip()
+    if len(text) > limit:
+        raise ValueError(f"{field_name} must be {limit} characters or fewer.")
+    if required and len(text) < minimum:
+        raise ValueError(f"{field_name} must be at least {minimum} characters.")
+    return text
+
+
+def validated_support_ticket_id(value):
+    text = str(value or "").strip().upper()
+    if (
+        not text.startswith("TKT-")
+        or not 12 <= len(text) <= 64
+        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in text)
+    ):
+        raise ValueError("Choose a valid support ticket id.")
+    return text
+
+
+def support_ticket_path(ticket_id):
+    return LICENSE_STATE_DIR / "support_tickets" / f"{validated_support_ticket_id(ticket_id)}.json"
+
+
+def read_support_ticket(ticket_id):
+    clean_ticket_id = validated_support_ticket_id(ticket_id)
+    path = support_ticket_path(clean_ticket_id)
+    if not path.is_file():
+        raise FileNotFoundError("Support ticket was not found.")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or record.get("ticket_id") != clean_ticket_id:
+        raise ValueError("Stored support ticket identity did not verify.")
+    return record
+
+
+def support_ticket_private_fields(record):
+    return decrypt_support_private_fields(record)
+
+
+def support_ticket_view(record, audience="admin"):
+    private = support_ticket_private_fields(record)
+    item = {
+        "ticket_id": str(record.get("ticket_id", "")),
+        "category": str(record.get("category", "other")),
+        "status": str(record.get("status", "open")),
+        "created_at_utc": str(record.get("created_at_utc", "")),
+        "updated_at_utc": str(record.get("updated_at_utc", "")),
+        "acknowledged_at_utc": str(record.get("acknowledged_at_utc", "")),
+        "resolved_at_utc": str(record.get("resolved_at_utc", "")),
+        "closed_at_utc": str(record.get("closed_at_utc", "")),
+        "app_version": str(record.get("app_version", "")),
+        "subject": str(private.get("subject", "")),
+        "message": str(private.get("message", "")),
+        "steps": str(private.get("steps", "")),
+        "owner_reply": str(private.get("owner_reply", "")),
+        "history": list(record.get("history", []))[-50:],
+    }
+    if audience == "admin":
+        item.update(
+            {
+                "license_id": str(record.get("license_id", "")),
+                "plan_id": str(record.get("plan_id", "")),
+                "machine_hash": str(record.get("machine_hash", "")),
+                "owner_note": str(private.get("owner_note", "")),
+            }
+        )
+    return item
+
+
+def support_ticket_records():
+    folder = LICENSE_STATE_DIR / "support_tickets"
+    if not folder.is_dir():
+        return []
+    paths = sorted(
+        folder.glob("TKT-*.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )[:MAX_SUPPORT_TICKETS]
+    records = []
+    for path in paths:
+        try:
+            records.append(read_support_ticket(path.stem))
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            continue
+    return records
+
+
+def require_active_support_license(payload):
+    try:
+        verification = verify_license(payload)
+    except ValueError as exc:
+        raise PermissionError(f"License verification failed: {exc}") from exc
+    if not verification.get("active"):
+        raise PermissionError(verification.get("message") or "An active license is required to contact support.")
+    return verification
+
+
+def create_support_ticket(payload):
+    verification = require_active_support_license(payload)
+    category = str(payload.get("category", "bug") or "bug").strip().lower()
+    if category not in SUPPORT_TICKET_CATEGORIES:
+        raise ValueError("Choose a valid support category.")
+    subject = clean_support_text(payload.get("subject"), 160, "subject", required=True, minimum=3)
+    message = clean_support_text(payload.get("message"), 4000, "message", required=True, minimum=10)
+    steps = clean_support_text(payload.get("steps"), 6000, "steps")
+    app_version = clean_support_text(payload.get("app_version"), 80, "app_version")
+    machine_hash = anonymous_machine_hash(payload.get("machine_id", ""))
+    license_view = verification.get("license") or {}
+    plan = verification.get("plan") or {}
+    license_id = validated_license_id(license_view.get("license_id"))
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=1)
+    with LICENSE_STATE_LOCK:
+        recent_count = sum(
+            record.get("machine_hash") == machine_hash
+            and (parse_utc(record.get("created_at_utc")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+            for record in support_ticket_records()
+        )
+        if recent_count >= MAX_SUPPORT_TICKETS_PER_DAY:
+            raise PermissionError("This PC has reached the daily support-ticket limit. Try again later.")
+        ticket_id = f"TKT-{secrets.token_hex(8).upper()}"
+        now_text = format_utc(now)
+        private = {
+            "subject": subject,
+            "message": message,
+            "steps": steps,
+            "owner_reply": "",
+            "owner_note": "",
+        }
+        record = {
+            "schema_version": 1,
+            "ticket_id": ticket_id,
+            "license_id": license_id,
+            "plan_id": str(plan.get("id", ""))[:40],
+            "machine_hash": machine_hash,
+            "category": category,
+            "status": "open",
+            "app_version": app_version,
+            "created_at_utc": now_text,
+            "updated_at_utc": now_text,
+            "acknowledged_at_utc": "",
+            "resolved_at_utc": "",
+            "closed_at_utc": "",
+            "history": [{"time_utc": now_text, "action": "created", "status": "open"}],
+            "private_blob": encrypt_support_private_fields(private),
+        }
+        write_private_json(support_ticket_path(ticket_id), record)
+    return {
+        "ok": True,
+        "created": True,
+        "ticket": support_ticket_view(record, audience="customer"),
+        "message": "Bug report sent to the VaultLink owner.",
+        "privacy_notice": "No files or local logs were attached automatically.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def list_my_support_tickets(payload):
+    verification = require_active_support_license(payload)
+    license_id = str((verification.get("license") or {}).get("license_id", ""))
+    machine_hash = anonymous_machine_hash(payload.get("machine_id", ""))
+    items = []
+    for record in support_ticket_records():
+        if record.get("license_id") != license_id or record.get("machine_hash") != machine_hash:
+            continue
+        try:
+            items.append(support_ticket_view(record, audience="customer"))
+        except (InvalidTag, OSError, ValueError, json.JSONDecodeError):
+            continue
+        if len(items) >= 50:
+            break
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,
+        "server_time_utc": utc_now(),
+    }
+
+
+def list_admin_support_tickets():
+    items = []
+    damaged_count = 0
+    for record in support_ticket_records():
+        try:
+            items.append(support_ticket_view(record, audience="admin"))
+        except (InvalidTag, OSError, ValueError, json.JSONDecodeError):
+            damaged_count += 1
+    return {
+        "ok": True,
+        "count": len(items),
+        "damaged_count": damaged_count,
+        "items": items,
+        "storage": "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral",
+        "privacy_notice": "Ticket text is encrypted at rest. Files, logs, secrets, and raw machine ids are never attached automatically.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def admin_update_support_ticket(payload):
+    ticket_id = validated_support_ticket_id(payload.get("ticket_id"))
+    status = str(payload.get("status", "") or "").strip().lower()
+    if status not in SUPPORT_TICKET_STATUSES:
+        raise ValueError("Choose a valid support ticket status.")
+    owner_reply = clean_support_text(payload.get("owner_reply"), 4000, "owner_reply")
+    owner_note = clean_support_text(payload.get("owner_note"), 4000, "owner_note")
+    with LICENSE_STATE_LOCK:
+        record = read_support_ticket(ticket_id)
+        private = support_ticket_private_fields(record)
+        private["owner_reply"] = owner_reply
+        private["owner_note"] = owner_note
+        now = utc_now()
+        record["status"] = status
+        record["updated_at_utc"] = now
+        if status != "open" and not record.get("acknowledged_at_utc"):
+            record["acknowledged_at_utc"] = now
+        if status == "resolved":
+            record["resolved_at_utc"] = now
+            record["closed_at_utc"] = ""
+        elif status == "closed":
+            record["closed_at_utc"] = now
+        elif status in {"open", "acknowledged", "in_progress"}:
+            record["resolved_at_utc"] = ""
+            record["closed_at_utc"] = ""
+        history = list(record.get("history", []))[-49:]
+        history.append({"time_utc": now, "action": "owner_update", "status": status})
+        record["history"] = history
+        record["private_blob"] = encrypt_support_private_fields(private)
+        write_private_json(support_ticket_path(ticket_id), record)
+    return {
+        "ok": True,
+        "saved": True,
+        "ticket": support_ticket_view(record, audience="admin"),
+        "message": f"Support ticket {ticket_id} updated.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def admin_delete_support_ticket(payload):
+    ticket_id = validated_support_ticket_id(payload.get("ticket_id"))
+    with LICENSE_STATE_LOCK:
+        path = support_ticket_path(ticket_id)
+        if not path.is_file():
+            raise FileNotFoundError("Support ticket was not found.")
+        path.unlink()
+    return {
+        "ok": True,
+        "deleted": True,
+        "ticket_id": ticket_id,
+        "message": f"Support ticket {ticket_id} permanently deleted.",
+        "server_time_utc": utc_now(),
+    }
+
+
 def clean_audit_text(value, limit):
     text = "".join(
         character if ord(character) >= 32 and ord(character) != 127 else " "
@@ -2740,6 +3388,8 @@ def list_admin_audit_exports():
 def admin_dashboard_summary():
     license_inventory = list_admin_license_records()
     audit_inventory = list_admin_audit_exports()
+    support_inventory = list_admin_support_tickets()
+    shop = shop_payload()
     now = datetime.now(timezone.utc)
     active_licenses = 0
     revoked_licenses = 0
@@ -2764,6 +3414,11 @@ def admin_dashboard_summary():
         level = str((item.get("breach_summary") or {}).get("level", "clear")).lower()
         if level in breach_levels:
             breach_levels[level] += 1
+    support_statuses = {status: 0 for status in SUPPORT_TICKET_STATUSES}
+    for item in support_inventory.get("items", []):
+        status = str(item.get("status", "open"))
+        if status in support_statuses:
+            support_statuses[status] += 1
     try:
         update_manifest, _package = load_windows_update_release()
         desktop_release = str(update_manifest.get("version", ""))
@@ -2786,9 +3441,21 @@ def admin_dashboard_summary():
             "total": int(audit_inventory.get("count", 0) or 0),
             "breach_levels": breach_levels,
         },
+        "support_tickets": {
+            "total": int(support_inventory.get("count", 0) or 0),
+            "statuses": support_statuses,
+            "needs_action": support_statuses.get("open", 0) + support_statuses.get("acknowledged", 0),
+        },
+        "shop": {
+            "configured": int(shop.get("configured_count", 0) or 0),
+            "total": int(shop.get("count", 0) or 0),
+            "ready": bool(shop.get("ready")),
+            "card_data_collected_by_vaultlink": False,
+        },
         "storage": {
             "licenses": license_inventory.get("storage", "local_ephemeral"),
             "audit_exports": audit_inventory.get("storage", "local_ephemeral"),
+            "support_tickets": support_inventory.get("storage", "local_ephemeral"),
         },
         "release": {
             "api_version": API_VERSION,
@@ -2803,6 +3470,33 @@ def load_admin_audit_export_download(export_id):
     cleanup_expired_audit_exports()
     _stored, body = read_stored_audit_export(export_id)
     return body, f"vaultlink-audit-{export_id}.json"
+
+
+def create_admin_audit_download_link(payload):
+    export_id = clean_audit_identifier(payload.get("export_id"), 64)
+    if not valid_audit_export_id(export_id):
+        raise ValueError("Choose a valid audit export id.")
+    stored, _body = read_stored_audit_export(export_id)
+    machine_hash = str((stored.get("source") or {}).get("machine_hash", ""))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    token = sign_token(
+        AUDIT_DOWNLOAD_PREFIX,
+        {
+            "export_id": export_id,
+            "machine_hash": machine_hash,
+            "expires_at_utc": format_utc(expires_at),
+            "scope": "owner_audit_download",
+        },
+    )
+    return {
+        "ok": True,
+        "export_id": export_id,
+        "filename": f"vaultlink-audit-{export_id}.json",
+        "download_path": f"/api/v1/audit-exports/{export_id}/download?token={token}",
+        "expires_at_utc": format_utc(expires_at),
+        "message": "Created a two-minute report-only download link.",
+        "server_time_utc": utc_now(),
+    }
 
 
 def load_audit_export_download(export_id, token):
@@ -2911,6 +3605,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/":
             self.send_html(homepage_html())
             return
+        if path == "/shop":
+            self.send_html(shop_html())
+            return
         if path == "/docs":
             self.send_json(docs_payload())
             return
@@ -2938,6 +3635,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "persistent_configured" if audit_storage_is_persistent() else "local_ephemeral"
                     ),
                     "audit_export_retention_hours": AUDIT_EXPORT_RETENTION_HOURS,
+                    "support_inbox_enabled": True,
+                    "support_ticket_storage": (
+                        "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral"
+                    ),
+                    "support_ticket_private_fields_encrypted": True,
+                    "shop_enabled": True,
+                    "shop_checkout_links_configured": shop_payload()["configured_count"],
+                    "shop_card_data_collected_by_vaultlink": False,
                     "windows_update_published": UPDATE_MANIFEST_PATH.exists(),
                 }
             )
@@ -2957,6 +3662,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/ranks":
             self.send_json({"items": public_plans(), "count": len(PLAN_TIERS)})
             return
+        if path == "/api/v1/shop":
+            self.send_json(shop_payload())
+            return
         if path == "/api/v1/security":
             self.send_json(
                 {
@@ -2972,6 +3680,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "license-authenticated privacy-safe audit export upload",
                         "signed short-lived audit export download",
                         "admin-protected audit export list and download",
+                        "licensed encrypted bug reports and customer-visible owner replies",
+                        "admin support-ticket status, reply, private note, and deletion actions",
+                        "public shop catalog and validated provider-hosted checkout links",
                     ],
                     "banned_remote_actions": [
                         "remote unlock",
@@ -2979,11 +3690,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "remote PIN capture",
                         "remote file reads",
                         "remote vault secret retrieval",
+                        "automatic file or local-log attachment to support tickets",
+                        "card-number collection or payment-secret storage",
                     ],
                     "license_limitations": [
                         "Device seats are enforced through anonymous machine hashes; no hardware names are stored in the activation ledger.",
                         "Configure LICENSE_STATE_DIR on a Railway Volume so revocations, activations, keys, and notes survive restarts.",
                         "LICENSE_RECORDS_SECRET should be configured separately and retained for encrypted-record recovery.",
+                        "Support ticket text is encrypted with a key derived separately from LICENSE_RECORDS_SECRET.",
                     ],
                     "admin_authentication": "X-License-Admin-Token header only; never accepted in a JSON body.",
                     "audit_export_controls": [
@@ -2993,6 +3707,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "Owner listing and downloads require the admin token in a request header.",
                         "Each stored report includes a server-calculated breach summary.",
                         "Configure AUDIT_EXPORT_DIR on a Railway Volume for restart-safe retention.",
+                    ],
+                    "support_ticket_controls": [
+                        "Submission requires an active machine-bound license.",
+                        "No files, local logs, secrets, raw machine ids, or PC names are attached automatically.",
+                        "A per-device daily submission limit reduces spam.",
+                        "Only the admin token can read all tickets, add private notes, reply, change status, or delete tickets.",
+                    ],
+                    "shop_controls": [
+                        "VaultLink never collects card numbers; checkout occurs on a separately hosted payment page.",
+                        "Only HTTPS links on the configured checkout-host allowlist are published.",
+                        "Missing or invalid links leave that tier visibly unavailable.",
+                        "License delivery remains an owner action after independent payment confirmation.",
                     ],
                 }
             )
@@ -3011,6 +3737,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "LICENSE_RECORDS_SECRET",
                         "AUDIT_EXPORT_DIR",
                         "AUDIT_EXPORT_RETENTION_HOURS",
+                        "SHOP_CHECKOUT_STARTER_URL",
+                        "SHOP_CHECKOUT_HOME_URL",
+                        "SHOP_CHECKOUT_PERSONAL_PLUS_URL",
+                        "SHOP_CHECKOUT_FAMILY_SAFETY_URL",
+                        "SHOP_CHECKOUT_SMALL_OFFICE_URL",
+                        "SHOP_CHECKOUT_FAMILY_OFFICE_URL",
+                        "SHOP_CHECKOUT_PRO_BASELINE_URL",
+                        "SHOP_CHECKOUT_ALLOWED_HOSTS",
                     ],
                 }
             )
@@ -3058,6 +3792,21 @@ class ApiHandler(BaseHTTPRequestHandler):
             try:
                 self.require_admin_token()
                 self.send_json(list_admin_license_records())
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if path == "/api/v1/admin/support-tickets":
+            try:
+                self.require_admin_token()
+                self.send_json(list_admin_support_tickets())
             except PermissionError as exc:
                 self.send_json(
                     {"ok": False, "error": "forbidden", "message": str(exc)},
@@ -3153,6 +3902,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
                 if not token:
                     token = self.headers.get("X-Audit-Download-Token", "").strip()
+                if not token and parsed.query:
+                    query = parse_qs(parsed.query, keep_blank_values=False, max_num_fields=4)
+                    token = str((query.get("token") or [""])[0]).strip()
                 body, filename = load_audit_export_download(parts[3], token)
                 self.send_download(body, filename)
             except PermissionError as exc:
@@ -3200,6 +3952,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/licenses/note": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/reset-devices": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/remove-device": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/support-tickets": MAX_SUPPORT_JSON_BODY_BYTES,
+            "/api/v1/support-tickets/mine": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/admin/support-tickets/action": MAX_SUPPORT_JSON_BODY_BYTES,
+            "/api/v1/admin/support-tickets/delete": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/admin/audit-exports/download-link": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
         }
         if path not in route_limits:
@@ -3249,6 +4006,24 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/licenses/remove-device":
                 self.require_admin_token()
                 self.send_json(admin_remove_license_device(payload))
+                return
+            if path == "/api/v1/support-tickets":
+                self.send_json(create_support_ticket(payload), status=HTTPStatus.CREATED)
+                return
+            if path == "/api/v1/support-tickets/mine":
+                self.send_json(list_my_support_tickets(payload))
+                return
+            if path == "/api/v1/admin/support-tickets/action":
+                self.require_admin_token()
+                self.send_json(admin_update_support_ticket(payload))
+                return
+            if path == "/api/v1/admin/support-tickets/delete":
+                self.require_admin_token()
+                self.send_json(admin_delete_support_ticket(payload))
+                return
+            if path == "/api/v1/admin/audit-exports/download-link":
+                self.require_admin_token()
+                self.send_json(create_admin_audit_download_link(payload))
                 return
             if path == "/api/v1/audit-exports":
                 self.send_json(create_audit_export(payload), status=HTTPStatus.CREATED)

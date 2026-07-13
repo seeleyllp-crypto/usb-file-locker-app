@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.2"
+DESKTOP_APP_VERSION = "2026.07.12.3"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -2395,6 +2395,45 @@ def deactivate_license_online(state):
     return payload
 
 
+def support_license_payload(state):
+    current = normalize_license_state(state)
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
+    if not license_is_active(current):
+        raise ValueError("Activate this PC in License Center before contacting the owner.")
+    return current, {
+        "license_key": current.get("license_key"),
+        "receipt": current.get("receipt", ""),
+        "machine_id": current_machine_fingerprint(),
+        "app_version": DESKTOP_APP_VERSION,
+    }
+
+
+def create_support_ticket_online(state, category, subject, message, steps=""):
+    current, payload = support_license_payload(state)
+    payload.update(
+        {
+            "category": str(category or "bug").strip().lower(),
+            "subject": str(subject or "").strip(),
+            "message": str(message or "").strip(),
+            "steps": str(steps or "").strip(),
+        }
+    )
+    return license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/support-tickets",
+        payload,
+    )
+
+
+def list_my_support_tickets_online(state):
+    current, payload = support_license_payload(state)
+    return license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/support-tickets/mine",
+        payload,
+    )
+
+
 def upload_audit_report_online(state, report=None):
     current = normalize_license_state(state)
     current["license_key"] = require_valid_api_license_key(current.get("license_key"))
@@ -3706,6 +3745,238 @@ class UpdateCenterWindow(tk.Toplevel):
         self.set_notes(manifest.get("notes") or [])
 
 
+class SupportCenterWindow(tk.Toplevel):
+    CATEGORIES = {
+        "BUG": "bug",
+        "CRASH": "crash",
+        "LICENSING": "licensing",
+        "UPDATE": "update",
+        "SECURITY": "security",
+        "IDEA": "idea",
+        "OTHER": "other",
+    }
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.title("VaultLink Bug Center")
+        self.geometry("780x760")
+        self.minsize(700, 680)
+        self.configure(bg=BG)
+        self.category_var = tk.StringVar(value="BUG")
+        self.subject_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Ready to contact the VaultLink owner.")
+        self.results = queue.Queue()
+        self.busy = False
+        self.message_box = None
+        self.steps_box = None
+        self.ticket_box = None
+        self.send_button = None
+        self.refresh_button = None
+        self.build_ui()
+        self.after(150, self.refresh_tickets)
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        tk.Label(outer, text="Bug Center", bg=BG, fg=TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="NO FILES OR LOCAL LOGS ATTACHED | NEVER INCLUDE PASSWORDS, PINS, USB SECRETS, OR CLIENT INFORMATION",
+            bg=BG,
+            fg=YELLOW,
+            font=("Segoe UI", 8, "bold"),
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 14))
+
+        form = tk.Frame(outer, bg=PANEL)
+        form.pack(fill="x")
+        heading = tk.Frame(form, bg=PANEL)
+        heading.pack(fill="x", padx=16, pady=(14, 8))
+        category_host = tk.Frame(heading, bg=PANEL)
+        category_host.pack(side="left", fill="x")
+        tk.Label(category_host, text="CATEGORY", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        ttk.Combobox(
+            category_host,
+            textvariable=self.category_var,
+            values=list(self.CATEGORIES),
+            state="readonly",
+            width=16,
+        ).pack(anchor="w", pady=(4, 0))
+        subject_host = tk.Frame(heading, bg=PANEL)
+        subject_host.pack(side="left", fill="x", expand=True, padx=(14, 0))
+        tk.Label(subject_host, text="SUBJECT", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Entry(
+            subject_host,
+            textvariable=self.subject_var,
+            bg=FIELD,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 10),
+        ).pack(fill="x", pady=(4, 0), ipady=6)
+
+        tk.Label(form, text="WHAT HAPPENED", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=16)
+        self.message_box = tk.Text(form, height=6, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", wrap="word", font=("Segoe UI", 10))
+        self.message_box.pack(fill="x", padx=16, pady=(4, 10))
+        tk.Label(form, text="STEPS TO REPRODUCE, OPTIONAL", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=16)
+        self.steps_box = tk.Text(form, height=4, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", wrap="word", font=("Segoe UI", 10))
+        self.steps_box.pack(fill="x", padx=16, pady=(4, 12))
+
+        controls = tk.Frame(form, bg=PANEL)
+        controls.pack(fill="x", padx=16, pady=(0, 14))
+        self.send_button = tk.Button(
+            controls,
+            text="SEND TO OWNER",
+            command=self.send_ticket,
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.send_button.pack(side="left", ipadx=16, ipady=8)
+        self.refresh_button = tk.Button(
+            controls,
+            text="CHECK OWNER REPLIES",
+            command=self.refresh_tickets,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.refresh_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=8)
+        tk.Button(
+            controls,
+            text="CLOSE",
+            command=self.destroy,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=14, ipady=8)
+
+        tk.Label(outer, text="MY REPORTS AND OWNER REPLIES", bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(14, 6))
+        self.ticket_box = tk.Text(outer, height=12, bg=FIELD, fg=TEXT, relief="flat", wrap="word", font=("Consolas", 9), state="disabled")
+        self.ticket_box.pack(fill="both", expand=True)
+        tk.Label(outer, textvariable=self.status_var, bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=720, justify="left").pack(anchor="w", pady=(10, 0))
+
+    def set_busy(self, busy, message=""):
+        self.busy = busy
+        state = "disabled" if busy else "normal"
+        self.send_button.configure(state=state)
+        self.refresh_button.configure(state=state)
+        if message:
+            self.status_var.set(message)
+
+    def current_license_state(self):
+        self.owner.settings = load_settings()
+        self.owner.update_license_state_ui(load_license_state(self.owner.settings))
+        return self.owner.license_state
+
+    def send_ticket(self):
+        if self.busy:
+            return
+        subject = self.subject_var.get().strip()
+        category = self.CATEGORIES.get(self.category_var.get(), "bug")
+        message = self.message_box.get("1.0", "end").strip()
+        steps = self.steps_box.get("1.0", "end").strip()
+        if len(subject) < 3:
+            messagebox.showwarning("Subject needed", "Write a short subject with at least 3 characters.", parent=self)
+            return
+        if len(message) < 10:
+            messagebox.showwarning("Description needed", "Describe what happened using at least 10 characters.", parent=self)
+            return
+        if not messagebox.askyesno(
+            "Send bug report",
+            "Send this text to the VaultLink owner through the API?\n\nNo files or local logs will be attached automatically.",
+            parent=self,
+        ):
+            return
+        state = self.current_license_state()
+        self.set_busy(True, "Sending bug report to the owner...")
+
+        def worker():
+            try:
+                result = create_support_ticket_online(
+                    state,
+                    category,
+                    subject,
+                    message,
+                    steps,
+                )
+                error = ""
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self.results.put(("send", result, error))
+
+        threading.Thread(target=worker, name="SupportTicketSend", daemon=True).start()
+        self.after(60, self.poll_results)
+
+    def refresh_tickets(self):
+        if self.busy:
+            return
+        state = self.current_license_state()
+        self.set_busy(True, "Checking the API for owner replies...")
+
+        def worker():
+            try:
+                result = list_my_support_tickets_online(state)
+                error = ""
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self.results.put(("list", result, error))
+
+        threading.Thread(target=worker, name="SupportTicketList", daemon=True).start()
+        self.after(60, self.poll_results)
+
+    def poll_results(self):
+        try:
+            mode, result, error = self.results.get_nowait()
+        except queue.Empty:
+            if self.busy and self.winfo_exists():
+                self.after(60, self.poll_results)
+            return
+        self.set_busy(False)
+        if error:
+            self.status_var.set(error)
+            log_event("support_ticket_submit" if mode == "send" else "support_ticket_view", "api", "failed")
+            messagebox.showerror("Bug Center API error", error, parent=self)
+            return
+        if mode == "send":
+            ticket = (result or {}).get("ticket") or {}
+            self.subject_var.set("")
+            self.message_box.delete("1.0", "end")
+            self.steps_box.delete("1.0", "end")
+            self.status_var.set(f"Sent {ticket.get('ticket_id', 'bug report')} to the owner.")
+            log_event("support_ticket_submit", "api", "ok")
+            self.after(100, self.refresh_tickets)
+            return
+        items = (result or {}).get("items") or []
+        self.render_tickets(items)
+        self.status_var.set(f"Loaded {len(items)} report(s) and owner replies.")
+        log_event("support_ticket_view", "api", "ok")
+
+    def render_tickets(self, items):
+        blocks = []
+        for item in items:
+            block = [
+                f"{item.get('ticket_id', 'UNKNOWN')} | {str(item.get('status', 'open')).replace('_', ' ').upper()}",
+                f"Subject: {item.get('subject', '')}",
+                f"Sent: {item.get('created_at_utc', '')}",
+            ]
+            reply = str(item.get("owner_reply", "") or "").strip()
+            block.append(f"Owner reply: {reply or 'No reply yet.'}")
+            blocks.append("\n".join(block))
+        text = "\n\n".join(blocks) if blocks else "No bug reports have been sent from this licensed PC."
+        self.ticket_box.configure(state="normal")
+        self.ticket_box.delete("1.0", "end")
+        self.ticket_box.insert("1.0", text)
+        self.ticket_box.configure(state="disabled")
+
+
 class USBFileLocker(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -3731,6 +4002,7 @@ class USBFileLocker(tk.Tk):
         self.update_operation = ""
         self.latest_update_manifest = None
         self.update_window = None
+        self.support_window = None
         self.update_button = None
         self.cloud_audit_results = queue.Queue()
         self.cloud_audit_in_progress = False
@@ -3827,6 +4099,8 @@ class USBFileLocker(tk.Tk):
         self.owner_disable_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.owner_verify_button = tk.Button(owner_row, text="VERIFY OWNER USB", command=self.verify_owner_usb_now, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.owner_verify_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.support_button = tk.Button(owner_row, text="BUG CENTER", command=self.open_support_center, bg="#58b7e8", fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.support_button.pack(side="right", ipadx=10, ipady=6)
 
         storage_row = tk.Frame(panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
@@ -4366,6 +4640,15 @@ class USBFileLocker(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Apps Hub.")
             messagebox.showerror("Could not open Apps Hub", str(exc))
+
+    def open_support_center(self):
+        if self.support_window is not None and self.support_window.winfo_exists():
+            self.support_window.lift()
+            self.support_window.focus_force()
+            return
+        self.support_window = SupportCenterWindow(self)
+        self.register_secondary_window(self.support_window)
+        self.status.set("Opened Bug Center.")
 
     def schedule_license_refresh(self, delay_ms=None):
         if self.license_refresh_after_id is not None:
