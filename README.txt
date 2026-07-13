@@ -18,7 +18,9 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.12.5 fixes the WinError 183 temporary extraction-folder bug.
+- Version 2026.07.12.6 adds automatic on-screen owner announcements, service
+  notices, and owner API activity visibility. Each notice appears once per PC.
+- It includes the 2026.07.12.5 WinError 183 temporary extraction-folder fix.
 - UPDATE CENTER checks the API at startup when its daily check is due.
 - LICENSE HEARTBEAT checks the API about every 60 seconds and before a premium
   action when the saved decision is stale. Revoked, expired, reset, removed-device,

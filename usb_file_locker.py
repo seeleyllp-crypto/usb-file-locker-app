@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.5"
+DESKTOP_APP_VERSION = "2026.07.12.6"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -1481,6 +1481,8 @@ def license_state_template():
         "latest_desktop_version": "",
         "minimum_supported_version": "",
         "update_available": False,
+        "service_status": {},
+        "announcements": [],
         "last_error": "",
     }
 
@@ -1577,6 +1579,52 @@ def current_machine_name():
     )
 
 
+def normalize_service_status(value):
+    raw = value if isinstance(value, dict) else {}
+    mode = str(raw.get("mode", "normal") or "normal").strip().lower()
+    if mode not in {"normal", "degraded", "maintenance"}:
+        mode = "normal"
+    message = str(raw.get("message", "") or "").strip()[:240]
+    if not message:
+        message = "All VaultLink services are operating normally."
+    return {
+        "mode": mode,
+        "message": message,
+        "updated_at_utc": str(raw.get("updated_at_utc", "") or "").strip()[:40],
+        "expires_at_utc": str(raw.get("expires_at_utc", "") or "").strip()[:40],
+    }
+
+
+def normalize_owner_announcements(value):
+    raw_items = value if isinstance(value, list) else []
+    items = []
+    for raw in raw_items[:5]:
+        if not isinstance(raw, dict):
+            continue
+        announcement_id = str(raw.get("announcement_id", "") or "").strip().upper()
+        if (
+            not announcement_id.startswith("ANN-")
+            or len(announcement_id) > 64
+            or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in announcement_id)
+        ):
+            continue
+        severity = str(raw.get("severity", "info") or "info").strip().lower()
+        if severity not in {"info", "update", "maintenance", "security"}:
+            severity = "info"
+        items.append(
+            {
+                "announcement_id": announcement_id,
+                "severity": severity,
+                "title": str(raw.get("title", "") or "").strip()[:120],
+                "message": str(raw.get("message", "") or "").strip()[:2000],
+                "audience": str(raw.get("audience", "") or "").strip()[:80],
+                "created_at_utc": str(raw.get("created_at_utc", "") or "").strip()[:40],
+                "expires_at_utc": str(raw.get("expires_at_utc", "") or "").strip()[:40],
+            }
+        )
+    return items
+
+
 def normalize_license_state(data=None):
     state = license_state_template()
     if isinstance(data, dict):
@@ -1617,6 +1665,8 @@ def normalize_license_state(data=None):
         LICENSE_MAX_REFRESH_SECONDS,
     )
     state["last_error"] = str(state.get("last_error", "") or "").strip()
+    state["service_status"] = normalize_service_status(state.get("service_status"))
+    state["announcements"] = normalize_owner_announcements(state.get("announcements"))
     features = state.get("features", [])
     if isinstance(features, str):
         features = [features]
@@ -2282,6 +2332,7 @@ def apply_license_response(state, payload):
     device_usage = payload.get("device_usage") or {}
     sync = payload.get("sync") or {}
     release = payload.get("release") or {}
+    announcement_payload = payload.get("announcements") or {}
     message = str(payload.get("message", "") or "").strip()
     current["status"] = str(payload.get("status", "active" if payload.get("active") else current.get("status", "saved"))).strip().lower()
     current["plan_id"] = str(plan.get("id", current.get("plan_id", "")) or "").strip().lower()
@@ -2312,6 +2363,10 @@ def apply_license_response(state, payload):
     current["latest_desktop_version"] = str(release.get("latest_version", current.get("latest_desktop_version", "")) or "").strip()
     current["minimum_supported_version"] = str(release.get("minimum_supported_version", current.get("minimum_supported_version", "")) or "").strip()
     current["update_available"] = bool(release.get("update_available", current.get("update_available", False)))
+    current["service_status"] = normalize_service_status(payload.get("service_status", current.get("service_status")))
+    current["announcements"] = normalize_owner_announcements(
+        announcement_payload.get("items", current.get("announcements", []))
+    )
     try:
         current["device_active"] = max(0, int(device_usage.get("active", current.get("device_active", 0)) or 0))
         current["device_maximum"] = max(0, int(device_usage.get("maximum", current.get("device_maximum", 0)) or 0))
@@ -3879,13 +3934,24 @@ class OwnerNewsWindow(tk.Toplevel):
             messagebox.showerror("Owner News API error", error, parent=self)
             return
         items = (result or {}).get("items") or []
-        self.render_news(items)
+        self.render_news(items, (result or {}).get("service_status"))
         rank = int((result or {}).get("plan_rank", 1) or 1)
         self.status_var.set(f"Loaded {len(items)} active message(s) for Rank {rank}.")
         log_event("owner_announcement_view", "api", "ok")
 
-    def render_news(self, items):
+    def render_news(self, items, service_status=None):
         blocks = []
+        service = normalize_service_status(service_status)
+        blocks.append(
+            "\n".join(
+                [
+                    f"[SERVICE {service['mode'].upper()}]",
+                    service["message"],
+                    f"Updated: {service['updated_at_utc'] or 'default status'}",
+                    f"Expires: {service['expires_at_utc'] or 'not scheduled'}",
+                ]
+            )
+        )
         for item in items:
             severity = str(item.get("severity", "info") or "info").upper()
             block = [
@@ -4823,6 +4889,55 @@ class USBFileLocker(tk.Tk):
         self.register_secondary_window(self.news_window)
         self.status.set("Opened Owner News.")
 
+    def show_new_owner_notices(self):
+        if not license_is_active(self.license_state):
+            return
+        raw_seen = self.settings.get("seen_owner_announcement_ids", [])
+        if not isinstance(raw_seen, list):
+            raw_seen = []
+        seen = {str(value) for value in raw_seen if str(value)}
+        new_items = [
+            item
+            for item in normalize_owner_announcements(self.license_state.get("announcements"))
+            if item.get("announcement_id") not in seen
+        ]
+        service = normalize_service_status(self.license_state.get("service_status"))
+        service_id = ""
+        if service["mode"] != "normal":
+            service_id = f"SERVICE-{service['mode']}-{service['updated_at_utc'] or service['message']}"
+            service_id = hashlib.sha256(service_id.encode("utf-8")).hexdigest()[:24]
+        show_service = bool(service_id and service_id not in seen)
+        if not new_items and not show_service:
+            return
+
+        blocks = []
+        warning = show_service
+        if show_service:
+            blocks.append(f"SERVICE {service['mode'].upper()}\n{service['message']}")
+            seen.add(service_id)
+        for item in new_items[:5]:
+            severity = str(item.get("severity", "info")).upper()
+            warning = warning or severity in {"SECURITY", "MAINTENANCE"}
+            blocks.append(
+                f"{severity}: {item.get('title') or 'Owner announcement'}\n"
+                f"{str(item.get('message', ''))[:700]}"
+            )
+            seen.add(str(item.get("announcement_id")))
+        if len(new_items) > 5:
+            blocks.append(f"Open OWNER NEWS to read {len(new_items) - 5} more message(s).")
+            for item in new_items[5:]:
+                seen.add(str(item.get("announcement_id")))
+
+        self.settings["seen_owner_announcement_ids"] = list(seen)[-200:]
+        save_settings(self.settings)
+        text = "\n\n".join(blocks)
+        self.status.set("A new VaultLink owner notice was shown on screen.")
+        log_event("owner_announcement_view", "api", "ok", f"onscreen={len(new_items)};service={int(show_service)}")
+        if warning:
+            messagebox.showwarning("VaultLink Owner Notice", text, parent=self)
+        else:
+            messagebox.showinfo("VaultLink Owner Notice", text, parent=self)
+
     def open_shop(self):
         try:
             state = load_license_state(load_settings())
@@ -4900,6 +5015,8 @@ class USBFileLocker(tk.Tk):
                         "Premium controls are now disabled. Unlocking existing files and recovery tools remain available.",
                         parent=self,
                     )
+        if automatic and license_is_active(self.license_state):
+            self.show_new_owner_notices()
         self.schedule_license_refresh()
 
     def open_license_center(self):

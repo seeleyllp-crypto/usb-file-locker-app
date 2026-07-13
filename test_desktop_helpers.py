@@ -97,15 +97,31 @@ class DesktopHelperTests(unittest.TestCase):
             "license": {"license_id": "LIC-SYNC"},
             "activation": {"valid_until_utc": "2099-01-01T00:00:00Z"},
             "device_usage": {"active": 2, "maximum": 4},
-            "api_version": "0.10.0",
+            "api_version": "0.11.0",
             "sync": {
                 "recommended_interval_seconds": 60,
                 "decision_id": "0123456789abcdef",
             },
             "release": {
-                "latest_version": "2026.07.12.5",
+                "latest_version": "2026.07.12.6",
                 "minimum_supported_version": "2026.07.11.3",
                 "update_available": False,
+            },
+            "service_status": {
+                "mode": "maintenance",
+                "message": "Short scheduled maintenance.",
+                "updated_at_utc": "2026-07-12T20:00:00Z",
+            },
+            "announcements": {
+                "count": 1,
+                "items": [
+                    {
+                        "announcement_id": "ANN-0123456789ABCDEF",
+                        "severity": "update",
+                        "title": "Desktop update",
+                        "message": "A signed desktop update is ready.",
+                    }
+                ],
             },
             "server_time_utc": locker.utc_now_text(),
         }
@@ -114,10 +130,52 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[1], "/api/v1/licenses/sync")
         self.assertEqual(post.call_args.kwargs["timeout"], 5)
         self.assertTrue(locker.license_is_active(updated))
-        self.assertEqual(updated["api_version"], "0.10.0")
+        self.assertEqual(updated["api_version"], "0.11.0")
         self.assertEqual(updated["last_decision_id"], "0123456789abcdef")
         self.assertEqual((updated["device_active"], updated["device_maximum"]), (2, 4))
-        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.5")
+        self.assertEqual(updated["latest_desktop_version"], "2026.07.12.6")
+        self.assertEqual(updated["service_status"]["mode"], "maintenance")
+        self.assertEqual(updated["announcements"][0]["announcement_id"], "ANN-0123456789ABCDEF")
+
+    def test_owner_notices_show_once_and_save_only_anonymous_ids(self):
+        app = object.__new__(locker.USBFileLocker)
+        app.license_state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "receipt_expires_at": "2099-01-01T00:00:00Z",
+                "announcements": [
+                    {
+                        "announcement_id": "ANN-0123456789ABCDEF",
+                        "severity": "security",
+                        "title": "Security notice",
+                        "message": "Install the signed update.",
+                    }
+                ],
+                "service_status": {
+                    "mode": "degraded",
+                    "message": "Some API requests may be slower.",
+                    "updated_at_utc": "2026-07-12T20:00:00Z",
+                },
+            }
+        )
+        app.settings = {}
+        app.status = FakeVar()
+        with (
+            mock.patch.object(locker, "license_is_active", return_value=True),
+            mock.patch.object(locker, "save_settings") as save,
+            mock.patch.object(locker, "log_event") as log,
+            mock.patch.object(locker.messagebox, "showwarning") as warning,
+        ):
+            locker.USBFileLocker.show_new_owner_notices(app)
+            locker.USBFileLocker.show_new_owner_notices(app)
+
+        warning.assert_called_once()
+        save.assert_called_once()
+        log.assert_called_once()
+        self.assertIn("ANN-0123456789ABCDEF", app.settings["seen_owner_announcement_ids"])
+        self.assertNotIn("Security notice", json.dumps(app.settings))
 
     def test_bug_report_api_sends_only_explicit_text_and_license_proof(self):
         state = locker.normalize_license_state(

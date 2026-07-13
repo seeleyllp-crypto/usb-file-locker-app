@@ -17,11 +17,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.10.0"
+API_VERSION = "0.11.0"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
 AUDIT_DOWNLOAD_PREFIX = "vla1"
+ACTIVITY_DOWNLOAD_PREFIX = "vlt1"
 DEFAULT_SIGNING_SECRET = "vaultlink-dev-signing-secret-change-me"
 UPDATE_DIR = ROOT_DIR / "updates"
 UPDATE_MANIFEST_PATH = UPDATE_DIR / "windows-manifest.json"
@@ -135,6 +136,10 @@ SUPPORT_TICKET_STATUSES = frozenset({"open", "acknowledged", "in_progress", "res
 SUPPORT_TICKET_CATEGORIES = frozenset({"bug", "crash", "licensing", "update", "security", "idea", "other"})
 ANNOUNCEMENT_SEVERITIES = frozenset({"info", "update", "maintenance", "security"})
 MAX_ANNOUNCEMENTS = 250
+SERVICE_STATUS_MODES = frozenset({"normal", "degraded", "maintenance"})
+MAX_API_ACTIVITY_BYTES = 4 * 1024 * 1024
+MAX_API_ACTIVITY_ITEMS = 5000
+MAX_API_ACTIVITY_ARCHIVES = 5
 LICENSE_STATE_LOCK = threading.RLock()
 
 
@@ -1164,6 +1169,7 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/plans", "purpose": "Plan and entitlement catalog"},
             {"method": "GET", "path": "/api/v1/ranks", "purpose": "Complete ordered license-rank comparison"},
             {"method": "GET", "path": "/api/v1/shop", "purpose": "Public shop readiness and validated checkout links"},
+            {"method": "GET", "path": "/api/v1/service-status", "purpose": "Public read-only service status"},
             {"method": "GET", "path": "/api/v1/security", "purpose": "Public security and licensing notes"},
             {"method": "GET", "path": "/api/v1/deploy", "purpose": "Railway deploy hints"},
             {"method": "POST", "path": "/api/v1/licenses/issue", "purpose": "Admin-only license issuance"},
@@ -1188,6 +1194,10 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/admin/announcements", "purpose": "Admin-only announcement inventory"},
             {"method": "POST", "path": "/api/v1/admin/announcements/create", "purpose": "Admin-only rank-targeted announcement publishing"},
             {"method": "POST", "path": "/api/v1/admin/announcements/delete", "purpose": "Admin-only announcement deletion"},
+            {"method": "POST", "path": "/api/v1/admin/service-status", "purpose": "Admin-only normal, degraded, or maintenance status update"},
+            {"method": "GET", "path": "/api/v1/admin/activity", "purpose": "Admin-only tamper-evident API activity feed"},
+            {"method": "POST", "path": "/api/v1/admin/activity/download-link", "purpose": "Admin-only short-lived activity export link"},
+            {"method": "GET", "path": "/api/v1/admin/activity/download", "purpose": "Signed short-lived API activity JSON download"},
             {"method": "POST", "path": "/api/v1/audit-exports", "purpose": "Upload a privacy-safe audit report from a licensed machine"},
             {"method": "GET", "path": "/api/v1/audit-exports/{export_id}/download", "purpose": "Download an audit export with a short-lived bearer token"},
             {"method": "GET", "path": "/api/v1/admin/audit-exports", "purpose": "Admin-only list of stored audit reports and breach levels"},
@@ -1638,7 +1648,7 @@ def owner_portal_html():
     .api-state { color:var(--muted); font-weight:700; }
     main { padding:24px 0 44px; }
     section { padding:20px 0 24px; border-bottom:1px solid var(--line); }
-    .auth, .grid, .latest, .record-head, .record-actions, .ticket-actions, .audit-row, .stats { display:grid; gap:10px; align-items:end; }
+    .auth, .grid, .latest, .record-head, .record-actions, .ticket-actions, .audit-row, .activity-row, .stats { display:grid; gap:10px; align-items:end; }
     .auth { grid-template-columns:minmax(220px,1fr) auto auto; }
     .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .latest { grid-template-columns:minmax(0,1fr) auto; }
@@ -1646,6 +1656,7 @@ def owner_portal_html():
     .record-actions { grid-template-columns:minmax(180px,1fr) auto auto auto auto auto; }
     .ticket-actions { grid-template-columns:minmax(130px,.45fr) minmax(200px,1fr) minmax(200px,1fr) auto auto; align-items:start; }
     .audit-row { grid-template-columns:minmax(180px,1fr) minmax(140px,.5fr) auto; align-items:center; }
+    .activity-row { grid-template-columns:minmax(180px,1fr) minmax(140px,.6fr) auto; align-items:center; }
     .stats { grid-template-columns:repeat(4,minmax(0,1fr)); align-items:stretch; }
     .stat { min-width:0; padding:12px 10px; border-left:3px solid var(--blue); background:var(--panel); }
     .stat strong { display:block; margin-top:3px; font-size:20px; overflow-wrap:anywhere; }
@@ -1676,7 +1687,7 @@ def owner_portal_html():
     .empty { padding:26px 0; color:var(--muted); }
     .split { grid-column:1 / -1; }
     @media (max-width:900px) { .stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.ticket-actions,.audit-row,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
+    @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.ticket-actions,.audit-row,.activity-row,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
   </style>
 </head>
 <body>
@@ -1706,7 +1717,20 @@ def owner_portal_html():
         <div class="stat"><label>Bugs needing action</label><strong id="statSupport">-</strong></div>
         <div class="stat"><label>Shop links live</label><strong id="statShop">-</strong></div>
         <div class="stat"><label>Active announcements</label><strong id="statAnnouncements">-</strong></div>
+        <div class="stat"><label>Service status</label><strong id="statService">-</strong></div>
+        <div class="stat"><label>Activity integrity</label><strong id="statActivity">-</strong></div>
       </div>
+    </section>
+
+    <section>
+      <h2>Service Status</h2>
+      <div class="grid">
+        <div><label for="serviceMode">Mode</label><select id="serviceMode"><option value="normal">NORMAL</option><option value="degraded">DEGRADED</option><option value="maintenance">MAINTENANCE</option></select></div>
+        <div><label for="serviceExpires">Expires, optional</label><input id="serviceExpires" type="datetime-local"></div>
+        <div class="split"><label for="serviceMessage">Customer message</label><input id="serviceMessage" maxlength="240" value="All VaultLink services are operating normally."></div>
+        <div class="split"><button id="saveServiceStatus" class="blue" disabled>SAVE SERVICE STATUS</button></div>
+      </div>
+      <div id="serviceStatusSummary" class="status">Connect to manage the public service status.</div>
     </section>
 
     <section>
@@ -1755,10 +1779,15 @@ def owner_portal_html():
       <div class="record-head"><h2>Audit Logs</h2><div id="auditStorage" class="meta"></div><button id="refreshLogs" disabled>REFRESH LOGS</button></div>
       <div id="auditRecords"><div class="empty">Connect to load privacy-safe API logs.</div></div>
     </section>
+
+    <section>
+      <div class="record-head"><h2>API Activity</h2><div id="activityIntegrity" class="meta"></div><div><button id="refreshActivity" disabled>REFRESH ACTIVITY</button> <button id="downloadActivity" class="warn" disabled>DOWNLOAD ACTIVITY JSON</button></div></div>
+      <div id="activityRecords"><div class="empty">Connect to load tamper-evident owner activity.</div></div>
+    </section>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { token: "", connected: false, busy: false, loading: false, items: [], supportItems: [], auditItems: [], announcementItems: [], dashboard: null };
+    const state = { token: "", connected: false, busy: false, loading: false, items: [], supportItems: [], auditItems: [], announcementItems: [], activityItems: [], activityIntegrity: null, serviceStatus: null, dashboard: null };
     const AUTO_REFRESH_MS = 30000;
 
     function setStatus(message, kind="") {
@@ -1776,6 +1805,9 @@ def owner_portal_html():
       $("refreshLogs").disabled = !value || state.busy;
       $("publishAnnouncement").disabled = !value || state.busy;
       $("refreshAnnouncements").disabled = !value || state.busy;
+      $("saveServiceStatus").disabled = !value || state.busy;
+      $("refreshActivity").disabled = !value || state.busy;
+      $("downloadActivity").disabled = !value || state.busy;
     }
 
     async function api(path, options={}) {
@@ -1810,17 +1842,22 @@ def owner_portal_html():
       if (state.loading) return;
       state.loading = true;
       try {
-      const [payload, dashboard, support, audits, announcements] = await Promise.all([
+      const [payload, dashboard, support, audits, announcements, serviceStatus, activity] = await Promise.all([
         api("/api/v1/admin/licenses"),
         api("/api/v1/admin/dashboard"),
         api("/api/v1/admin/support-tickets"),
         api("/api/v1/admin/audit-exports"),
-        api("/api/v1/admin/announcements")
+        api("/api/v1/admin/announcements"),
+        api("/api/v1/service-status"),
+        api("/api/v1/admin/activity")
       ]);
       state.items = payload.items || [];
       state.supportItems = support.items || [];
       state.auditItems = audits.items || [];
       state.announcementItems = announcements.items || [];
+      state.serviceStatus = serviceStatus.service_status || null;
+      state.activityItems = activity.items || [];
+      state.activityIntegrity = activity.integrity || null;
       state.dashboard = dashboard;
       $("storage").textContent = payload.storage === "persistent_configured" ? "PERSISTENT STORAGE" : "TEMPORARY STORAGE";
       $("supportStorage").textContent = support.storage === "persistent_configured" ? "ENCRYPTED PERSISTENT STORAGE" : "TEMPORARY STORAGE";
@@ -1831,8 +1868,10 @@ def owner_portal_html():
       renderSupport();
       renderAudits();
       renderAnnouncements();
+      renderServiceStatus();
+      renderActivity();
       setConnected(true);
-      if (!silent) setStatus(`Loaded ${payload.count || 0} license(s), ${support.count || 0} bug report(s), ${audits.count || 0} audit log(s), and ${announcements.count || 0} announcement(s).`, "good");
+      if (!silent) setStatus(`Loaded ${payload.count || 0} license(s), ${support.count || 0} bug report(s), ${audits.count || 0} audit log(s), ${announcements.count || 0} announcement(s), and ${activity.count || 0} activity event(s).`, "good");
       } finally {
         state.loading = false;
       }
@@ -1846,6 +1885,8 @@ def owner_portal_html():
       const support = dashboard?.support_tickets || {};
       const shop = dashboard?.shop || {};
       const announcements = dashboard?.announcements || {};
+      const service = dashboard?.service_status || {};
+      const activity = dashboard?.api_activity || {};
       $("statLicenses").textContent = dashboard ? String(licenses.active || 0) : "-";
       $("statDevices").textContent = dashboard ? String(devices.active || 0) : "-";
       $("statCapacity").textContent = dashboard ? String(devices.capacity || 0) : "-";
@@ -1857,6 +1898,8 @@ def owner_portal_html():
       $("statSupport").textContent = dashboard ? String(support.needs_action || 0) : "-";
       $("statShop").textContent = dashboard ? `${String(shop.configured || 0)}/${String(shop.total || 0)}` : "-";
       $("statAnnouncements").textContent = dashboard ? String(announcements.active || 0) : "-";
+      $("statService").textContent = dashboard ? String(service.mode || "normal").toUpperCase() : "-";
+      $("statActivity").textContent = dashboard ? (activity.integrity_valid ? "VALID" : "CHECK") : "-";
     }
 
     function actionButton(text, className, action) {
@@ -2066,6 +2109,57 @@ def owner_portal_html():
       }
     }
 
+    function utcToLocalInput(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    }
+
+    function renderServiceStatus() {
+      const service = state.serviceStatus || { mode:"normal", message:"All VaultLink services are operating normally." };
+      $("serviceMode").value = service.mode || "normal";
+      $("serviceMessage").value = service.message || "";
+      $("serviceExpires").value = utcToLocalInput(service.expires_at_utc || "");
+      const summary = $("serviceStatusSummary");
+      summary.textContent = `${String(service.mode || "normal").toUpperCase()} | ${service.message || "No message"} | expires ${service.expires_at_utc || "not scheduled"}`;
+      summary.className = `status ${service.mode === "normal" ? "good" : "bad"}`;
+    }
+
+    function renderActivity() {
+      const host = $("activityRecords");
+      host.replaceChildren();
+      const integrity = state.activityIntegrity || {};
+      $("activityIntegrity").textContent = integrity.message || "Activity integrity not checked.";
+      $("activityIntegrity").style.color = integrity.valid ? "var(--green)" : "var(--red)";
+      if (!state.activityItems.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No API activity events have been recorded.";
+        host.append(empty);
+        return;
+      }
+      for (const item of state.activityItems) {
+        const row = document.createElement("article");
+        row.className = "record activity-row";
+        const identity = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = String(item.action || "activity").replaceAll("_", " ").toUpperCase();
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.event_id || "unknown"} | ${item.time_utc || "unknown time"} | ${item.actor || "owner"}`;
+        identity.append(title, meta);
+        const resource = document.createElement("div");
+        resource.className = "meta";
+        resource.textContent = `${item.resource_type || "resource"}: ${item.resource_id || "none"} | chain ${String(item.hash || "").slice(0, 12)}`;
+        const badge = document.createElement("span");
+        badge.className = `badge ${item.result === "ok" ? "resolved" : "revoked"}`;
+        badge.textContent = item.result || "unknown";
+        row.append(identity, resource, badge);
+        host.append(row);
+      }
+    }
+
     async function connect() {
       state.token = $("token").value.trim();
       if (!state.token) return setStatus("Enter the Railway LICENSE_ADMIN_TOKEN.", "bad");
@@ -2131,6 +2225,40 @@ def owner_portal_html():
         setStatus(result.message || "Announcement published.", "good");
       } catch (error) { setStatus(error.message, "bad"); }
       finally { state.busy = false; setConnected(state.connected); }
+    }
+
+    async function saveServiceStatus() {
+      if (!state.connected || state.busy) return;
+      const mode = $("serviceMode").value;
+      const message = $("serviceMessage").value.trim();
+      const expires = $("serviceExpires").value;
+      if (mode !== "normal" && message.length < 5) return setStatus("Write a customer status message with at least 5 characters.", "bad");
+      if (!confirm(`SET PUBLIC SERVICE STATUS TO ${mode.toUpperCase()}? This is informational and will not control customer PCs.`)) return;
+      state.busy = true; setConnected(true); setStatus("Saving service status...");
+      try {
+        const result = await api("/api/v1/admin/service-status", { method:"POST", body:JSON.stringify({
+          mode,
+          message,
+          expires_at_utc:expires ? new Date(expires).toISOString() : ""
+        }) });
+        state.serviceStatus = result.service_status || null;
+        await loadLicenses(true);
+        setStatus(result.message || "Service status saved.", "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+      finally { state.busy = false; setConnected(state.connected); }
+    }
+
+    async function downloadActivity() {
+      try {
+        const result = await api("/api/v1/admin/activity/download-link", { method:"POST", body:"{}" });
+        const link = document.createElement("a");
+        link.href = result.download_path;
+        link.download = result.filename || "vaultlink-api-activity.json";
+        document.body.append(link);
+        link.click();
+        window.setTimeout(() => link.remove(), 1500);
+        setStatus("Downloaded the tamper-evident API activity log.", "good");
+      } catch (error) { setStatus(error.message, "bad"); }
     }
 
     async function deleteAnnouncement(item) {
@@ -2256,13 +2384,16 @@ def owner_portal_html():
     }
 
     $("connect").addEventListener("click", connect);
-    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.announcementItems=[]; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); renderAnnouncements(); setStatus("Admin token cleared from page memory."); });
+    $("clearToken").addEventListener("click", () => { state.token=""; $("token").value=""; state.items=[]; state.supportItems=[]; state.auditItems=[]; state.announcementItems=[]; state.activityItems=[]; state.activityIntegrity=null; state.serviceStatus=null; state.dashboard=null; setConnected(false); renderDashboard(null); renderRecords(); renderSupport(); renderAudits(); renderAnnouncements(); renderActivity(); setStatus("Admin token cleared from page memory."); });
     $("issue").addEventListener("click", issueLicense);
     $("refresh").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshSupport").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("refreshLogs").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
     $("publishAnnouncement").addEventListener("click", publishAnnouncement);
     $("refreshAnnouncements").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("saveServiceStatus").addEventListener("click", saveServiceStatus);
+    $("refreshActivity").addEventListener("click", () => loadLicenses().catch((error) => setStatus(error.message,"bad")));
+    $("downloadActivity").addEventListener("click", downloadActivity);
     $("copyLatest").addEventListener("click", () => copyText($("latestKey").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
     window.setInterval(autoRefresh, AUTO_REFRESH_MS);
@@ -2320,6 +2451,7 @@ def issue_license(payload):
     }
     license_key = sign_token(LICENSE_KEY_PREFIX, license_payload)
     write_license_record(license_payload, license_key, license_note=license_note, status="active")
+    record_api_activity("license_issue", "ok", "license", license_id)
     return {
         "ok": True,
         "issued": True,
@@ -2611,6 +2743,13 @@ def sync_license(payload):
             "update_available": False,
         }
     result["server_time_utc"] = utc_now()
+    result["service_status"] = service_status_payload()
+    plan_rank = int((result.get("plan") or {}).get("rank", 1) or 1)
+    announcement_items = active_announcements_for_rank(plan_rank, limit=5) if result.get("active") else []
+    result["announcements"] = {
+        "count": len(announcement_items),
+        "items": announcement_items,
+    }
     return result
 
 
@@ -2676,6 +2815,7 @@ def revoke_license(payload):
         status="revoked",
         revocation_note=note,
     )
+    record_api_activity("license_revoke", "ok", "license", license_payload.get("license_id"))
     return {
         "ok": True,
         "revoked": True,
@@ -2694,6 +2834,7 @@ def restore_license(payload):
         status="active",
         revocation_note="",
     )
+    record_api_activity("license_restore", "ok", "license", license_payload.get("license_id"))
     return {
         "ok": True,
         "restored": True,
@@ -2711,6 +2852,7 @@ def update_license_note(payload):
         license_key,
         license_note=note,
     )
+    record_api_activity("license_note_update", "ok", "license", license_payload.get("license_id"))
     return {
         "ok": True,
         "saved": True,
@@ -2724,6 +2866,7 @@ def admin_reset_license_devices(payload):
     license_key, license_payload = require_admin_license_key(payload)
     reset_count = reset_license_devices(license_payload)
     license_id = validated_license_id(license_payload.get("license_id"))
+    record_api_activity("license_device_reset", "ok", "license", license_id)
     return {
         "ok": True,
         "devices_reset": reset_count,
@@ -2753,6 +2896,7 @@ def admin_remove_license_device(payload):
         record["removed_at_utc"] = utc_now()
         record["updated_at_utc"] = record["removed_at_utc"]
         write_private_json(path, record)
+    record_api_activity("license_device_remove", "ok", "device", machine_hash)
     return {
         "ok": True,
         "removed": True,
@@ -3000,6 +3144,7 @@ def admin_update_support_ticket(payload):
         record["history"] = history
         record["private_blob"] = encrypt_support_private_fields(private)
         write_private_json(support_ticket_path(ticket_id), record)
+    record_api_activity("support_ticket_update", "ok", "support_ticket", ticket_id)
     return {
         "ok": True,
         "saved": True,
@@ -3016,6 +3161,7 @@ def admin_delete_support_ticket(payload):
         if not path.is_file():
             raise FileNotFoundError("Support ticket was not found.")
         path.unlink()
+    record_api_activity("support_ticket_delete", "ok", "support_ticket", ticket_id)
     return {
         "ok": True,
         "deleted": True,
@@ -3138,6 +3284,7 @@ def admin_create_announcement(payload):
     }
     with LICENSE_STATE_LOCK:
         write_private_json(announcement_path(announcement_id), record)
+    record_api_activity("announcement_publish", "ok", "announcement", announcement_id)
     return {
         "ok": True,
         "created": True,
@@ -3166,9 +3313,7 @@ def list_admin_announcements():
     }
 
 
-def list_my_announcements(payload):
-    verification = require_active_support_license(payload)
-    plan_rank = int((verification.get("plan") or {}).get("rank", 1) or 1)
+def active_announcements_for_rank(plan_rank, limit=50):
     items = []
     for record in announcement_records():
         try:
@@ -3176,13 +3321,21 @@ def list_my_announcements(payload):
                 items.append(announcement_view(record))
         except (OSError, TypeError, ValueError):
             continue
-        if len(items) >= 50:
+        if len(items) >= limit:
             break
+    return items
+
+
+def list_my_announcements(payload):
+    verification = require_active_support_license(payload)
+    plan_rank = int((verification.get("plan") or {}).get("rank", 1) or 1)
+    items = active_announcements_for_rank(plan_rank)
     return {
         "ok": True,
         "count": len(items),
         "items": items,
         "plan_rank": plan_rank,
+        "service_status": service_status_payload(),
         "privacy_notice": "Announcements are read-only text and never execute commands or access local files.",
         "server_time_utc": utc_now(),
     }
@@ -3195,11 +3348,275 @@ def admin_delete_announcement(payload):
         if not path.is_file():
             raise FileNotFoundError("Announcement was not found.")
         path.unlink()
+    record_api_activity("announcement_delete", "ok", "announcement", announcement_id)
     return {
         "ok": True,
         "deleted": True,
         "announcement_id": announcement_id,
         "message": f"Announcement {announcement_id} deleted.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def clean_activity_identifier(value, limit=80):
+    text = str(value or "").strip()
+    cleaned = "".join(
+        character
+        for character in text
+        if character.isalnum() or character in {"-", "_", ".", ":"}
+    )
+    return (cleaned or "none")[:limit]
+
+
+def api_activity_log_path():
+    return LICENSE_STATE_DIR / "api_activity" / "activity.jsonl"
+
+
+def api_activity_signing_key():
+    material = ("vaultlink-api-activity-v1\0" + license_records_secret()).encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def api_activity_hash(record):
+    payload = dict(record)
+    payload.pop("hash", None)
+    return hmac.new(api_activity_signing_key(), canonical_json_bytes(payload), hashlib.sha256).hexdigest()
+
+
+def read_api_activity_records():
+    path = api_activity_log_path()
+    if not path.is_file():
+        return [], True, "No API activity has been recorded yet."
+    try:
+        if path.stat().st_size > MAX_API_ACTIVITY_BYTES:
+            return [], False, "The API activity log is larger than the verification limit."
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [], False, f"The API activity log could not be read: {exc}"
+    if len(lines) > MAX_API_ACTIVITY_ITEMS:
+        return [], False, "The API activity log contains too many records."
+    records = []
+    previous_hash = "0" * 64
+    expected_sequence = 1
+    expected_fields = {
+        "schema_version",
+        "sequence",
+        "time_utc",
+        "event_id",
+        "actor",
+        "action",
+        "result",
+        "resource_type",
+        "resource_id",
+        "previous_hash",
+        "hash",
+    }
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            return records, False, f"API activity record {line_number} is not valid JSON."
+        if not isinstance(record, dict) or set(record) != expected_fields:
+            return records, False, f"API activity record {line_number} has an invalid field set."
+        if record.get("schema_version") != 1 or record.get("sequence") != expected_sequence:
+            return records, False, f"API activity record {line_number} has an invalid sequence."
+        if record.get("previous_hash") != previous_hash:
+            return records, False, f"API activity record {line_number} broke the hash chain."
+        stored_hash = str(record.get("hash", ""))
+        expected_hash = api_activity_hash(record)
+        if len(stored_hash) != 64 or not hmac.compare_digest(stored_hash, expected_hash):
+            return records, False, f"API activity record {line_number} failed HMAC verification."
+        records.append(record)
+        previous_hash = stored_hash
+        expected_sequence += 1
+    return records, True, f"Verified {len(records)} HMAC-chained API activity record(s)."
+
+
+def rotate_api_activity_if_needed():
+    path = api_activity_log_path()
+    if not path.is_file() or path.stat().st_size < MAX_API_ACTIVITY_BYTES:
+        return
+    archive_dir = path.parent / "archives"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive = archive_dir / f"activity-{stamp}-{secrets.token_hex(3)}.jsonl"
+    os.replace(path, archive)
+    archives = sorted(
+        archive_dir.glob("activity-*.jsonl"),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0,
+        reverse=True,
+    )
+    for old_archive in archives[MAX_API_ACTIVITY_ARCHIVES:]:
+        try:
+            old_archive.unlink()
+        except OSError:
+            continue
+
+
+def record_api_activity(action, result="ok", resource_type="service", resource_id="none", actor="owner"):
+    try:
+        with LICENSE_STATE_LOCK:
+            path = api_activity_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path.parent, 0o700)
+            except OSError:
+                pass
+            rotate_api_activity_if_needed()
+            records, valid, _message = read_api_activity_records()
+            if not valid:
+                return False
+            sequence = len(records) + 1
+            previous_hash = str(records[-1].get("hash")) if records else "0" * 64
+            record = {
+                "schema_version": 1,
+                "sequence": sequence,
+                "time_utc": utc_now(),
+                "event_id": f"EVT-{secrets.token_hex(8).upper()}",
+                "actor": clean_activity_identifier(actor, 24),
+                "action": clean_activity_identifier(action, 64),
+                "result": clean_activity_identifier(result, 24),
+                "resource_type": clean_activity_identifier(resource_type, 40),
+                "resource_id": clean_activity_identifier(resource_id, 80),
+                "previous_hash": previous_hash,
+            }
+            record["hash"] = api_activity_hash(record)
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def list_admin_api_activity():
+    records, valid, message = read_api_activity_records()
+    items = list(reversed(records[-500:]))
+    return {
+        "ok": True,
+        "count": len(records),
+        "items": items,
+        "integrity": {"valid": valid, "message": message, "algorithm": "HMAC-SHA-256 hash chain"},
+        "privacy_notice": "Activity records exclude tokens, license keys, notes, messages, customer labels, file paths, and file contents.",
+        "storage": "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral",
+        "server_time_utc": utc_now(),
+    }
+
+
+def create_api_activity_download_link():
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    token = sign_token(
+        ACTIVITY_DOWNLOAD_PREFIX,
+        {
+            "purpose": "admin_api_activity_download",
+            "expires_at_utc": format_utc(expires_at),
+            "token_id": secrets.token_hex(8),
+        },
+    )
+    record_api_activity("activity_download_link", "ok", "api_activity", "current")
+    return {
+        "ok": True,
+        "download_path": f"/api/v1/admin/activity/download?token={token}",
+        "filename": "vaultlink-api-activity.json",
+        "expires_at_utc": format_utc(expires_at),
+        "server_time_utc": utc_now(),
+    }
+
+
+def load_api_activity_download(token):
+    try:
+        payload = verify_token(token, ACTIVITY_DOWNLOAD_PREFIX)
+    except ValueError as exc:
+        raise PermissionError(f"Activity download token failed verification: {exc}") from exc
+    if payload.get("purpose") != "admin_api_activity_download":
+        raise PermissionError("Activity download token has the wrong purpose.")
+    expires_at = parse_utc(payload.get("expires_at_utc"))
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        raise PermissionError("Activity download token expired.")
+    export = list_admin_api_activity()
+    return json_bytes(export), "vaultlink-api-activity.json"
+
+
+def default_service_status():
+    return {
+        "mode": "normal",
+        "message": "All VaultLink services are operating normally.",
+        "updated_at_utc": "",
+        "expires_at_utc": "",
+        "owner_set": False,
+        "active": True,
+    }
+
+
+def service_status_path():
+    return LICENSE_STATE_DIR / "service_status.json"
+
+
+def service_status_payload():
+    path = service_status_path()
+    if not path.is_file():
+        return default_service_status()
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("schema_version") != 1:
+            raise ValueError("Stored service status is invalid.")
+        mode = str(record.get("mode", "normal"))
+        if mode not in SERVICE_STATUS_MODES:
+            raise ValueError("Stored service status mode is invalid.")
+        expires_at = parse_utc(record.get("expires_at_utc"))
+        if expires_at and expires_at <= datetime.now(timezone.utc):
+            status = default_service_status()
+            status["previous_status_expired"] = True
+            return status
+        return {
+            "mode": mode,
+            "message": str(record.get("message", ""))[:240],
+            "updated_at_utc": str(record.get("updated_at_utc", "")),
+            "expires_at_utc": str(record.get("expires_at_utc", "")),
+            "owner_set": True,
+            "active": True,
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        status = default_service_status()
+        status["record_valid"] = False
+        return status
+
+
+def admin_update_service_status(payload):
+    mode = str(payload.get("mode", "normal") or "normal").strip().lower()
+    if mode not in SERVICE_STATUS_MODES:
+        raise ValueError("Choose a valid service status mode.")
+    message = clean_support_text(payload.get("message"), 240, "message")
+    if mode != "normal" and len(message) < 5:
+        raise ValueError("message must be at least 5 characters for degraded or maintenance status.")
+    if mode == "normal" and not message:
+        message = default_service_status()["message"]
+    expires_at = parse_utc(payload.get("expires_at_utc"))
+    now = datetime.now(timezone.utc)
+    if expires_at and expires_at <= now:
+        raise ValueError("expires_at_utc must be in the future.")
+    if expires_at and expires_at > now + timedelta(days=30):
+        raise ValueError("expires_at_utc cannot be more than 30 days in the future.")
+    record = {
+        "schema_version": 1,
+        "mode": mode,
+        "message": message,
+        "updated_at_utc": format_utc(now),
+        "expires_at_utc": format_utc(expires_at) if expires_at and mode != "normal" else "",
+    }
+    with LICENSE_STATE_LOCK:
+        write_private_json(service_status_path(), record)
+    record_api_activity("service_status_update", "ok", "service_status", mode)
+    return {
+        "ok": True,
+        "saved": True,
+        "service_status": service_status_payload(),
+        "message": f"Service status changed to {mode}.",
         "server_time_utc": utc_now(),
     }
 
@@ -3688,6 +4105,8 @@ def admin_dashboard_summary():
     audit_inventory = list_admin_audit_exports()
     support_inventory = list_admin_support_tickets()
     announcement_inventory = list_admin_announcements()
+    activity_inventory = list_admin_api_activity()
+    service_status = service_status_payload()
     shop = shop_payload()
     now = datetime.now(timezone.utc)
     active_licenses = 0
@@ -3750,6 +4169,12 @@ def admin_dashboard_summary():
             "active": int(announcement_inventory.get("active_count", 0) or 0),
             "damaged": int(announcement_inventory.get("damaged_count", 0) or 0),
         },
+        "api_activity": {
+            "total": int(activity_inventory.get("count", 0) or 0),
+            "integrity_valid": bool((activity_inventory.get("integrity") or {}).get("valid")),
+            "integrity_message": str((activity_inventory.get("integrity") or {}).get("message", "")),
+        },
+        "service_status": service_status,
         "shop": {
             "configured": int(shop.get("configured_count", 0) or 0),
             "total": int(shop.get("count", 0) or 0),
@@ -3761,6 +4186,7 @@ def admin_dashboard_summary():
             "audit_exports": audit_inventory.get("storage", "local_ephemeral"),
             "support_tickets": support_inventory.get("storage", "local_ephemeral"),
             "announcements": announcement_inventory.get("storage", "local_ephemeral"),
+            "api_activity": activity_inventory.get("storage", "local_ephemeral"),
         },
         "release": {
             "api_version": API_VERSION,
@@ -3793,6 +4219,7 @@ def create_admin_audit_download_link(payload):
             "scope": "owner_audit_download",
         },
     )
+    record_api_activity("audit_download_link", "ok", "audit_export", export_id)
     return {
         "ok": True,
         "export_id": export_id,
@@ -3949,6 +4376,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "owner_announcement_storage": (
                         "persistent_configured" if license_state_storage_is_persistent() else "local_ephemeral"
                     ),
+                    "service_status": service_status_payload(),
+                    "api_activity_enabled": True,
+                    "api_activity_integrity": list_admin_api_activity()["integrity"],
                     "shop_enabled": True,
                     "shop_checkout_links_configured": shop_payload()["configured_count"],
                     "shop_card_data_collected_by_vaultlink": False,
@@ -3974,6 +4404,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/shop":
             self.send_json(shop_payload())
             return
+        if path == "/api/v1/service-status":
+            self.send_json({"ok": True, "service_status": service_status_payload(), "server_time_utc": utc_now()})
+            return
         if path == "/api/v1/security":
             self.send_json(
                 {
@@ -3992,6 +4425,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "licensed encrypted bug reports and customer-visible owner replies",
                         "admin support-ticket status, reply, private note, and deletion actions",
                         "admin rank-targeted read-only owner announcements",
+                        "admin informational service status and tamper-evident API activity export",
                         "public shop catalog and validated provider-hosted checkout links",
                     ],
                     "banned_remote_actions": [
@@ -4029,6 +4463,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "Customers need an active machine-bound license and receive only notices allowed for their rank.",
                         "Announcements are plain read-only text; they cannot run commands, open files, or change settings.",
                         "Scheduled and expired notices are filtered by the server.",
+                    ],
+                    "owner_operations_controls": [
+                        "Service status is informational only and cannot lock, unlock, execute, or modify customer PCs.",
+                        "The API activity feed uses an HMAC-SHA-256 hash chain and excludes sensitive payloads.",
+                        "Activity downloads use a two-minute scoped token instead of placing the admin token in a URL.",
                     ],
                     "shop_controls": [
                         "VaultLink never collects card numbers; checkout occurs on a separately hosted payment page.",
@@ -4088,6 +4527,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                 )
             return
+        if path == "/api/v1/admin/activity/download":
+            token = (parse_qs(parsed.query).get("token") or [""])[0]
+            try:
+                body, filename = load_api_activity_download(token)
+                self.send_download(body, filename)
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         parts = path.strip("/").split("/")
         if path == "/api/v1/admin/audit-exports":
             try:
@@ -4138,6 +4593,21 @@ class ApiHandler(BaseHTTPRequestHandler):
             try:
                 self.require_admin_token()
                 self.send_json(list_admin_announcements())
+            except PermissionError as exc:
+                self.send_json(
+                    {"ok": False, "error": "forbidden", "message": str(exc)},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+            except Exception:
+                self.send_json(
+                    {"ok": False, "error": "server_error", "message": "Internal server error."},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+        if path == "/api/v1/admin/activity":
+            try:
+                self.require_admin_token()
+                self.send_json(list_admin_api_activity())
             except PermissionError as exc:
                 self.send_json(
                     {"ok": False, "error": "forbidden", "message": str(exc)},
@@ -4290,6 +4760,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/announcements/mine": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/admin/announcements/create": MAX_SUPPORT_JSON_BODY_BYTES,
             "/api/v1/admin/announcements/delete": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/admin/service-status": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/admin/activity/download-link": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/admin/audit-exports/download-link": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/audit-exports": MAX_AUDIT_JSON_BODY_BYTES,
         }
@@ -4365,6 +4837,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/admin/announcements/delete":
                 self.require_admin_token()
                 self.send_json(admin_delete_announcement(payload))
+                return
+            if path == "/api/v1/admin/service-status":
+                self.require_admin_token()
+                self.send_json(admin_update_service_status(payload))
+                return
+            if path == "/api/v1/admin/activity/download-link":
+                self.require_admin_token()
+                self.send_json(create_api_activity_download_link())
                 return
             if path == "/api/v1/admin/audit-exports/download-link":
                 self.require_admin_token()

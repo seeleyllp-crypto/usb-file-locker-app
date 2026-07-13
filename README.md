@@ -8,7 +8,7 @@ The main app's `BUG CENTER` lets a customer explicitly send a category, subject,
 
 The API also provides a public `/shop` page for all seven ranks. Buy buttons appear only for allowlisted provider-hosted HTTPS checkout links, so VaultLink never collects card numbers. A missing or invalid checkout link stays visibly unavailable. Payment confirmation and license issuance remain separate owner actions; this release does not claim automatic fulfillment.
 
-`OWNER NEWS` opens rank-targeted announcements published from the owner website. These messages are read-only text, require an active license, respect scheduled start and expiration times, and cannot execute commands, access files, or change settings. `SHOP` opens the public shop without placing the license key or activation receipt in the URL.
+`OWNER NEWS` opens rank-targeted announcements published from the owner website. New messages and non-normal service notices also appear automatically on screen once per PC after a successful license sync. These messages are read-only text, require an active license, respect scheduled start and expiration times, and cannot execute commands, access files, or change settings. Only anonymous announcement IDs are saved to prevent repeat popups. `SHOP` opens the public shop without placing the license key or activation receipt in the URL.
 
 ## First run
 
@@ -16,7 +16,7 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, asks before installing, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. Every installed build with Update Center uses the same published API release. Automatic installation is disabled inside Git working folders; use `git pull` there.
 
-Release `2026.07.12.5` fixes the Windows updater extraction failure that reported `WinError 183` when its securely created temporary folder already existed. The updater now accepts only an empty, non-link extraction directory and still rejects non-empty reuse.
+Release `2026.07.12.6` adds automatic on-screen Owner Announcements, public service-status notices, and owner API activity visibility. It keeps the `2026.07.12.5` fix for the Windows updater extraction failure that reported `WinError 183`.
 
 ## Main desktop apps
 
@@ -44,7 +44,7 @@ That folder is also safe to copy into its own separate repo if you want a standa
 
 ## Issuing licenses
 
-Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, set its maximum device count, add an optional private owner note, and issue the key. The API enforces that device limit with anonymous machine hashes. `KEYS + NOTES WEBSITE` opens the owner console, where the same admin token can view dashboard totals and shop readiness, publish scheduled rank-targeted Owner Announcements, see automatic-sync policy, inspect anonymous device seats with throttled last-heartbeat/app-version details, remove one device without resetting every seat, reset all seats for lost PCs, list encrypted-at-rest keys and notes, copy keys, update notes, revoke a whole license, restore it, manage the Bug Inbox, or download API audit logs. The owner page refreshes itself every 30 seconds while no field is being edited. `REVOKE LATEST` handles the newest key directly in the issuer. `API LOGS` remains available in the issuer too.
+Run `Run License Issuer.bat` or open License Center and choose `ISSUER APP`. Enter the Railway `LICENSE_ADMIN_TOKEN`, choose one of the seven visible ranks, set its maximum device count, add an optional private owner note, and issue the key. The API enforces that device limit with anonymous machine hashes. `KEYS + NOTES WEBSITE` opens the owner console, where the same admin token can view dashboard totals and shop readiness, publish scheduled rank-targeted Owner Announcements, set an informational service status, review and download the tamper-evident API activity chain, see automatic-sync policy, inspect anonymous device seats, remove or reset seats, manage encrypted-at-rest keys and notes, revoke or restore licenses, manage the Bug Inbox, and download privacy-safe audit logs. The owner page refreshes itself every 30 seconds while no field is being edited. Service status and announcements cannot run commands or control customer PCs.
 
 To download an API log in the website, open the live owner page, enter the Railway admin token, scroll to `Audit Logs`, and choose `DOWNLOAD JSON` beside the report.
 
