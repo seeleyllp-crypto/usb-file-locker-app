@@ -17,7 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 API_NAME = "VaultLink API"
-API_VERSION = "0.12.0"
+API_VERSION = "0.13.0"
+LEGAL_DOCUMENT_VERSION = "2026-07-12-draft-1"
 ROOT_DIR = Path(__file__).resolve().parent
 LICENSE_KEY_PREFIX = "vlk1"
 LICENSE_RECEIPT_PREFIX = "vlr1"
@@ -31,6 +32,7 @@ MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
 MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_LICENSE_JSON_BODY_BYTES = 64 * 1024
 MAX_SUPPORT_JSON_BODY_BYTES = 32 * 1024
+MAX_REJECTED_BODY_DRAIN_BYTES = 1024 * 1024
 LICENSE_SYNC_INTERVAL_SECONDS = 60
 DEVICE_LAST_SEEN_WRITE_SECONDS = 300
 MAX_AUDIT_JSON_BODY_BYTES = 4 * 1024 * 1024
@@ -48,6 +50,8 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "audit_api_auto_upload",
         "audit_log_export",
         "audit_log_view",
+        "application_auto_update",
+        "auto_update_setting",
         "audit_viewer_export_locked",
         "audit_viewer_export_raw",
         "audit_viewer_open",
@@ -56,6 +60,10 @@ ALLOWED_AUDIT_ACTIONS = frozenset(
         "check_lock_format",
         "compare_backup_key",
         "configuration_change",
+        "customer_center_verify",
+        "customer_hub_refresh",
+        "customer_hub_verify",
+        "customer_status_open",
         "create_key",
         "delete_unlocked_temp",
         "delete_unlocked_temp_after_view",
@@ -152,6 +160,12 @@ class UnsupportedMediaType(ValueError):
 
 
 FEATURES = [
+    {
+        "id": "customer-hub",
+        "title": "Customer Hub",
+        "summary": "Review privacy-safe license, rank, service, update, and customer-page information without displaying license proof or machine identity.",
+        "category": "starter",
+    },
     {
         "id": "portable-locking",
         "title": "Portable locking tools",
@@ -851,6 +865,36 @@ def license_is_revoked(license_payload):
     return bool(record and record.get("status") == "revoked")
 
 
+def license_limit_path(license_id):
+    return LICENSE_STATE_DIR / "license_limits" / f"{validated_license_id(license_id)}.json"
+
+
+def license_limit_payload(license_payload):
+    license_id = validated_license_id(license_payload.get("license_id"))
+    path = license_limit_path(license_id)
+    if not path.is_file():
+        return {}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(record, dict) or record.get("license_id") != license_id:
+        return {}
+    expires_at = parse_utc(record.get("limited_until_utc"))
+    if expires_at is None or expires_at <= datetime.now(timezone.utc):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {}
+    return {
+        "limited": True,
+        "reason": str(record.get("reason", "Limited by the license owner."))[:240],
+        "limited_at_utc": str(record.get("limited_at_utc", "")),
+        "limited_until_utc": format_utc(expires_at),
+    }
+
+
 def receipt_deactivation_path(receipt):
     return private_record_path("deactivations", receipt)
 
@@ -1081,6 +1125,7 @@ def admin_license_record_view(record, include_private=True):
     private_fields = stored_license_private_fields(record) if include_private else {}
     license_key = str(private_fields.get("license_key", ""))
     license_id = str(record.get("license_id", ""))
+    limit = license_limit_payload({"license_id": license_id})
     return {
         "license_id": license_id,
         "plan_id": str(record.get("plan_id", "")),
@@ -1090,6 +1135,9 @@ def admin_license_record_view(record, include_private=True):
         "expires_at_utc": str(record.get("expires_at_utc", "")),
         "max_devices": int(record.get("max_devices", 1) or 1),
         "active_devices": active_device_count(license_id),
+        "limited": bool(limit),
+        "limit_reason": str(limit.get("reason", "")),
+        "limited_until_utc": str(limit.get("limited_until_utc", "")),
         "revoked_at_utc": str(record.get("revoked_at_utc", "")),
         "restored_at_utc": str(record.get("restored_at_utc", "")),
         "updated_at_utc": str(record.get("updated_at_utc", "")),
@@ -1140,6 +1188,7 @@ def product_payload():
             "perm_unlock_workbench.py",
             "key_inspector.py",
             "quick_lock_note.py",
+            "customer_hub.py",
         }
     )
     return {
@@ -1161,6 +1210,8 @@ def docs_payload():
             {"method": "GET", "path": "/", "purpose": "HTML homepage"},
             {"method": "GET", "path": "/shop", "purpose": "Public seven-tier shop with provider-hosted checkout"},
             {"method": "GET", "path": "/status", "purpose": "Public customer service and signed-release status"},
+            {"method": "GET", "path": "/terms", "purpose": "Draft Terms of Use for adult and legal review"},
+            {"method": "GET", "path": "/privacy", "purpose": "Public privacy notice and data-handling summary"},
             {"method": "GET", "path": "/owner", "purpose": "Owner-only key and note web console"},
             {"method": "GET", "path": "/docs", "purpose": "JSON route index"},
             {"method": "GET", "path": "/health", "purpose": "Health check"},
@@ -1170,6 +1221,7 @@ def docs_payload():
             {"method": "GET", "path": "/api/v1/plans", "purpose": "Plan and entitlement catalog"},
             {"method": "GET", "path": "/api/v1/ranks", "purpose": "Complete ordered license-rank comparison"},
             {"method": "GET", "path": "/api/v1/shop", "purpose": "Public shop readiness and validated checkout links"},
+            {"method": "GET", "path": "/api/v1/legal", "purpose": "Public legal-document version and review status"},
             {"method": "GET", "path": "/api/v1/service-status", "purpose": "Public read-only service status"},
             {"method": "GET", "path": "/api/v1/security", "purpose": "Public security and licensing notes"},
             {"method": "GET", "path": "/api/v1/deploy", "purpose": "Railway deploy hints"},
@@ -1180,6 +1232,8 @@ def docs_payload():
             {"method": "POST", "path": "/api/v1/licenses/deactivate", "purpose": "Remove the current machine activation"},
             {"method": "POST", "path": "/api/v1/licenses/revoke", "purpose": "Admin-only license revocation"},
             {"method": "POST", "path": "/api/v1/licenses/restore", "purpose": "Admin-only license restoration"},
+            {"method": "POST", "path": "/api/v1/licenses/limit", "purpose": "Admin-only temporary premium-access limit with a customer-visible reason"},
+            {"method": "POST", "path": "/api/v1/licenses/unlimit", "purpose": "Admin-only removal of temporary limited status"},
             {"method": "POST", "path": "/api/v1/licenses/note", "purpose": "Admin-only private note update"},
             {"method": "POST", "path": "/api/v1/licenses/reset-devices", "purpose": "Admin-only reset of active device seats"},
             {"method": "POST", "path": "/api/v1/licenses/remove-device", "purpose": "Admin-only removal of one anonymous device seat"},
@@ -1518,6 +1572,8 @@ def homepage_html():
       <div class="cta">
         <a class="primary" href="/shop">Open Shop</a>
         <a href="/status">Customer Status</a>
+        <a href="/terms">Draft Terms</a>
+        <a href="/privacy">Privacy Notice</a>
         <a href="/docs">Open Route Index</a>
         <a href="/owner">Owner Console</a>
         <a href="/api/v1/product">Product JSON</a>
@@ -1594,7 +1650,7 @@ def customer_status_html():
   </style>
 </head>
 <body>
-  <header><div><strong>VaultLink</strong><nav><a href="/">HOME</a> &nbsp; <a href="/shop">SHOP</a></nav></div></header>
+  <header><div><strong>VaultLink</strong><nav><a href="/">HOME</a> &nbsp; <a href="/shop">SHOP</a> &nbsp; <a href="/terms">TERMS</a> &nbsp; <a href="/privacy">PRIVACY</a></nav></div></header>
   <main>
     <h1>Customer Status</h1>
     <p class="lead">Public service and signed-release information. This page does not request or display license keys, device identifiers, files, or account data.</p>
@@ -1605,6 +1661,81 @@ def customer_status_html():
       <section><label>Update protection</label><strong>Ed25519 + SHA-256</strong><p>Automatic installation requires a local opt-in and remains blocked in Git working folders.</p></section>
       <section class="full"><label>Release notes</label><ul>{note_html}</ul></section>
     </div>
+  </main>
+</body>
+</html>"""
+
+
+def legal_payload():
+    return {
+        "ok": True,
+        "document_version": LEGAL_DOCUMENT_VERSION,
+        "terms_path": "/terms",
+        "privacy_path": "/privacy",
+        "draft": True,
+        "adult_business_owner_review_required": True,
+        "qualified_legal_review_recommended": True,
+        "not_legal_advice": True,
+        "server_time_utc": utc_now(),
+    }
+
+
+def legal_document_html(document):
+    if document == "privacy":
+        title = "Privacy Notice"
+        summary = "How VaultLink handles licensing, support, audit, and update data."
+        sections = [
+            ("Local data", "USB key secrets, optional PINs, vault contents, locked-file contents, full paths, and local audit keys remain on the customer PC unless the customer explicitly exports a privacy-safe report."),
+            ("Licensing", "The API stores a signed license record, encrypted private license fields, one-way anonymous device hashes, app version, device-seat status, and coarse last-sync time. It does not store PC names or raw machine identifiers."),
+            ("Support", "A customer chooses the text sent in a bug report. Ticket text and owner replies are encrypted at rest. Files and local logs are never attached automatically."),
+            ("Audit exports", "Only approved privacy-safe fields are accepted. Raw files, file contents, USB secrets, passwords, PINs, client names, and full paths are rejected or removed."),
+            ("Payments", "Checkout happens on an allowlisted payment provider. VaultLink does not collect or store card numbers. The business owner remains responsible for the provider account and required notices."),
+            ("Retention and deletion", "The owner can delete support tickets and license records through authorized tools. Stored audit exports expire according to the configured retention period. Local customer data is controlled from the customer PC."),
+        ]
+    else:
+        title = "Draft Terms of Use"
+        summary = "A plain-language starting template for the adult business owner and qualified counsel to review."
+        sections = [
+            ("Draft status", "These terms are a software-generated draft, not legal advice, and are not ready for commercial use until reviewed and approved by the adult business owner. Qualified legal review is recommended."),
+            ("Service", "VaultLink provides local file-locking tools, licensing, signed updates, privacy-safe audit features, support messaging, and related customer utilities. Features vary by license rank."),
+            ("Authorized use", "Customers must use the software only on devices and files they own or are authorized to manage. The software may not be used to access another person's data, evade security controls, or violate law."),
+            ("Keys and backups", "Customers are responsible for protecting and backing up USB keys and remembering optional PINs. Lost keys or forgotten PINs can make locked data unrecoverable."),
+            ("Licenses and payments", "License duration, device limits, price, refund terms, taxes, and support commitments must be clearly stated by the adult business owner. Payment-provider records do not automatically create a software license."),
+            ("Updates and security", "Automatic installation requires local opt-in. Every published update must pass the embedded Ed25519 manifest check and SHA-256 package check. No software can promise complete protection from every threat or data loss."),
+            ("Warranty and liability", "The adult business owner and qualified counsel must supply legally appropriate warranty, liability, dispute, governing-law, cancellation, and consumer-rights terms for every place the product is offered."),
+            ("Contact and changes", "The adult business owner must publish accurate business contact information and notify customers when approved terms materially change. This draft intentionally contains no invented address, company registration, or legal contact."),
+        ]
+    section_html = "".join(
+        f"<section><h2>{html_escape(heading)}</h2><p>{html_escape(body)}</p></section>"
+        for heading, body in sections
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VaultLink {html_escape(title)}</title>
+  <style>
+    :root {{ --bg:#111317; --panel:#1a1e25; --line:#303844; --text:#f1f3f5; --muted:#aeb7c4; --green:#74e27f; --yellow:#ffd166; }}
+    * {{ box-sizing:border-box; }} body {{ margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI",Arial,sans-serif; }}
+    header {{ border-bottom:1px solid var(--line); }} header div, main {{ width:min(880px,calc(100% - 32px)); margin:0 auto; }}
+    header div {{ min-height:68px; display:flex; align-items:center; justify-content:space-between; gap:16px; }}
+    nav a {{ color:var(--muted); text-decoration:none; margin-left:14px; }} main {{ padding:32px 0 56px; }}
+    .draft {{ color:var(--yellow); font-size:.78rem; font-weight:800; }} h1 {{ margin:7px 0 8px; font-size:2rem; letter-spacing:0; }}
+    .lead {{ color:var(--muted); line-height:1.6; margin:0 0 22px; }} section {{ border-top:1px solid var(--line); padding:18px 0; }}
+    h2 {{ margin:0 0 7px; font-size:1.02rem; }} p {{ margin:0; color:var(--muted); line-height:1.65; overflow-wrap:anywhere; }}
+    .meta {{ margin-top:20px; color:var(--green); font-size:.84rem; }}
+    @media(max-width:600px) {{ header div {{ align-items:flex-start; flex-direction:column; padding:16px 0; }} nav a {{ margin:0 14px 0 0; }} }}
+  </style>
+</head>
+<body>
+  <header><div><strong>VaultLink</strong><nav><a href="/status">STATUS</a><a href="/terms">TERMS</a><a href="/privacy">PRIVACY</a></nav></div></header>
+  <main>
+    <div class="draft">DRAFT FOR ADULT AND LEGAL REVIEW</div>
+    <h1>{html_escape(title)}</h1>
+    <p class="lead">{html_escape(summary)}</p>
+    {section_html}
+    <div class="meta">Document version {LEGAL_DOCUMENT_VERSION}</div>
   </main>
 </body>
 </html>"""
@@ -1749,6 +1880,8 @@ def owner_portal_html():
     .device-list { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
     .device-row { display:grid; grid-template-columns:minmax(180px,1fr) minmax(120px,.6fr) auto; gap:10px; align-items:center; padding:8px 0; }
     .empty { padding:26px 0; color:var(--muted); }
+    .page-links { display:flex; gap:18px; flex-wrap:wrap; }
+    .page-links a { color:var(--blue); text-decoration:none; font-weight:700; }
     .split { grid-column:1 / -1; }
     @media (max-width:900px) { .stats { grid-template-columns:repeat(3,minmax(0,1fr)); } }
     @media (max-width:760px) { .auth,.grid,.latest,.record-head,.record-actions,.ticket-actions,.audit-row,.activity-row,.device-row { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } header > div { align-items:flex-start; flex-direction:column; padding:16px 0; } button { width:100%; } }
@@ -1791,6 +1924,12 @@ def owner_portal_html():
     <section>
       <div class="record-head"><h2>Client Release Adoption</h2><div id="clientHealthSummary" class="meta">Connect to load anonymous client health.</div></div>
       <div id="clientVersionRecords"><div class="empty">No client version data loaded.</div></div>
+    </section>
+
+    <section>
+      <h2>Customer Pages</h2>
+      <div class="page-links"><a href="/status" target="_blank" rel="noopener">STATUS</a><a href="/terms" target="_blank" rel="noopener">DRAFT TERMS</a><a href="/privacy" target="_blank" rel="noopener">PRIVACY</a><a href="/shop" target="_blank" rel="noopener">SHOP</a><a href="/docs" target="_blank" rel="noopener">API DOCS</a></div>
+      <div class="status">Legal document """ + LEGAL_DOCUMENT_VERSION + """ is a draft. Adult business-owner approval and qualified legal review are recommended before commercial use.</div>
     </section>
 
     <section>
@@ -2072,8 +2211,9 @@ def owner_portal_html():
         customer.className = "meta";
         customer.textContent = item.customer_label || item.customer_email || "No customer label";
         const badge = document.createElement("span");
-        badge.className = `badge ${item.status === "revoked" ? "revoked" : ""}`;
-        badge.textContent = item.status || "active";
+        const effectiveStatus = item.limited ? "limited" : (item.status || "active");
+        badge.className = `badge ${effectiveStatus === "revoked" ? "revoked" : effectiveStatus === "limited" ? "open" : ""}`;
+        badge.textContent = effectiveStatus;
         head.append(identity, customer, badge);
 
         const keyLabel = document.createElement("label");
@@ -2097,9 +2237,12 @@ def owner_portal_html():
         deviceList.hidden = true;
         actions.append(actionButton("DEVICES", "", () => toggleDevices(item, deviceList)));
         actions.append(actionButton("RESET DEVICES", "", () => resetDevices(item)));
+        actions.append(item.limited
+          ? actionButton("REMOVE LIMIT", "primary", () => unlimitLicense(item))
+          : actionButton("LIMIT", "warn", () => limitLicense(item)));
         actions.append(item.status === "revoked"
           ? actionButton("RESTORE", "primary", () => changeStatus(item, "restore"))
-          : actionButton("REVOKE", "danger", () => changeStatus(item, "revoke")));
+          : actionButton("BLOCK", "danger", () => changeStatus(item, "revoke")));
         record.append(head, keyLabel, key, noteLabel, actions, deviceList);
         host.append(record);
       }
@@ -2444,12 +2587,38 @@ def owner_portal_html():
     }
 
     async function changeStatus(item, action) {
-      const verb = action === "revoke" ? "revoke" : "restore";
+      const verb = action === "revoke" ? "block" : "restore";
+      const past = action === "revoke" ? "blocked" : "restored";
       if (!confirm(`${verb.toUpperCase()} ${item.license_id}?`)) return;
       try {
         await api(`/api/v1/licenses/${action}`, { method:"POST", body:JSON.stringify({ license_key:item.license_key }) });
         await loadLicenses();
-        setStatus(`${item.license_id} ${verb}d.`, "good");
+        setStatus(`${item.license_id} ${past}.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function limitLicense(item) {
+      const reason = prompt("Reason shown to the customer:", "Temporary account review.");
+      if (reason === null) return;
+      const hoursText = prompt("How many hours should LIMITED status last? (1-8760)", "24");
+      if (hoursText === null) return;
+      const hours = Number(hoursText);
+      if (!Number.isInteger(hours) || hours < 1 || hours > 8760) return setStatus("Limit duration must be 1 to 8760 whole hours.", "bad");
+      if (reason.trim().length < 3) return setStatus("Limit reason must be at least 3 characters.", "bad");
+      if (!confirm(`LIMIT PREMIUM ACCESS FOR ${item.license_id} FOR ${hours} HOUR(S)? Unlock and recovery remain available.`)) return;
+      try {
+        const result = await api("/api/v1/licenses/limit", { method:"POST", body:JSON.stringify({ license_key:item.license_key, reason:reason.trim(), hours }) });
+        await loadLicenses(true);
+        setStatus(result.message || `${item.license_id} is temporarily limited.`, "good");
+      } catch (error) { setStatus(error.message, "bad"); }
+    }
+
+    async function unlimitLicense(item) {
+      if (!confirm(`REMOVE LIMITED STATUS FROM ${item.license_id}?`)) return;
+      try {
+        const result = await api("/api/v1/licenses/unlimit", { method:"POST", body:JSON.stringify({ license_key:item.license_key }) });
+        await loadLicenses(true);
+        setStatus(result.message || `${item.license_id} is no longer limited.`, "good");
       } catch (error) { setStatus(error.message, "bad"); }
     }
 
@@ -2661,6 +2830,24 @@ def activate_license(payload):
             "message": "This license was revoked by its owner.",
             "server_time_utc": utc_now(),
         }
+    limit = license_limit_payload(license_payload)
+    if limit:
+        plan = current_plan_for_license(license_payload)
+        return {
+            "ok": True,
+            "active": False,
+            "status": "limited",
+            "plan": public_plan_payload(plan),
+            "license": {
+                "license_id": license_payload.get("license_id", ""),
+                "plan_id": plan["id"],
+                "plan_name": plan["name"],
+                "expires_at_utc": license_payload.get("expires_at_utc", ""),
+            },
+            "limited_until_utc": limit["limited_until_utc"],
+            "message": f"Limited access until {limit['limited_until_utc']}: {limit['reason']}",
+            "server_time_utc": utc_now(),
+        }
     if license_is_expired(license_payload):
         plan = current_plan_for_license(license_payload)
         return {
@@ -2766,6 +2953,18 @@ def verify_license(payload):
             "plan": public_plan_payload(plan),
             "license": license_view,
             "message": "This license was revoked by its owner.",
+            "server_time_utc": utc_now(),
+        }
+    limit = license_limit_payload(license_payload)
+    if limit:
+        return {
+            "ok": True,
+            "active": False,
+            "status": "limited",
+            "plan": public_plan_payload(plan),
+            "license": license_view,
+            "limited_until_utc": limit["limited_until_utc"],
+            "message": f"Limited access until {limit['limited_until_utc']}: {limit['reason']}",
             "server_time_utc": utc_now(),
         }
     if license_is_expired(license_payload):
@@ -2911,7 +3110,11 @@ def sync_license(payload):
     result["server_time_utc"] = utc_now()
     result["service_status"] = service_status_payload()
     plan_rank = int((result.get("plan") or {}).get("rank", 1) or 1)
-    announcement_items = active_announcements_for_rank(plan_rank, limit=5) if result.get("active") else []
+    announcement_items = (
+        active_announcements_for_rank(plan_rank, limit=5)
+        if result.get("active") or result.get("status") == "limited"
+        else []
+    )
     result["announcements"] = {
         "count": len(announcement_items),
         "items": announcement_items,
@@ -3006,6 +3209,61 @@ def restore_license(payload):
         "restored": True,
         "license": admin_license_record_view(record, include_private=False),
         "message": "The license is active again. Individually deactivated receipts remain deactivated.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def limit_license(payload):
+    _license_key, license_payload = require_admin_license_key(payload)
+    try:
+        hours = int(payload.get("hours", 24) or 24)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("hours must be a whole number from 1 to 8760.") from exc
+    if not 1 <= hours <= 8760:
+        raise ValueError("hours must be a whole number from 1 to 8760.")
+    reason = "".join(
+        character if ord(character) >= 32 else " "
+        for character in str(payload.get("reason", "Limited by the license owner."))
+    ).strip()[:240]
+    if len(reason) < 3:
+        raise ValueError("reason must be at least 3 characters.")
+    now = datetime.now(timezone.utc)
+    record = {
+        "schema_version": 1,
+        "license_id": validated_license_id(license_payload.get("license_id")),
+        "reason": reason,
+        "limited_at_utc": format_utc(now),
+        "limited_until_utc": format_utc(now + timedelta(hours=hours)),
+    }
+    write_private_json(license_limit_path(record["license_id"]), record)
+    record_api_activity("license_limit", "ok", "license", record["license_id"])
+    return {
+        "ok": True,
+        "limited": True,
+        "license_id": record["license_id"],
+        "reason": reason,
+        "limited_until_utc": record["limited_until_utc"],
+        "message": "Licensed premium controls are temporarily limited. Unlock and recovery access are not remotely disabled.",
+        "server_time_utc": utc_now(),
+    }
+
+
+def unlimit_license(payload):
+    _license_key, license_payload = require_admin_license_key(payload)
+    license_id = validated_license_id(license_payload.get("license_id"))
+    path = license_limit_path(license_id)
+    existed = path.is_file()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ValueError("The limited-status record could not be removed.") from exc
+    record_api_activity("license_unlimit", "ok", "license", license_id)
+    return {
+        "ok": True,
+        "limited": False,
+        "restored": existed,
+        "license_id": license_id,
+        "message": "Temporary limited status was removed. The next customer sync can restore licensed premium controls.",
         "server_time_utc": utc_now(),
     }
 
@@ -4517,6 +4775,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         if length < 0:
             raise ValueError("Content-Length cannot be negative.")
         if length > max_bytes:
+            if length <= MAX_REJECTED_BODY_DRAIN_BYTES:
+                self.rfile.read(length)
+            else:
+                self.close_connection = True
             raise RequestTooLarge(f"Request body exceeds the {max_bytes}-byte limit for this route.")
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if length and content_type != "application/json":
@@ -4549,6 +4811,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/status":
             self.send_html(customer_status_html())
+            return
+        if path == "/terms":
+            self.send_html(legal_document_html("terms"))
+            return
+        if path == "/privacy":
+            self.send_html(legal_document_html("privacy"))
             return
         if path == "/docs":
             self.send_json(docs_payload())
@@ -4613,6 +4881,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/shop":
             self.send_json(shop_payload())
+            return
+        if path == "/api/v1/legal":
+            self.send_json(legal_payload())
             return
         if path == "/api/v1/service-status":
             self.send_json({"ok": True, "service_status": service_status_payload(), "server_time_utc": utc_now()})
@@ -4960,6 +5231,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             "/api/v1/licenses/deactivate": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/revoke": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/restore": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/limit": MAX_LICENSE_JSON_BODY_BYTES,
+            "/api/v1/licenses/unlimit": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/note": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/reset-devices": MAX_LICENSE_JSON_BODY_BYTES,
             "/api/v1/licenses/remove-device": MAX_LICENSE_JSON_BODY_BYTES,
@@ -5010,6 +5283,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == "/api/v1/licenses/restore":
                 self.require_admin_token()
                 self.send_json(restore_license(payload))
+                return
+            if path == "/api/v1/licenses/limit":
+                self.require_admin_token()
+                self.send_json(limit_license(payload))
+                return
+            if path == "/api/v1/licenses/unlimit":
+                self.require_admin_token()
+                self.send_json(unlimit_license(payload))
                 return
             if path == "/api/v1/licenses/note":
                 self.require_admin_token()

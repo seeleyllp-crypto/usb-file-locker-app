@@ -16,6 +16,9 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - Anonymous client release-adoption counts and coarse 24-hour sync freshness
 - A public customer status page at `/status` with service and signed-release details
 - Owner-issued time-limited promotional giveaway licenses
+- Draft Terms of Use and Privacy Notice pages with explicit adult/legal review warnings
+- Temporary customer LIMITED status for licensed premium controls plus existing whole-license BLOCK/revoke controls
+- Customer Hub entitlement included in Starter and therefore every cumulative rank
 - Privacy-safe audit report upload with signed, expiring downloads
 - Server-calculated breach summaries plus direct admin log downloads on the owner website
 - A public seven-rank shop at `/shop` using allowlisted provider-hosted checkout links
@@ -38,6 +41,8 @@ This repo contains a Railway-ready API service for the USB File Locker app.
 - API activity records exclude keys, tokens, notes, messages, customer labels, file data, and full paths
 - Client health never exposes PC names or raw machine ids; it reports only anonymous counts, app versions, and coarse freshness
 - Giveaway tooling does not select winners, collect entries, process payments, or provide contest-law compliance
+- LIMITED status never remotely locks a PC, deletes files, runs commands, or disables unlock/recovery access
+- Draft legal pages are not legal advice and require adult business-owner approval before commercial use
 - It does not collect card numbers, store payment secrets, or treat a checkout receipt as a license key
 
 ## Railway setup

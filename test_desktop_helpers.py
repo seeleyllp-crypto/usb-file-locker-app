@@ -11,6 +11,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import audit_log_viewer
+import build_signed_update
+import customer_hub
 import license_issuer
 import usb_file_locker as locker
 import vaultlink_updater
@@ -43,15 +45,21 @@ class FakeButton:
 
 
 class DesktopHelperTests(unittest.TestCase):
+    def test_first_account_and_announcement_sync_starts_early(self):
+        self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
+
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 11)
+        self.assertEqual(len(launchers), 12)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
+        self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
+        self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
 
     def test_license_key_validation_and_state_replacement(self):
         self.assertTrue(locker.valid_api_license_key(VALID_TEST_LICENSE))
@@ -176,6 +184,38 @@ class DesktopHelperTests(unittest.TestCase):
         log.assert_called_once()
         self.assertIn("ANN-0123456789ABCDEF", app.settings["seen_owner_announcement_ids"])
         self.assertNotIn("Security notice", json.dumps(app.settings))
+
+    def test_customer_center_summary_hides_license_proof_and_private_identity(self):
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "machine_id": "PRIVATE-MACHINE-ID",
+                "status": "active",
+                "plan_name": "$100 Family Safety",
+                "device_active": 2,
+                "device_maximum": 4,
+                "api_version": "0.12.0",
+                "latest_desktop_version": "2026.07.12.8",
+                "last_checked_utc": "2026-07-12T22:00:00Z",
+                "service_status": {"mode": "normal", "message": "All services are operating normally."},
+                "announcements": [
+                    {
+                        "announcement_id": "ANN-0123456789ABCDEF",
+                        "title": "Update",
+                        "message": "A release is ready.",
+                    }
+                ],
+            }
+        )
+        details = locker.customer_center_details(state, {"auto_install_signed_updates": True})
+        serialized = json.dumps(details)
+        self.assertEqual(details["device_seats"], "2/4")
+        self.assertEqual(details["owner_messages"], "1")
+        self.assertEqual(details["automatic_updates"], "ON")
+        self.assertNotIn(VALID_TEST_LICENSE, serialized)
+        self.assertNotIn(state["receipt"], serialized)
+        self.assertNotIn("PRIVATE-MACHINE-ID", serialized)
 
     def test_bug_report_api_sends_only_explicit_text_and_license_proof(self):
         state = locker.normalize_license_state(

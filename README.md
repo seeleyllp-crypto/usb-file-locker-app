@@ -16,11 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
-Release `2026.07.12.7` adds opt-in automatic installation of verified signed updates, a public Customer Status page, anonymous client-release adoption information, and owner giveaway-license issuance. It keeps the automatic announcements, service status, activity ledger, and updater fixes from earlier releases.
+Release `2026.07.12.9` adds the standalone Customer Hub for every rank, an in-app Customer Center, earlier startup announcements, draft Terms and Privacy pages, and owner BLOCK/LIMITED controls. LIMITED affects licensed premium controls only; unlock and recovery remain available. Customer summaries never display the license key, receipt, machine id, files, or paths. The legal pages are drafts requiring adult business-owner approval and recommended qualified legal review.
 
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window
+- `customer_hub.py` - privacy-safe self-service status and all-seven-rank customer app
 - `privacy_safety_hub.py` - dashboard and safety controls
 - `personal_vault_pad.py` - simpler personal vault window
 - `audit_log_viewer.py` - signed audit trail viewer

@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.12.7"
+DESKTOP_APP_VERSION = "2026.07.12.9"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -50,6 +50,7 @@ MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
 LICENSE_BACKGROUND_REFRESH_SECONDS = 60
+INITIAL_LICENSE_REFRESH_MS = 1000
 LICENSE_MIN_REFRESH_SECONDS = 30
 LICENSE_MAX_REFRESH_SECONDS = 300
 LICENSE_GATE_REFRESH_SECONDS = 75
@@ -1789,6 +1790,26 @@ def license_status_text(state):
         status = current.get("status", "saved").replace("_", " ").upper()
         return f"License saved: {status}"
     return "License inactive: open License Center"
+
+
+def customer_center_details(state, settings=None):
+    current = normalize_license_state(state)
+    service = normalize_service_status(current.get("service_status"))
+    announcements = normalize_owner_announcements(current.get("announcements"))
+    plan_name = current.get("plan_name") or current.get("plan_id", "").replace("-", " ").title() or "No active plan"
+    latest = current.get("latest_desktop_version") or "Not checked"
+    update_state = "UPDATE READY" if current.get("update_available") else "CURRENT OR NOT CHECKED"
+    return {
+        "license_status": str(current.get("status", "unlicensed")).replace("_", " ").upper(),
+        "plan": plan_name,
+        "device_seats": f"{int(current.get('device_active', 0) or 0)}/{int(current.get('device_maximum', 0) or 0)}",
+        "desktop": f"{DESKTOP_APP_VERSION} | latest {latest} | {update_state}",
+        "api": current.get("api_version") or "Not checked",
+        "service": f"{service['mode'].upper()} | {service['message']}",
+        "last_sync": current.get("last_checked_utc") or "Never",
+        "owner_messages": str(len(announcements)),
+        "automatic_updates": "ON" if bool((settings or {}).get("auto_install_signed_updates", False)) else "OFF",
+    }
 
 
 def license_summary_text(state):
@@ -4233,6 +4254,135 @@ class SupportCenterWindow(tk.Toplevel):
         self.ticket_box.configure(state="disabled")
 
 
+class CustomerCenterWindow(tk.Toplevel):
+    DETAIL_FIELDS = (
+        ("LICENSE STATUS", "license_status"),
+        ("PLAN", "plan"),
+        ("DEVICE SEATS", "device_seats"),
+        ("DESKTOP RELEASE", "desktop"),
+        ("API VERSION", "api"),
+        ("SERVICE STATUS", "service"),
+        ("LAST LICENSE SYNC", "last_sync"),
+        ("OWNER MESSAGES", "owner_messages"),
+        ("AUTOMATIC VERIFIED UPDATES", "automatic_updates"),
+    )
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.title("VaultLink Customer Center")
+        self.geometry("780x690")
+        self.minsize(700, 620)
+        self.configure(bg=BG)
+        self.status_var = tk.StringVar(value="Customer information is privacy-safe and stored locally unless you verify online.")
+        self.value_vars = {key: tk.StringVar(value="-") for _label, key in self.DETAIL_FIELDS}
+        self.results = queue.Queue()
+        self.busy = False
+        self.verify_button = None
+        self.build_ui()
+        self.render_current()
+
+    def build_ui(self):
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        tk.Label(outer, text="Customer Center", bg=BG, fg=TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="LICENSE KEY AND RECEIPT HIDDEN | NO FILES, PATHS, USB SECRETS, OR MACHINE ID SHOWN",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 14))
+
+        details = tk.Frame(outer, bg=PANEL)
+        details.pack(fill="both", expand=True)
+        for index, (label, key) in enumerate(self.DETAIL_FIELDS):
+            row = tk.Frame(details, bg=PANEL)
+            row.pack(fill="x", padx=18, pady=(12 if index == 0 else 5, 0))
+            tk.Label(row, text=label, width=25, anchor="w", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+            tk.Label(
+                row,
+                textvariable=self.value_vars[key],
+                anchor="w",
+                justify="left",
+                bg=PANEL,
+                fg=TEXT,
+                font=("Segoe UI", 9, "bold"),
+                wraplength=470,
+            ).pack(side="left", fill="x", expand=True)
+
+        primary = tk.Frame(outer, bg=BG)
+        primary.pack(fill="x", pady=(14, 0))
+        self.verify_button = tk.Button(primary, text="VERIFY LICENSE NOW", command=self.verify_now, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.verify_button.pack(side="left", ipadx=12, ipady=8)
+        tk.Button(primary, text="UPDATE CENTER", command=self.owner.open_update_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+        tk.Button(primary, text="OWNER NEWS", command=self.owner.open_owner_news, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+        tk.Button(primary, text="BUG CENTER", command=self.owner.open_support_center, bg="#58b7e8", fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+
+        secondary = tk.Frame(outer, bg=BG)
+        secondary.pack(fill="x", pady=(8, 0))
+        tk.Button(secondary, text="PUBLIC STATUS", command=self.owner.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=10, ipady=8)
+        tk.Button(secondary, text="SHOP", command=self.owner.open_shop, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+        tk.Button(secondary, text="LICENSE CENTER", command=self.owner.open_license_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+        tk.Button(secondary, text="CLOSE", command=self.destroy, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=12, ipady=8)
+        tk.Label(outer, textvariable=self.status_var, bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=720, justify="left").pack(anchor="w", pady=(10, 0))
+
+    def render_current(self):
+        self.owner.settings = load_settings()
+        self.owner.update_license_state_ui(load_license_state(self.owner.settings))
+        details = customer_center_details(self.owner.license_state, self.owner.settings)
+        for key, variable in self.value_vars.items():
+            variable.set(details.get(key, "-"))
+        has_proof = bool(self.owner.license_state.get("license_key") and self.owner.license_state.get("receipt"))
+        self.verify_button.configure(state="normal" if has_proof and not self.busy else "disabled")
+
+    def verify_now(self):
+        if self.busy:
+            return
+        self.render_current()
+        state = normalize_license_state(self.owner.license_state)
+        if not state.get("license_key") or not state.get("receipt"):
+            self.status_var.set("Open License Center to activate a license before verifying.")
+            return
+        self.busy = True
+        self.verify_button.configure(state="disabled", text="VERIFYING...")
+        self.status_var.set("Checking the license, device seat, service status, messages, and release information...")
+
+        def worker():
+            try:
+                updated = verify_license_online(state)
+                error = ""
+            except Exception as exc:
+                updated = None
+                error = str(exc)
+            self.results.put((updated, error))
+
+        threading.Thread(target=worker, name="CustomerCenterVerify", daemon=True).start()
+        self.after(75, self.poll_verify)
+
+    def poll_verify(self):
+        try:
+            updated, error = self.results.get_nowait()
+        except queue.Empty:
+            if self.busy and self.winfo_exists():
+                self.after(75, self.poll_verify)
+            return
+        self.busy = False
+        self.verify_button.configure(text="VERIFY LICENSE NOW")
+        if error:
+            self.status_var.set(f"Verification failed: {error}")
+            log_event("customer_center_verify", "api", "failed")
+            self.render_current()
+            return
+        self.owner.update_license_state_ui(updated, save=True)
+        self.owner.apply_access_state()
+        self.render_current()
+        self.status_var.set("Customer information refreshed from the API.")
+        log_event("customer_center_verify", "api", "ok")
+
+
 class USBFileLocker(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -4258,6 +4408,7 @@ class USBFileLocker(tk.Tk):
         self.update_operation = ""
         self.latest_update_manifest = None
         self.update_window = None
+        self.customer_window = None
         self.support_window = None
         self.news_window = None
         self.update_button = None
@@ -4278,7 +4429,7 @@ class USBFileLocker(tk.Tk):
         self.try_load_last_key()
         self.apply_access_state()
         self.refresh_breach_status()
-        self.schedule_license_refresh(3000)
+        self.schedule_license_refresh(INITIAL_LICENSE_REFRESH_MS)
         self.after(20000, self.periodic_breach_refresh)
         self.after(1500, self.monitor_loaded_key)
         self.after(30000, self.periodic_cloud_audit_upload)
@@ -4362,6 +4513,14 @@ class USBFileLocker(tk.Tk):
         self.news_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
         self.shop_button = tk.Button(owner_row, text="SHOP", command=self.open_shop, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.shop_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
+
+        customer_row = tk.Frame(panel, bg=PANEL)
+        customer_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(customer_row, text="CUSTOMER SELF-SERVICE", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+        self.customer_button = tk.Button(customer_row, text="CUSTOMER CENTER", command=self.open_customer_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.customer_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        self.customer_status_button = tk.Button(customer_row, text="PUBLIC STATUS", command=self.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.customer_status_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
         storage_row = tk.Frame(panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
@@ -4947,6 +5106,16 @@ class USBFileLocker(tk.Tk):
         self.register_secondary_window(self.support_window)
         self.status.set("Opened Bug Center.")
 
+    def open_customer_center(self):
+        if self.customer_window is not None and self.customer_window.winfo_exists():
+            self.customer_window.render_current()
+            self.customer_window.lift()
+            self.customer_window.focus_force()
+            return
+        self.customer_window = CustomerCenterWindow(self)
+        self.register_secondary_window(self.customer_window)
+        self.status.set("Opened Customer Center.")
+
     def open_owner_news(self):
         if self.news_window is not None and self.news_window.winfo_exists():
             self.news_window.lift()
@@ -4957,7 +5126,7 @@ class USBFileLocker(tk.Tk):
         self.status.set("Opened Owner News.")
 
     def show_new_owner_notices(self):
-        if not license_is_active(self.license_state):
+        if not license_is_active(self.license_state) and self.license_state.get("status") != "limited":
             return
         raw_seen = self.settings.get("seen_owner_announcement_ids", [])
         if not isinstance(raw_seen, list):
@@ -5070,7 +5239,7 @@ class USBFileLocker(tk.Tk):
                 self.status.set("License restored by the API. Premium controls are available again.")
                 log_event("license_sync", "api", "ok")
                 self.last_license_notice_status = "active"
-            elif current_status in {"revoked", "expired", "deactivated", "reset", "wrong_machine", "receipt_expired"}:
+            elif current_status in {"revoked", "limited", "expired", "deactivated", "reset", "wrong_machine", "receipt_expired"}:
                 reason = self.license_state.get("last_error") or f"License status changed to {current_status}."
                 self.status.set(f"API license check disabled premium controls: {reason}")
                 log_event("license_sync", "api", "failed")

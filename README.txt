@@ -18,6 +18,12 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.12.9 adds a standalone CUSTOMER HUB for every rank, earlier
+  owner announcements, draft Terms and Privacy pages, and temporary LIMITED or
+  BLOCK owner controls. LIMITED never remotely disables unlock or recovery.
+- Version 2026.07.12.8 adds CUSTOMER CENTER with privacy-safe license, seat,
+  version, service, sync, owner-message, and automatic-update status. It never
+  displays the license key, receipt, machine id, files, or paths.
 - Version 2026.07.12.7 adds a local AUTO-INSTALL VERIFIED UPDATES option.
   It installs only after the signed manifest and package hash verify, preserves
   LocalAppData, and remains disabled inside Git working folders.
