@@ -21,8 +21,10 @@ Updates:
 - Version 2026.07.13.4 adds a local aggregate health baseline, automatic drift
   warnings, key-folder coverage, attention-only filtering, and privacy-safe
   copied summaries to VAULT HEALTH CENTER. Baselines and summaries exclude
-  names, paths, key IDs, secrets, PINs, licenses, and contents. Signed updates
-  preserve the baseline with other LocalAppData.
+  names, paths, key IDs, secrets, PINs, licenses, and contents. OWNER UPDATE LAB
+  can run the exact verified candidate privately without publishing or replacing
+  the stable app. Lab runtimes cannot install updates or change file associations.
+  Signed updates preserve the baseline with other LocalAppData.
 - Version 2026.07.13.3 adds VAULT HEALTH CENTER for read-only locked-file
   structure checks, legacy review, recovery status, multi-key coverage, safe
   cancellation, and aggregate snapshot comparison. It also adds signed release

@@ -40,6 +40,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
 DESKTOP_APP_VERSION = "2026.07.13.4"
+LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -2808,6 +2809,8 @@ def launch_unlocker_process(locked_path):
 
 
 def register_locked_file_association():
+    if LAB_MODE:
+        raise PermissionError("File association changes are disabled in OWNER LAB mode.")
     import winreg
 
     prog_id = "USBFileLocker.LockedFile"
@@ -3823,18 +3826,18 @@ class UpdateCenterWindow(tk.Toplevel):
     def __init__(self, owner):
         super().__init__(owner)
         self.owner = owner
-        self.title("VaultLink Update Center")
+        self.title("VaultLink Update Center" + (" - OWNER LAB" if LAB_MODE else ""))
         self.geometry("900x760")
         self.minsize(780, 660)
         self.configure(bg=BG)
-        self.current_var = tk.StringVar(value=f"Installed version: {DESKTOP_APP_VERSION}")
+        self.current_var = tk.StringVar(value=f"Installed version: {DESKTOP_APP_VERSION}" + (" (OWNER LAB)" if LAB_MODE else ""))
         self.latest_var = tk.StringVar(value="Latest signed version: checking...")
         self.api_var = tk.StringVar(value="API compatibility: checking...")
         self.verification_var = tk.StringVar(value="Signature and package identity: not checked")
         self.preservation_var = tk.StringVar(value="Preserved: keys, licenses, settings, vault data, audit logs, and locked files")
         self.status_var = tk.StringVar(value="Ready to check for a signed update.")
-        self.auto_var = tk.BooleanVar(value=bool(owner.settings.get("auto_update_check", True)))
-        self.auto_install_var = tk.BooleanVar(value=bool(owner.settings.get("auto_install_signed_updates", False)))
+        self.auto_var = tk.BooleanVar(value=False if LAB_MODE else bool(owner.settings.get("auto_update_check", True)))
+        self.auto_install_var = tk.BooleanVar(value=False if LAB_MODE else bool(owner.settings.get("auto_install_signed_updates", False)))
         self.notes = None
         self.check_button = None
         self.install_button = None
@@ -3900,7 +3903,7 @@ class UpdateCenterWindow(tk.Toplevel):
 
         options = tk.Frame(outer, bg=BG)
         options.pack(fill="x", pady=(12, 0))
-        tk.Checkbutton(
+        auto_check = tk.Checkbutton(
             options,
             text="AUTO-CHECK DAILY",
             variable=self.auto_var,
@@ -3911,8 +3914,9 @@ class UpdateCenterWindow(tk.Toplevel):
             activebackground=BG,
             activeforeground=TEXT,
             font=("Segoe UI", 8, "bold"),
-        ).pack(side="left")
-        tk.Checkbutton(
+        )
+        auto_check.pack(side="left")
+        auto_install = tk.Checkbutton(
             options,
             text="AUTO-INSTALL VERIFIED UPDATES",
             variable=self.auto_install_var,
@@ -3923,7 +3927,12 @@ class UpdateCenterWindow(tk.Toplevel):
             activebackground=BG,
             activeforeground=TEXT,
             font=("Segoe UI", 8, "bold"),
-        ).pack(side="left", padx=(16, 0))
+        )
+        auto_install.pack(side="left", padx=(16, 0))
+        if LAB_MODE:
+            auto_check.configure(state="disabled")
+            auto_install.configure(state="disabled")
+            self.status_var.set("OWNER LAB mode: update installation is disabled for this private runtime.")
 
         controls = tk.Frame(outer, bg=BG)
         controls.pack(fill="x", pady=(14, 0))
@@ -4249,9 +4258,11 @@ class UpdateCenterWindow(tk.Toplevel):
             self.status_var.set("A newer signed update is ready. Review the notes, then install it.")
         else:
             self.status_var.set("This app is already on the latest signed version.")
-        can_install = available and not busy and not (RUNTIME_DIR / ".git").exists()
+        can_install = available and not busy and not LAB_MODE and not (RUNTIME_DIR / ".git").exists()
         self.install_button.configure(state="normal" if can_install else "disabled")
-        if available and (RUNTIME_DIR / ".git").exists():
+        if LAB_MODE:
+            self.status_var.set("OWNER LAB mode: signed releases may be inspected or downloaded, but installation is disabled.")
+        elif available and (RUNTIME_DIR / ".git").exists():
             self.status_var.set("Update found. This is a Git working folder, so use git pull instead of auto-install.")
         self.set_notes(manifest.get("notes") or [])
 
@@ -4777,7 +4788,7 @@ class USBFileLocker(tk.Tk):
     def __init__(self):
         super().__init__()
         cleanup_stale_secure_temp()
-        self.title("USB File Locker")
+        self.title("USB File Locker" + (f" - OWNER LAB {DESKTOP_APP_VERSION}" if LAB_MODE else ""))
         self.geometry("920x760")
         self.minsize(860, 720)
         self.configure(bg=BG)
@@ -4823,8 +4834,10 @@ class USBFileLocker(tk.Tk):
         self.after(20000, self.periodic_breach_refresh)
         self.after(1500, self.monitor_loaded_key)
         self.after(30000, self.periodic_cloud_audit_upload)
-        if self.settings.get("auto_update_check", True):
+        if not LAB_MODE and self.settings.get("auto_update_check", True):
             self.after(6000, self.auto_check_for_updates)
+        if LAB_MODE:
+            log_event("owner_lab_runtime_start", "release", "ok", f"version={DESKTOP_APP_VERSION}")
         completed_update = os.environ.pop("VAULTLINK_UPDATE_COMPLETED", "").strip()
         if completed_update:
             log_event("application_update_completed", "release", "ok")
@@ -4842,6 +4855,14 @@ class USBFileLocker(tk.Tk):
         outer.pack(fill="both", expand=True, padx=26, pady=22)
 
         tk.Label(outer, text="USB File Locker", bg=BG, fg=TEXT, font=("Segoe UI", 25, "bold")).pack(anchor="w")
+        if LAB_MODE:
+            tk.Label(
+                outer,
+                text=f"OWNER LAB {DESKTOP_APP_VERSION} | PRIVATE VERIFIED CANDIDATE | STABLE APP NOT REPLACED",
+                bg=BG,
+                fg=YELLOW,
+                font=("Segoe UI", 9, "bold"),
+            ).pack(anchor="w", pady=(2, 4))
         tk.Label(outer, textvariable=self.key_status, bg=BG, fg=YELLOW, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(2, 2))
         tk.Label(outer, textvariable=self.access_status, bg=BG, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 14))
         tk.Label(
@@ -5153,11 +5174,19 @@ class USBFileLocker(tk.Tk):
         )
 
     def set_auto_update_check(self, enabled):
+        if LAB_MODE:
+            self.status.set("Automatic update checks stay disabled in OWNER LAB mode.")
+            return
         self.settings["auto_update_check"] = bool(enabled)
         save_settings(self.settings)
         self.status.set("Automatic daily update checks enabled." if enabled else "Automatic update checks turned off.")
 
     def set_auto_install_updates(self, enabled):
+        if LAB_MODE:
+            self.status.set("Update installation stays disabled in OWNER LAB mode.")
+            if self.update_window is not None:
+                self.update_window.auto_install_var.set(False)
+            return
         self.settings["auto_install_signed_updates"] = bool(enabled)
         if enabled:
             self.settings["auto_update_check"] = True
@@ -5170,6 +5199,8 @@ class USBFileLocker(tk.Tk):
         log_event("auto_update_setting", "local", "ok", f"enabled={int(bool(enabled))}")
 
     def auto_check_for_updates(self):
+        if LAB_MODE:
+            return
         if not self.settings.get("auto_update_check", True):
             return
         last_check = parse_utc_text(self.settings.get("last_update_check_utc"))
@@ -5369,6 +5400,15 @@ class USBFileLocker(tk.Tk):
                 messagebox.showerror("Could not start updater", str(exc), parent=self)
 
     def install_latest_update(self, automatic=False):
+        if LAB_MODE:
+            self.status.set("Update installation is disabled in OWNER LAB mode. Build or publish from Owner Update Lab instead.")
+            if not automatic:
+                messagebox.showinfo(
+                    "Lab mode protection",
+                    "Update installation is disabled in OWNER LAB mode. The stable app remains untouched.",
+                    parent=self,
+                )
+            return
         manifest = self.latest_update_manifest
         if not manifest or not manifest.get("update_available"):
             messagebox.showinfo("No update ready", "Check for an update first.", parent=self)

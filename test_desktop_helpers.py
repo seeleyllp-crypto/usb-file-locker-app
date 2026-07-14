@@ -199,6 +199,7 @@ class DesktopHelperTests(unittest.TestCase):
 
         self.assertTrue(callable(owner_update_lab.build_and_test_candidate))
         self.assertTrue(callable(owner_update_lab.publish_verified_candidate))
+        self.assertTrue(callable(owner_update_lab.launch_verified_lab_runtime))
 
     def test_owner_candidate_verifier_returns_the_validated_manifest(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_candidate_verify_") as temp_dir:
@@ -213,6 +214,72 @@ class DesktopHelperTests(unittest.TestCase):
                 validated = owner_update_lab.verify_candidate_files(manifest_path, package_path)
             validate.assert_called_once_with(manifest, package_path)
             self.assertEqual(validated, manifest)
+
+    def test_owner_lab_runtime_extracts_verified_candidate_into_private_runtime(self):
+        with tempfile.TemporaryDirectory(prefix="vaultlink_owner_lab_runtime_") as temp_dir:
+            root = Path(temp_dir)
+            lab_dir = root / "owner_update_lab"
+            candidate_dir = lab_dir / "candidate"
+            runtime_root = lab_dir / "runtime"
+            candidate_dir.mkdir(parents=True)
+            manifest_path = candidate_dir / "windows-manifest.json"
+            package_path = candidate_dir / "VaultLink-Windows-test.zip"
+            manifest = {"version": "9999.2", "preserves_local_app_data": True}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with zipfile.ZipFile(package_path, "w") as archive:
+                archive.writestr("usb_file_locker.py", "print('verified lab runtime')")
+                archive.writestr("README.txt", "safe package")
+            digest = hashlib.sha256(package_path.read_bytes()).hexdigest()
+            report = {
+                "manifest_filename": manifest_path.name,
+                "package_filename": package_path.name,
+                "sha256": digest,
+            }
+            with mock.patch.object(owner_update_lab, "LAB_DIR", lab_dir), \
+                    mock.patch.object(owner_update_lab, "CANDIDATE_DIR", candidate_dir), \
+                    mock.patch.object(owner_update_lab, "LAB_RUNTIME_DIR", runtime_root), \
+                    mock.patch.object(owner_update_lab, "verify_candidate_files", return_value=manifest):
+                runtime = owner_update_lab.prepare_verified_lab_runtime(report)
+            self.assertEqual(runtime["version"], "9999.2")
+            self.assertEqual(runtime["sha256"], digest)
+            self.assertEqual(runtime["extracted_files"], 2)
+            self.assertTrue(runtime["entrypoint"].is_file())
+            marker = json.loads((runtime["runtime_dir"] / ".vaultlink-lab-runtime.json").read_text(encoding="utf-8"))
+            self.assertEqual(marker["runtime_type"], "vaultlink-owner-lab")
+            self.assertFalse(marker["published"])
+            self.assertNotIn(str(root).lower(), json.dumps(marker).lower())
+
+    def test_owner_lab_launch_sets_private_mode_without_publishing(self):
+        runtime_dir = Path("C:/safe-owner-lab/runtime")
+        runtime = {
+            "version": "9999.2",
+            "sha256": "a" * 64,
+            "runtime_dir": runtime_dir,
+            "entrypoint": runtime_dir / "usb_file_locker.py",
+            "extracted_files": 32,
+        }
+        process = SimpleNamespace(pid=4242)
+        with mock.patch.object(owner_update_lab.release_builder, "authorize_owner_release"), \
+                mock.patch.object(owner_update_lab, "validate_repo", side_effect=lambda path, _marker: Path(path)), \
+                mock.patch.object(owner_update_lab, "load_candidate_report", return_value={"status": "verified"}), \
+                mock.patch.object(owner_update_lab, "candidate_is_current", return_value=(True, "ready")), \
+                mock.patch.object(owner_update_lab, "prepare_verified_lab_runtime", return_value=runtime), \
+                mock.patch.object(owner_update_lab.locker, "pythonw_path", return_value=Path("C:/Python/pythonw.exe")), \
+                mock.patch.object(owner_update_lab.subprocess, "Popen", return_value=process) as popen, \
+                mock.patch.object(owner_update_lab, "append_lab_history") as history:
+            result = owner_update_lab.launch_verified_lab_runtime(
+                "C:/app",
+                "C:/api",
+                "D:/owner.key",
+                "2026.07.12.9",
+                "notes",
+            )
+        self.assertEqual(result["process_id"], 4242)
+        environment = popen.call_args.kwargs["env"]
+        self.assertEqual(environment["VAULTLINK_LAB_MODE"], "1")
+        self.assertEqual(environment["VAULTLINK_LAB_RUNTIME_VERSION"], "9999.2")
+        self.assertEqual(popen.call_args.kwargs["cwd"], str(runtime_dir))
+        history.assert_called_once_with("lab_runtime_launch", "ok", {"version": "9999.2", "sha256": "a" * 64})
 
     def test_owner_release_history_is_hash_chained_and_privacy_safe(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_history_") as temp_dir:

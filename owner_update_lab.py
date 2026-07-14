@@ -36,6 +36,7 @@ BLUE = "#58b7e8"
 SOURCE_DIR = Path(__file__).resolve().parent
 LAB_DIR = locker.APP_DIR / "owner_update_lab"
 CANDIDATE_DIR = LAB_DIR / "candidate"
+LAB_RUNTIME_DIR = LAB_DIR / "runtime"
 REPORT_FILE = LAB_DIR / "verified_candidate.json"
 PUBLISH_REPORT_FILE = LAB_DIR / "last_publish.json"
 PREFLIGHT_REPORT_FILE = LAB_DIR / "last_preflight.json"
@@ -47,7 +48,7 @@ PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git
 DEFAULT_NOTES = [
     "Vault Health Center adds local aggregate baselines, automatic drift warnings, attention filtering, and key-folder coverage.",
     "Customers can copy, export, and compare safe health summaries without filenames, paths, key IDs, secrets, or contents.",
-    "Private owner tools remain excluded from customer update packages.",
+    "Owner Update Lab can run the verified candidate privately while owner tools remain excluded from customer packages.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
@@ -305,6 +306,107 @@ def verify_candidate_files(manifest_path, package_path):
     if blocked:
         raise ValueError("The candidate package contains private app-data files.")
     return manifest
+
+
+def safe_lab_runtime_root():
+    LAB_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_lab = LAB_DIR.resolve()
+    resolved_runtime = LAB_RUNTIME_DIR.resolve()
+    if resolved_runtime.parent != resolved_lab:
+        raise ValueError("Lab runtime path is outside the private Owner Update Lab folder.")
+    resolved_runtime.mkdir(parents=True, exist_ok=True)
+    return resolved_runtime
+
+
+def cleanup_old_lab_runtimes(runtime_root, keep_path, keep_count=4):
+    runtime_root = Path(runtime_root).resolve()
+    keep_path = Path(keep_path).resolve()
+    candidates = []
+    for child in runtime_root.iterdir():
+        try:
+            resolved = child.resolve()
+            if child.is_dir() and not child.is_symlink() and resolved.parent == runtime_root and resolved != keep_path:
+                candidates.append((child.stat().st_mtime, resolved))
+        except OSError:
+            continue
+    candidates.sort(reverse=True)
+    for _modified, child in candidates[max(0, keep_count - 1):]:
+        try:
+            shutil.rmtree(child)
+        except OSError:
+            pass
+
+
+def prepare_verified_lab_runtime(report=None):
+    report = report or load_candidate_report()
+    info = candidate_package_info(report)
+    expected_hash = str((report or {}).get("sha256", "")).lower()
+    if expected_hash and info["sha256"] != expected_hash:
+        raise ValueError("The verified candidate report and package SHA-256 do not match.")
+    version_piece = re.sub(r"[^0-9A-Za-z._-]", "_", str(info["version"]))[:50] or "candidate"
+    run_piece = f"{version_piece}-{info['sha256'][:12]}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+    runtime_root = safe_lab_runtime_root()
+    runtime_dir = runtime_root / run_piece
+    if runtime_dir.parent.resolve() != runtime_root:
+        raise ValueError("Refusing to create a lab runtime outside its private folder.")
+    package_path = CANDIDATE_DIR / info["package_filename"]
+    try:
+        extracted_files = vaultlink_updater.extract_verified_package(package_path, runtime_dir)
+        entrypoint = runtime_dir / "usb_file_locker.py"
+        if not entrypoint.is_file():
+            raise ValueError("The verified candidate does not contain usb_file_locker.py.")
+        marker = {
+            "schema_version": 1,
+            "runtime_type": "vaultlink-owner-lab",
+            "version": info["version"],
+            "package_sha256": info["sha256"],
+            "prepared_at_utc": locker.utc_now_text(),
+            "shared_user_data": True,
+            "published": False,
+        }
+        locker.write_text_atomic(runtime_dir / ".vaultlink-lab-runtime.json", json.dumps(marker, indent=2))
+    except Exception:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        raise
+    cleanup_old_lab_runtimes(runtime_root, runtime_dir)
+    return {
+        "version": info["version"],
+        "sha256": info["sha256"],
+        "runtime_dir": runtime_dir,
+        "entrypoint": runtime_dir / "usb_file_locker.py",
+        "extracted_files": extracted_files,
+    }
+
+
+def launch_verified_lab_runtime(app_repo, api_repo, owner_key_path, minimum_supported, notes):
+    release_builder.authorize_owner_release(owner_key_path)
+    app_repo = validate_repo(app_repo, "usb_file_locker.py")
+    api_repo = validate_repo(api_repo, "main.py")
+    report = load_candidate_report()
+    current, message = candidate_is_current(report, app_repo, api_repo, minimum_supported, notes)
+    if not current:
+        raise ValueError(message)
+    runtime = prepare_verified_lab_runtime(report)
+    if getattr(sys, "frozen", False):
+        raise ValueError("Owner lab runtime currently requires the transparent Python app folder.")
+    environment = os.environ.copy()
+    environment["VAULTLINK_LAB_MODE"] = "1"
+    environment["VAULTLINK_LAB_RUNTIME_VERSION"] = str(runtime["version"])
+    environment["VAULTLINK_LAB_PACKAGE_SHA256"] = str(runtime["sha256"])
+    process = subprocess.Popen(
+        [str(locker.pythonw_path()), str(runtime["entrypoint"])],
+        cwd=str(runtime["runtime_dir"]),
+        env=environment,
+        close_fds=True,
+        creationflags=command_creation_flags(),
+    )
+    append_lab_history("lab_runtime_launch", "ok", {"version": runtime["version"], "sha256": runtime["sha256"]})
+    return {
+        "version": runtime["version"],
+        "sha256": runtime["sha256"],
+        "extracted_files": runtime["extracted_files"],
+        "process_id": process.pid,
+    }
 
 
 def safe_reset_candidate_dir():
@@ -814,6 +916,8 @@ class OwnerUpdateLab(tk.Tk):
         self.copy_hash_button = tk.Button(secondary, text="COPY SHA-256", command=self.copy_candidate_hash, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.copy_hash_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         tk.Button(secondary, text="RELEASE HISTORY", command=self.show_release_history, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+        self.run_lab_button = tk.Button(secondary, text="RUN LAB VERSION", command=self.start_lab_runtime, bg=GREEN, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.run_lab_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
 
         links = tk.Frame(panel, bg=PANEL)
         links.pack(fill="x", padx=18, pady=(0, 8))
@@ -894,6 +998,7 @@ class OwnerUpdateLab(tk.Tk):
         self.package_button.configure(state="normal" if package_ready and active else "disabled")
         self.copy_hash_button.configure(state="normal" if report and report.get("sha256") and active else "disabled")
         self.export_button.configure(state="normal" if (report or preflight or HISTORY_FILE.is_file()) and active else "disabled")
+        self.run_lab_button.configure(state="normal" if current and active and owner_ready else "disabled")
         self.candidate_var.set(f"{owner_text}  {candidate_text}")
 
     def set_busy(self, enabled, status):
@@ -904,6 +1009,7 @@ class OwnerUpdateLab(tk.Tk):
         self.package_button.configure(state="disabled" if enabled else self.package_button.cget("state"))
         self.export_button.configure(state="disabled" if enabled else self.export_button.cget("state"))
         self.copy_hash_button.configure(state="disabled" if enabled else self.copy_hash_button.cget("state"))
+        self.run_lab_button.configure(state="disabled")
         self.status_var.set(status)
         if not enabled:
             self.refresh_candidate_state()
@@ -936,6 +1042,7 @@ class OwnerUpdateLab(tk.Tk):
             history_action = {
                 "Owner preflight": "owner_preflight",
                 "Candidate test": "candidate_test",
+                "Lab runtime": "lab_runtime_launch",
                 "Verified publish": "release_publish",
             }.get(action, "owner_action")
             try:
@@ -959,6 +1066,14 @@ class OwnerUpdateLab(tk.Tk):
             self.append_log(f"Candidate {result['version']} passed {result['test_count']} tests, signature validation, and Defender scans.")
             self.set_busy(False, "Candidate verified locally. The Publish button is now available.")
             messagebox.showinfo("Candidate verified", "The signed candidate passed compile checks, tests, package validation, and Microsoft Defender. It is still private.", parent=self)
+        elif action == "Lab runtime":
+            self.append_log(f"Started private Owner Lab {result['version']} from the verified package ({result['extracted_files']} files).")
+            self.set_busy(False, "Private lab version is running. The stable app was not replaced.")
+            messagebox.showinfo(
+                "Lab version running",
+                f"VaultLink {result['version']} is running in OWNER LAB mode.\n\nThe stable app was not replaced and nothing was published.",
+                parent=self,
+            )
         elif action == "Verified publish":
             self.append_log(f"Published {result['version']} and verified the live download SHA-256.")
             self.set_busy(False, "Update published and live download verified.")
@@ -986,6 +1101,18 @@ class OwnerUpdateLab(tk.Tk):
         self.run_background(
             "Candidate test",
             lambda: build_and_test_candidate(
+                self.app_repo_var.get(),
+                self.api_repo_var.get(),
+                self.owner_key_var.get(),
+                self.minimum_var.get().strip(),
+                self.notes_value(),
+            ),
+        )
+
+    def start_lab_runtime(self):
+        self.run_background(
+            "Lab runtime",
+            lambda: launch_verified_lab_runtime(
                 self.app_repo_var.get(),
                 self.api_repo_var.get(),
                 self.owner_key_var.get(),
