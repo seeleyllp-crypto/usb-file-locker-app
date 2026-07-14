@@ -18,6 +18,17 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.4 adds TRUST & RECOVERY CENTER, an explainable local
+  100-point report for Defender, audit integrity, USB/key readiness, the separate
+  Local Control PIN, license state, signed updates, public API trust, recovery
+  tests, and app-data backups. Its safe JSON export excludes license keys,
+  receipts, identities, paths, PINs, USB secrets, filenames, and file contents.
+- API 0.27.0 adds public TRUST CENTER and owner-only TRUST OPERATIONS pages for
+  scored service, release, storage, encryption, audit, recovery, and privacy
+  checks. Public output has no customer records; owner output is aggregate-only.
+- LOCAL CONTROL CENTER now has 13 approved apps, category filters, uptime and
+  session metrics, per-app success/failure totals, stronger browser headers, and
+  a CSRF-protected privacy-safe JSON report. APPS HUB now has 12 compact tools.
 - Version 2026.07.14.3 expands LOCAL CONTROL CENTER into a same-PC dashboard
   for 12 approved customer apps. It groups tools by task, checks whether each
   app is available, shows coarse license/update/service/session status, supports

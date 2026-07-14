@@ -46,12 +46,12 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Control Dashboard now groups twelve approved customer apps by core, recovery, private-work, privacy, and monitoring categories with live package-availability checks.",
-    "The dashboard shows coarse license, plan, desktop, API, service, update, runtime, USB, and session status without exposing keys, receipts, identities, paths, PINs, or file contents.",
-    "Customers can refresh status, explicitly extend a session, clear the bounded in-memory launch history, copy the loopback URL, or lock the browser session from the desktop window.",
-    "Removing or changing the selected USB automatically invalidates the browser control session; every approved launch still rechecks USB presence and CSRF authorization.",
-    "Launch history keeps at most twenty action IDs, labels, UTC timestamps, and success states in server memory and disappears when the local server stops.",
-    "The controller remains bound only to 127.0.0.1 and cannot choose files, capture encryption PINs, unlock data, accept remote connections, or execute arbitrary commands.",
+    "New Trust & Recovery Center combines Defender, audit-chain, USB, license, signed-update, API trust, backup, and recovery readiness into an explainable 100-point local report.",
+    "Public Trust Center and owner Trust Operations add scored release, service, storage, audit, encryption, recovery, and privacy-boundary checks through API 0.27.0.",
+    "Local Control now offers thirteen approved apps, task-category filters, uptime and session metrics, per-app success and failure totals, and a CSRF-protected safe JSON report.",
+    "Local Control adds stricter browser isolation and permissions headers while remaining bound only to 127.0.0.1 with USB presence, a separate scrypt control PIN, and rate limits.",
+    "Apps Hub is reorganized into a compact twelve-app grid with direct access to Trust & Recovery Center and Customer Workspace.",
+    "Trust reports whitelist remote fields and exclude license keys, receipts, identities, paths, PINs, USB secrets, filenames, and file contents.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

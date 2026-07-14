@@ -40,6 +40,12 @@ CONTROL_ACTIONS = {
         "category": "Core",
         "summary": "Review privacy-safe account, update, and recovery guidance.",
     },
+    "trust_recovery": {
+        "label": "Trust & Recovery Center",
+        "script": "trust_recovery_center.py",
+        "category": "Core",
+        "summary": "Review Defender, audit, USB, signed-update, and public trust posture locally.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",
@@ -235,6 +241,17 @@ def control_action_catalog():
     ]
 
 
+def normalized_category_filter(value, apps=None):
+    requested = " ".join(str(value or "").split())[:60]
+    if not requested or requested.lower() == "all":
+        return ""
+    categories = {str(item.get("category", "")) for item in (apps or control_action_catalog())}
+    for category in categories:
+        if category.lower() == requested.lower():
+            return category
+    return ""
+
+
 def safe_dashboard_text(value, fallback="Unknown"):
     text = " ".join(str(value or "").split())[:160]
     lowered = text.lower()
@@ -269,7 +286,12 @@ class ControlState:
         self.session_expires_at = 0.0
         self.failed_attempts = []
         self.lockout_until = 0.0
+        self.started_at = time.monotonic()
         self.launch_history = []
+        self.launch_counts = {
+            action_id: {"success": 0, "failure": 0}
+            for action_id in CONTROL_ACTIONS
+        }
         self.lock = threading.RLock()
 
     def usb_status(self):
@@ -305,6 +327,7 @@ class ControlState:
             self.session_token = secrets.token_urlsafe(32)
             self.session_csrf = secrets.token_urlsafe(24)
             self.session_expires_at = now + SESSION_SECONDS
+            self.login_csrf = secrets.token_urlsafe(24)
             self.failed_attempts.clear()
             self.lockout_until = 0.0
             locker.log_event("local_control_login", "loopback", "ok")
@@ -354,6 +377,8 @@ class ControlState:
                     "result": "ok" if result == "ok" else "failed",
                 }
             )
+            counts = self.launch_counts.setdefault(str(action_id), {"success": 0, "failure": 0})
+            counts["success" if result == "ok" else "failure"] += 1
             self.launch_history = self.launch_history[-20:]
 
     def extend_session(self, token, csrf):
@@ -374,21 +399,93 @@ class ControlState:
             if not hmac.compare_digest(str(csrf or ""), self.session_csrf):
                 raise PermissionError("The local control request could not be verified.")
             self.launch_history.clear()
+            self.launch_counts = {
+                action_id: {"success": 0, "failure": 0}
+                for action_id in CONTROL_ACTIONS
+            }
 
     def dashboard_snapshot(self):
         with self.lock:
-            apps = control_action_catalog()
+            apps = []
+            for item in control_action_catalog():
+                counts = self.launch_counts.get(item["id"], {})
+                apps.append(
+                    {
+                        **item,
+                        "successful_launches": int(counts.get("success", 0) or 0),
+                        "failed_launches": int(counts.get("failure", 0) or 0),
+                    }
+                )
             remaining = max(0, int(self.session_expires_at - time.monotonic()))
+            successful = sum(item["successful_launches"] for item in apps)
+            failed = sum(item["failed_launches"] for item in apps)
+            category_counts = {}
+            for item in apps:
+                category_counts[item["category"]] = category_counts.get(item["category"], 0) + 1
             return {
                 "version": locker.DESKTOP_APP_VERSION,
                 "runtime": "Owner lab" if locker.LAB_MODE else "Stable app",
                 "remaining_seconds": remaining,
                 "remaining_minutes": (remaining + 59) // 60,
+                "server_uptime_seconds": max(0, int(time.monotonic() - self.started_at)),
                 "apps": apps,
                 "available_apps": sum(bool(item["available"]) for item in apps),
+                "category_counts": category_counts,
+                "successful_launches": successful,
+                "failed_launches": failed,
+                "total_launches": successful + failed,
                 "customer": local_customer_status(),
                 "history": list(reversed(self.launch_history)),
                 "history_limit": 20,
+            }
+
+    def safe_report(self, token, csrf):
+        with self.lock:
+            if not self.is_authorized(token):
+                raise PermissionError("The local control session expired.")
+            if not hmac.compare_digest(str(csrf or ""), self.session_csrf):
+                raise PermissionError("The local control request could not be verified.")
+            usb_ok, usb_message = self.usb_status()
+            if not usb_ok:
+                raise PermissionError(usb_message)
+            snapshot = self.dashboard_snapshot()
+            return {
+                "schema_version": 1,
+                "report_type": "VaultLink Local Control Privacy-Safe Report",
+                "exported_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "version": snapshot["version"],
+                "runtime": snapshot["runtime"],
+                "session": {
+                    "remaining_seconds": snapshot["remaining_seconds"],
+                    "server_uptime_seconds": snapshot["server_uptime_seconds"],
+                    "usb_verified": True,
+                    "apps_available": snapshot["available_apps"],
+                    "apps_total": len(snapshot["apps"]),
+                    "successful_launches": snapshot["successful_launches"],
+                    "failed_launches": snapshot["failed_launches"],
+                },
+                "coarse_customer_status": snapshot["customer"],
+                "categories": dict(snapshot["category_counts"]),
+                "apps": [
+                    {
+                        "id": item["id"],
+                        "label": item["label"],
+                        "category": item["category"],
+                        "available": item["available"],
+                        "successful_launches": item["successful_launches"],
+                        "failed_launches": item["failed_launches"],
+                    }
+                    for item in snapshot["apps"]
+                ],
+                "recent_launches": snapshot["history"],
+                "privacy_notice": (
+                    "This report excludes USB paths, USB key bytes, key ids, control PINs, PIN verifiers, session tokens, "
+                    "CSRF tokens, license keys, receipts, customer identity, file names, full paths, and file contents."
+                ),
+                "limitations": [
+                    "This report covers only the local app launcher session; it is not an antivirus scan or security certification.",
+                    "The Local Control website can launch only its fixed approved apps and cannot lock, unlock, choose, read, or upload files.",
+                ],
             }
 
     def lock_session(self):
@@ -396,6 +493,7 @@ class ControlState:
             self.session_token = ""
             self.session_csrf = ""
             self.session_expires_at = 0.0
+            self.login_csrf = secrets.token_urlsafe(24)
 
 
 class LocalControlHTTPServer(ThreadingHTTPServer):
@@ -408,7 +506,7 @@ class LocalControlHTTPServer(ThreadingHTTPServer):
 
 
 class LocalControlHandler(BaseHTTPRequestHandler):
-    server_version = "VaultLinkLocalControl/2"
+    server_version = "VaultLinkLocalControl/3"
 
     def log_message(self, _format, *_args):
         return
@@ -440,6 +538,9 @@ class LocalControlHandler(BaseHTTPRequestHandler):
     def send_security_headers(self):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
@@ -455,6 +556,16 @@ class LocalControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def send_json_download(self, payload, filename):
+        encoded = json.dumps(payload, indent=2, ensure_ascii=True).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_security_headers()
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def read_form(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -466,7 +577,7 @@ class LocalControlHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.parse_qs(raw, keep_blank_values=True, max_num_fields=8)
         return {key: values[-1] for key, values in parsed.items()}
 
-    def render(self, message="", tone="", token_override=None):
+    def render(self, message="", tone="", token_override=None, category_filter=""):
         token = self.session_cookie() if token_override is None else token_override
         authenticated = self.server.state.is_authorized(token)
         usb_ok, usb_message = self.server.state.usb_status()
@@ -478,20 +589,31 @@ class LocalControlHandler(BaseHTTPRequestHandler):
         if authenticated:
             snapshot = self.server.state.dashboard_snapshot()
             csrf = html.escape(self.server.state.session_csrf, quote=True)
+            selected_category = normalized_category_filter(category_filter, snapshot["apps"])
             categories = {}
             for item in snapshot["apps"]:
                 categories.setdefault(item["category"], []).append(item)
+            filter_links = ['<a class="active" href="/">ALL</a>' if not selected_category else '<a href="/">ALL</a>']
+            for category in categories:
+                encoded = urllib.parse.quote(category, safe="")
+                active = ' class="active"' if category == selected_category else ""
+                filter_links.append(
+                    f'<a{active} href="/?category={encoded}">{html.escape(category)} ({len(categories[category])})</a>'
+                )
             category_sections = []
             for category, items in categories.items():
+                if selected_category and category != selected_category:
+                    continue
                 cards = []
                 for item in items:
                     available = bool(item["available"])
                     button_text = f"OPEN {item['label'].upper()}" if available else "APP NOT AVAILABLE"
+                    launch_text = f"{item['successful_launches']} OPENED | {item['failed_launches']} FAILED"
                     cards.append(
                         '<form method="post" action="/action" class="tool">'
                         f'<input type="hidden" name="csrf" value="{csrf}">'
                         f'<input type="hidden" name="action" value="{html.escape(item["id"], quote=True)}">'
-                        f'<div class="eyebrow {"good" if available else "bad"}">{"AVAILABLE" if available else "MISSING"}</div>'
+                        f'<div class="tool-meta"><span class="eyebrow {"good" if available else "bad"}">{"AVAILABLE" if available else "MISSING"}</span><span>{html.escape(launch_text)}</span></div>'
                         f'<h3>{html.escape(item["label"])}</h3>'
                         f'<p>{html.escape(item["summary"])}</p>'
                         f'<button type="submit" {"" if available else "disabled"}>{html.escape(button_text)}</button>'
@@ -528,14 +650,18 @@ class LocalControlHandler(BaseHTTPRequestHandler):
                 '<div class="metrics">'
                 f'<div class="metric"><span>Apps available</span><strong>{snapshot["available_apps"]} / {len(snapshot["apps"])}</strong></div>'
                 f'<div class="metric"><span>Session remaining</span><strong>{snapshot["remaining_seconds"]} sec</strong></div>'
+                f'<div class="metric"><span>Launches</span><strong>{snapshot["successful_launches"]} ok / {snapshot["failed_launches"]} failed</strong></div>'
+                f'<div class="metric"><span>Server uptime</span><strong>{snapshot["server_uptime_seconds"]} sec</strong></div>'
                 f'<div class="metric"><span>Version</span><strong>{html.escape(snapshot["version"])}</strong></div>'
                 f'<div class="metric"><span>Runtime</span><strong>{html.escape(snapshot["runtime"])}</strong></div>'
                 '</div><div class="toolbar">'
                 '<form method="get" action="/"><button type="submit">REFRESH STATUS</button></form>'
                 f'<form method="post" action="/extend"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">EXTEND 15 MIN</button></form>'
+                f'<form method="post" action="/export-report"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">EXPORT SAFE REPORT</button></form>'
                 f'<form method="post" action="/clear-history"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">CLEAR IN-MEMORY HISTORY</button></form>'
                 f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">LOCK CONTROL SESSION</button></form>'
-                '</div><section><div class="section-head"><h2>Local Status</h2><span>Coarse values only; no key, receipt, identity, or path.</span></div>'
+                f'</div><nav class="filters" aria-label="App categories">{"".join(filter_links)}</nav>'
+                '<section><div class="section-head"><h2>Local Status</h2><span>Coarse values only; no key, receipt, identity, or path.</span></div>'
                 f'<div class="status-grid">{status_cards}</div></section>'
                 + "".join(category_sections)
                 + '<section><div class="section-head"><h2>Recent Launches</h2><span>Last 20 in memory; erased when the server stops.</span></div>'
@@ -558,8 +684,8 @@ class LocalControlHandler(BaseHTTPRequestHandler):
 <title>VaultLink Local Control</title><style>
 :root{{--bg:#0d1014;--band:#151a20;--panel:#1c222a;--field:#080b0e;--line:#394550;--text:#f4f7f8;--muted:#aab5bf;--green:#62dc86;--blue:#69bee9;--yellow:#ffd166;--red:#ff7b72}}
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;min-width:320px;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",Arial,sans-serif}}
-header,footer{{background:#11161b;border-color:var(--line);border-style:solid;border-width:0 0 1px}}header>div,main,footer>div{{width:min(980px,calc(100% - 32px));margin:auto}}header>div{{min-height:70px;display:flex;align-items:center;justify-content:space-between;gap:12px}}header span,footer{{color:var(--muted)}}main{{padding:28px 0 44px}}h1{{font-size:26px;margin:0}}h2{{font-size:18px;margin:0 0 8px}}.notice{{min-height:24px;margin-bottom:12px;color:var(--muted)}}.notice.good{{color:var(--green)}}.notice.bad{{color:var(--red)}}
-.login,.status-band{{padding:18px;border:1px solid var(--line);background:var(--band)}}.login{{max-width:560px}}label{{display:block;margin:14px 0 6px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}}input{{width:100%;height:44px;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:var(--field);color:var(--text);font:inherit}}button{{min-height:42px;padding:0 14px;border:0;border-radius:5px;background:var(--blue);color:#071118;font-weight:800;cursor:pointer}}button:disabled{{cursor:not-allowed;background:#252b32;color:#7e8993}}button.danger{{background:var(--red);color:#160606}}.login button{{margin-top:12px}}.status-band{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px}}.status-band strong{{color:var(--green)}}.status-band span{{color:var(--muted)}}.metrics{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);background:var(--band)}}.metric{{padding:14px;border-right:1px solid var(--line)}}.metric:last-child{{border-right:0}}.metric span,.status-item span{{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}}.metric strong{{display:block;margin-top:4px;font-size:17px;overflow-wrap:anywhere}}.toolbar{{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}}section{{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:10px}}.section-head span{{color:var(--muted);text-align:right}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}.tool{{padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}}.tool h3{{margin:4px 0 0;font-size:15px}}.tool button{{width:100%;margin-top:12px;background:#29333d;color:var(--text)}}.tool p{{min-height:42px;margin:7px 0 0;color:var(--muted)}}.eyebrow{{font-size:10px;font-weight:800}}.eyebrow.good,.result.ok{{color:var(--green)}}.eyebrow.bad,.result.failed{{color:var(--red)}}.status-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}}.status-item{{min-width:0;padding:13px;border-left:3px solid var(--blue);background:var(--panel)}}.status-item strong{{display:block;margin-top:4px;overflow-wrap:anywhere}}.history{{display:grid;gap:6px}}.history-row{{display:grid;grid-template-columns:190px minmax(0,1fr) auto;gap:12px;padding:10px 12px;background:var(--panel)}}.history-row span:first-child{{color:var(--muted);font-family:Consolas,monospace}}.result{{font-size:11px;font-weight:800}}.empty{{padding:18px;border:1px dashed var(--line);color:var(--muted);text-align:center}}.privacy p{{margin:0;color:var(--muted)}}footer{{border-width:1px 0 0}}footer>div{{padding:20px 0 24px}}@media(max-width:760px){{.metrics{{grid-template-columns:repeat(2,1fr)}}.status-grid{{grid-template-columns:1fr 1fr}}.history-row{{grid-template-columns:1fr auto}}.history-row span:first-child{{grid-column:1 / -1}}}}@media(max-width:560px){{header>div,.section-head{{align-items:flex-start;flex-direction:column;padding:14px 0}}.section-head span{{text-align:left}}.metrics,.status-grid{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--line)}}}}
+header,footer{{background:#11161b;border-color:var(--line);border-style:solid;border-width:0 0 1px}}header>div,main,footer>div{{width:min(1180px,calc(100% - 32px));margin:auto}}header>div{{min-height:70px;display:flex;align-items:center;justify-content:space-between;gap:12px}}header span,footer{{color:var(--muted)}}main{{padding:28px 0 44px}}h1{{font-size:26px;margin:0}}h2{{font-size:18px;margin:0 0 8px}}.notice{{min-height:24px;margin-bottom:12px;color:var(--muted)}}.notice.good{{color:var(--green)}}.notice.bad{{color:var(--red)}}
+.login,.status-band{{padding:18px;border:1px solid var(--line);background:var(--band)}}.login{{max-width:560px}}label{{display:block;margin:14px 0 6px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}}input{{width:100%;height:44px;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:var(--field);color:var(--text);font:inherit}}button{{min-height:42px;padding:0 14px;border:0;border-radius:5px;background:var(--blue);color:#071118;font-weight:800;cursor:pointer}}button:disabled{{cursor:not-allowed;background:#252b32;color:#7e8993}}button.danger{{background:var(--red);color:#160606}}.login button{{margin-top:12px}}.status-band{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px}}.status-band strong{{color:var(--green)}}.status-band span{{color:var(--muted)}}.metrics{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border:1px solid var(--line);background:var(--band)}}.metric{{padding:14px;border-right:1px solid var(--line)}}.metric:last-child{{border-right:0}}.metric span,.status-item span{{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}}.metric strong{{display:block;margin-top:4px;font-size:16px;overflow-wrap:anywhere}}.toolbar{{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}}.filters{{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}}.filters a{{display:inline-flex;min-height:34px;align-items:center;padding:0 10px;border:1px solid var(--line);border-radius:5px;color:var(--text);text-decoration:none;font-weight:800}}.filters a.active{{border-color:var(--blue);background:var(--blue);color:#071118}}section{{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:10px}}.section-head span{{color:var(--muted);text-align:right}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}.tool{{padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}}.tool h3{{margin:4px 0 0;font-size:15px}}.tool button{{width:100%;margin-top:12px;background:#29333d;color:var(--text)}}.tool p{{min-height:42px;margin:7px 0 0;color:var(--muted)}}.tool-meta{{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:9px;font-weight:800}}.eyebrow{{font-size:10px;font-weight:800}}.eyebrow.good,.result.ok{{color:var(--green)}}.eyebrow.bad,.result.failed{{color:var(--red)}}.status-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}}.status-item{{min-width:0;padding:13px;border-left:3px solid var(--blue);background:var(--panel)}}.status-item strong{{display:block;margin-top:4px;overflow-wrap:anywhere}}.history{{display:grid;gap:6px}}.history-row{{display:grid;grid-template-columns:190px minmax(0,1fr) auto;gap:12px;padding:10px 12px;background:var(--panel)}}.history-row span:first-child{{color:var(--muted);font-family:Consolas,monospace}}.result{{font-size:11px;font-weight:800}}.empty{{padding:18px;border:1px dashed var(--line);color:var(--muted);text-align:center}}.privacy p{{margin:0;color:var(--muted)}}footer{{border-width:1px 0 0}}footer>div{{padding:20px 0 24px}}@media(max-width:1000px){{.metrics{{grid-template-columns:repeat(3,1fr)}}}}@media(max-width:760px){{.metrics{{grid-template-columns:repeat(2,1fr)}}.status-grid{{grid-template-columns:1fr 1fr}}.history-row{{grid-template-columns:1fr auto}}.history-row span:first-child{{grid-column:1 / -1}}}}@media(max-width:560px){{header>div,.section-head{{align-items:flex-start;flex-direction:column;padding:14px 0}}.section-head span{{text-align:left}}.metrics,.status-grid{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--line)}}}}
 </style></head><body><header><div><h1>VaultLink Local Control</h1><span>LOOPBACK ONLY | SAME PC</span></div></header><main><div class="notice {tone_class}">{message_html}</div>{content}</main><footer><div>Version {html.escape(locker.DESKTOP_APP_VERSION)}. This page cannot receive remote connections, upload secrets, or lock and unlock files itself.</div></footer></body></html>'''
         return page
 
@@ -567,7 +693,8 @@ header,footer{{background:#11161b;border-color:var(--line);border-style:solid;bo
         if not self.allowed_host():
             self.send_page("Invalid local host.", status=400)
             return
-        path = urllib.parse.urlsplit(self.path).path
+        parsed_url = urllib.parse.urlsplit(self.path)
+        path = parsed_url.path
         if path == "/favicon.ico":
             self.send_response(204)
             self.send_security_headers()
@@ -576,7 +703,9 @@ header,footer{{background:#11161b;border-color:var(--line);border-style:solid;bo
         if path != "/":
             self.send_page("Not found.", status=404)
             return
-        self.send_page(self.render())
+        query = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=False, max_num_fields=4)
+        category = str((query.get("category") or [""])[0])
+        self.send_page(self.render(category_filter=category))
 
     def do_POST(self):
         if not self.allowed_host() or not self.allowed_origin():
@@ -630,6 +759,15 @@ header,footer{{background:#11161b;border-color:var(--line);border-style:solid;bo
                 self.server.state.clear_history(token, form.get("csrf"))
                 self.send_page(self.render("In-memory launch history cleared.", "good"))
             except PermissionError as exc:
+                self.send_page(self.render(str(exc), "bad"), status=403)
+            return
+        if path == "/export-report":
+            try:
+                report = self.server.state.safe_report(token, form.get("csrf"))
+                locker.log_event("local_control_report_export", "loopback", "ok")
+                self.send_json_download(report, "vaultlink-local-control-report.json")
+            except PermissionError as exc:
+                locker.log_event("local_control_report_export", "loopback", "failed")
                 self.send_page(self.render(str(exc), "bad"), status=403)
             return
         if path == "/action":
@@ -705,7 +843,7 @@ class LocalControlCenter(tk.Tk):
         self.copy_button.pack(side="left", ipadx=10, ipady=6)
         self.lock_session_button = tk.Button(session_buttons, text="LOCK BROWSER SESSION", command=self.lock_website_session, state="disabled", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.lock_session_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
-        tk.Label(session_buttons, text=f"{len(CONTROL_ACTIONS)} approved apps | local status | 20-entry memory history", bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="right")
+        tk.Label(session_buttons, text=f"{len(CONTROL_ACTIONS)} approved apps | safe report | 20-entry memory history", bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="right")
         tk.Label(panel, textvariable=self.status, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 9), wraplength=560, justify="left").pack(anchor="w", padx=18, pady=(8, 18))
 
     def choose_key(self):

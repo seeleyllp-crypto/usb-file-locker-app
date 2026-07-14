@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.14.3"
+DESKTOP_APP_VERSION = "2026.07.14.4"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -59,6 +59,7 @@ LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
+    "trust-recovery-center": "Trust and Recovery Center",
     "portable-locking": "Portable locking tools",
     "quick-lock-note": "Quick lock notes",
     "home-guides": "Home safety guides",
@@ -78,6 +79,7 @@ PLAN_FEATURE_TITLES = {
     "pro-baseline-pack": "Pro Baseline review pack",
 }
 PLAN_FEATURE_REQUIREMENTS = {
+    "trust-recovery-center": "$5 Starter",
     "portable-locking": "$5 Starter",
     "quick-lock-note": "$5 Starter",
     "home-guides": "$10-$25 Home",
@@ -106,6 +108,7 @@ LICENSE_PLAN_IDS = {
     "pro-baseline",
 }
 SCRIPT_LICENSE_FEATURES = {
+    "trust_recovery_center.py": "trust-recovery-center",
     "privacy_safety_hub.py": "privacy-safety-hub",
     "personal_vault_pad.py": "personal-vault",
     "audit_log_viewer.py": "audit-log-viewer",
@@ -4959,6 +4962,8 @@ class USBFileLocker(tk.Tk):
         self.customer_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
         self.customer_workspace_button = tk.Button(customer_row, text="CUSTOMER WORKSPACE", command=self.open_customer_workspace, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.customer_workspace_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.trust_center_button = tk.Button(customer_row, text="TRUST & RECOVERY", command=self.open_trust_recovery_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.trust_center_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.customer_status_button = tk.Button(customer_row, text="PUBLIC STATUS", command=self.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.customer_status_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.readiness_button = tk.Button(customer_row, text="RECOVERY READINESS", command=self.open_recovery_readiness, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
@@ -5717,6 +5722,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open the Customer Workspace.")
             log_event("customer_workspace_open", "api", "failed")
             messagebox.showerror("Could not open Customer Workspace", str(exc), parent=self)
+
+    def open_trust_recovery_center(self):
+        try:
+            launch_companion_script("trust_recovery_center.py")
+            self.status.set("Opened the Trust & Recovery Center.")
+            log_event("trust_center_open", "local", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the Trust & Recovery Center.")
+            log_event("trust_center_open", "local", "failed")
+            messagebox.showerror("Could not open Trust & Recovery Center", str(exc), parent=self)
 
     def open_local_control_center(self):
         try:

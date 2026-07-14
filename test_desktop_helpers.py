@@ -19,6 +19,7 @@ import customer_hub
 import license_issuer
 import local_control_center
 import owner_update_lab
+import trust_recovery_center
 import usb_file_locker as locker
 import vault_health_center
 import vaultlink_updater
@@ -69,13 +70,13 @@ class DesktopHelperTests(unittest.TestCase):
             "action_center": {"count": 9, "items": []},
         }
         with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
-            result = locker.load_customer_workspace_online(state, "2026.07.14.3")
+            result = locker.load_customer_workspace_online(state, "2026.07.14.4")
         self.assertIs(result, response)
         server_url, path, payload = post.call_args.args
         self.assertEqual(server_url, "https://api.example.test")
         self.assertEqual(path, "/api/v1/licenses/customer-workspace")
         self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
-        self.assertEqual(payload["app_version"], "2026.07.14.3")
+        self.assertEqual(payload["app_version"], "2026.07.14.4")
         serialized_payload = json.dumps(payload)
         self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
         self.assertNotIn("machine_id", payload)
@@ -92,7 +93,7 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 15)
+        self.assertEqual(len(launchers), 16)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
@@ -104,11 +105,14 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_control_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Local Control Center.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("trust_recovery_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Trust & Recovery Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
+        self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
 
     def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
         pin = "Safe-Control-4291"
@@ -129,6 +133,7 @@ class DesktopHelperTests(unittest.TestCase):
         expected_scripts = {
             None,
             "customer_hub.py",
+            "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
             "key_inspector.py",
@@ -140,7 +145,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 12)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 13)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -184,8 +189,24 @@ class DesktopHelperTests(unittest.TestCase):
         for _index in range(25):
             state.record_launch("main_locker", "ok")
         self.assertEqual(len(state.launch_history), 20)
-        state.clear_history("session", "csrf")
+        snapshot = state.dashboard_snapshot()
+        self.assertEqual(snapshot["successful_launches"], 26)
+        self.assertEqual(snapshot["failed_launches"], 0)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 13)
+        self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
+        self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
+        state.session_token = "PRIVATE-SESSION-TOKEN-8842"
+        state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
+        with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
+            safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
+        self.assertEqual(safe_report["session"]["apps_total"], 13)
+        self.assertEqual(safe_report["session"]["successful_launches"], 26)
+        safe_report_text = json.dumps(safe_report)
+        for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
+            self.assertNotIn(forbidden, safe_report_text)
+        state.clear_history("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
         self.assertEqual(state.launch_history, [])
+        self.assertEqual(state.dashboard_snapshot()["total_launches"], 0)
         self.assertEqual(
             local_control_center.safe_dashboard_text("D:/private/customer/file.txt"),
             "Hidden by the local control privacy rule",
@@ -227,19 +248,39 @@ class DesktopHelperTests(unittest.TestCase):
             def clear_history(self, _token, _csrf):
                 self.history_cleared = True
 
+            def safe_report(self, _token, _csrf):
+                return {
+                    "schema_version": 1,
+                    "report_type": "VaultLink Local Control Privacy-Safe Report",
+                    "session": {"apps_total": len(local_control_center.CONTROL_ACTIONS)},
+                    "privacy_notice": "No keys, PINs, paths, receipts, or file contents.",
+                }
+
             def dashboard_snapshot(self):
+                apps = [
+                    {**item, "successful_launches": 0, "failed_launches": 0}
+                    for item in local_control_center.control_action_catalog()
+                ]
                 return {
                     "version": locker.DESKTOP_APP_VERSION,
                     "runtime": "Owner lab",
                     "remaining_seconds": 900,
                     "remaining_minutes": 15,
-                    "apps": local_control_center.control_action_catalog(),
+                    "server_uptime_seconds": 30,
+                    "apps": apps,
                     "available_apps": len(local_control_center.CONTROL_ACTIONS),
+                    "category_counts": {
+                        category: sum(item["category"] == category for item in apps)
+                        for category in {item["category"] for item in apps}
+                    },
+                    "successful_launches": 0,
+                    "failed_launches": 0,
+                    "total_launches": 0,
                     "customer": {
                         "license": "Active",
                         "plan": "Rank 5",
                         "desktop": locker.DESKTOP_APP_VERSION,
-                        "api": "0.26.0",
+                        "api": "0.27.0",
                         "service": "Normal",
                         "automatic_updates": "On",
                     },
@@ -264,6 +305,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
             self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
+            self.assertEqual(response.getheader("Cross-Origin-Opener-Policy"), "same-origin")
+            self.assertIn("usb=()", response.getheader("Permissions-Policy"))
             self.assertIn("Unlock Local Control", page)
             self.assertNotIn("D:/master_usb_file_locker.key", page)
             self.assertNotIn("SESSION-TOKEN", page)
@@ -287,8 +330,10 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Local Status", unlocked_page)
             self.assertIn("Recent Launches", unlocked_page)
             self.assertIn("EXTEND 15 MIN", unlocked_page)
+            self.assertIn("EXPORT SAFE REPORT", unlocked_page)
             self.assertIn("Global Breach Guard", unlocked_page)
-            self.assertIn("12 / 12", unlocked_page)
+            self.assertIn("Trust &amp; Recovery Center", unlocked_page)
+            self.assertIn("13 / 13", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -323,11 +368,177 @@ class DesktopHelperTests(unittest.TestCase):
             response.read()
             self.assertEqual(response.status, 200)
             self.assertTrue(state.history_cleared)
+
+            connection.request(
+                "GET",
+                "/?category=Recovery",
+                headers={"Cookie": session_cookie},
+            )
+            response = connection.getresponse()
+            filtered_page = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertIn("Vault Health Center", filtered_page)
+            self.assertNotIn("Personal Vault Pad", filtered_page)
+
+            connection.request(
+                "POST",
+                "/export-report",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": f"http://127.0.0.1:{port}",
+                    "Cookie": session_cookie,
+                },
+            )
+            response = connection.getresponse()
+            report = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertIn("attachment", response.getheader("Content-Disposition"))
+            self.assertEqual(report["session"]["apps_total"], 13)
         finally:
             connection.close()
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_trust_recovery_report_is_scored_whitelisted_and_secret_free(self):
+        settings = {
+            "last_key_path": "D:/PRIVATE-USB/master_usb_file_locker.key",
+            "auto_install_signed_updates": True,
+            "local_control_pin_verifier": "PRIVATE-PIN-VERIFIER",
+        }
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "PRIVATE-RECEIPT-7701",
+                "status": "active",
+                "plan_id": "starter",
+                "plan_name": "$5 Starter",
+                "license_id": "PRIVATE-LICENSE-ID-7701",
+                "customer_label": "PRIVATE-CUSTOMER-7701",
+                "machine_name": "PRIVATE-PC-7701",
+                "latest_desktop_version": "2026.07.14.4",
+                "api_version": "0.27.0",
+                "service_status": {"mode": "normal", "message": "Service normal"},
+            }
+        )
+        defender = {
+            "available": True,
+            "ProtectedNow": True,
+            "AntivirusEnabled": True,
+            "RealTimeProtectionEnabled": True,
+            "BehaviorMonitorEnabled": True,
+            "IoavProtectionEnabled": True,
+            "AntivirusSignatureLastUpdated": "2026-07-14T20:00:00Z",
+            "QuickScanAge": 0,
+            "FullScanAge": 2,
+            "unexpected_secret": "PRIVATE-DEFENDER-SECRET",
+        }
+        records = [
+            {
+                "action": "recovery_self_test",
+                "result": "success",
+                "time_utc": "2026-07-14T20:10:00Z",
+                "path": "C:/PRIVATE/recovery.txt",
+            },
+            {
+                "action": "backup_app_data",
+                "result": "success",
+                "time_utc": "2026-07-14T20:20:00Z",
+                "file_contents": "PRIVATE-BACKUP-CONTENTS",
+            },
+        ]
+        online = {
+            "ok": True,
+            "trust_schema_version": 1,
+            "api_version": "0.27.0",
+            "score": {"value": 100, "maximum": 100, "label": "ready", "attention_count": 0},
+            "checks": [
+                {
+                    "id": "api-online",
+                    "category": "Service",
+                    "title": "API online",
+                    "state": "good",
+                    "passed": True,
+                    "weight": 10,
+                    "detail": "D:/PRIVATE/customer/path.txt",
+                    "unexpected": "PRIVATE-ONLINE-CHECK-SECRET",
+                }
+            ],
+            "service_status": {"mode": "normal", "message": "Service normal"},
+            "signed_release": {
+                "ready": True,
+                "version": "2026.07.14.4",
+                "minimum_supported_version": "2026.07.12.9",
+                "published_at_utc": "2026-07-14T20:30:00Z",
+                "package_filename": "VaultLink-Windows-2026.07.14.4.zip",
+                "size_bytes": 123456,
+                "sha256": "a" * 64,
+                "signing_key_id": "safe-key-id",
+                "checks": {
+                    "manifest_schema": "passed",
+                    "ed25519_signature": "passed",
+                    "package_size": "passed",
+                    "package_sha256": "passed",
+                    "app_data_preservation": "passed",
+                },
+            },
+            "storage": {
+                "license_state": "persistent_configured",
+                "audit_exports": "persistent_configured",
+                "private_license_fields_encrypted": True,
+                "support_private_fields_encrypted": True,
+            },
+            "cryptography": [{"purpose": "Updates", "control": "Ed25519 and SHA-256"}],
+            "data_boundaries": {
+                "stays_on_customer_pc": ["USB key bytes"],
+                "may_reach_api_after_explicit_action": ["Approved safe fields"],
+                "never_requested_by_api": ["PINs and file contents"],
+            },
+            "recovery_steps": ["Use a disposable test file"],
+            "limitations": ["Not certification"],
+            "safe_to_export": True,
+            "server_time_utc": "2026-07-14T20:31:00Z",
+            "unexpected_private_customer_record": "PRIVATE-ONLINE-CUSTOMER-7701",
+        }
+        with mock.patch.object(locker, "load_owner_policy", return_value={"version": 1}), mock.patch.object(
+            trust_recovery_center, "selected_key_ready", return_value=True
+        ), mock.patch.object(
+            trust_recovery_center, "local_control_pin_ready", return_value=True
+        ), mock.patch.object(locker, "license_is_active", return_value=True):
+            report = trust_recovery_center.build_local_trust_report(
+                settings,
+                state,
+                defender,
+                (True, 2, "Hash chain and event signatures are valid."),
+                records,
+                online,
+            )
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["score"]["maximum"], 100)
+        self.assertEqual(report["score"]["value"], 100)
+        self.assertEqual(report["score"]["passed"], 11)
+        self.assertEqual(report["online_trust"]["score"]["value"], 100)
+        self.assertNotIn("unexpected_private_customer_record", report["online_trust"])
+        self.assertEqual(report["online_trust"]["checks"][0]["detail"], "No public detail is available.")
+        report_text = json.dumps(report)
+        rendered_text = trust_recovery_center.safe_report_text(report)
+        for private_value in (
+            "D:/PRIVATE-USB",
+            "C:/PRIVATE",
+            VALID_TEST_LICENSE,
+            "PRIVATE-RECEIPT-7701",
+            "PRIVATE-LICENSE-ID-7701",
+            "PRIVATE-CUSTOMER-7701",
+            "PRIVATE-PC-7701",
+            "PRIVATE-PIN-VERIFIER",
+            "PRIVATE-DEFENDER-SECRET",
+            "PRIVATE-BACKUP-CONTENTS",
+            "PRIVATE-ONLINE-CHECK-SECRET",
+            "PRIVATE-ONLINE-CUSTOMER-7701",
+        ):
+            self.assertNotIn(private_value, report_text)
+            self.assertNotIn(private_value, rendered_text)
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:

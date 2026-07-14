@@ -13,8 +13,8 @@ class PrivacySafetyHub(tk.Tk):
             self.after(0, self.destroy)
             return
         self.title("Privacy Safety Hub")
-        self.geometry("1080x940")
-        self.minsize(980, 820)
+        self.geometry("1180x900")
+        self.minsize(1040, 780)
         self.configure(bg=locker.BG)
         self.status = tk.StringVar(value="Loading...")
         self.summary = tk.StringVar(value="")
@@ -59,18 +59,20 @@ class PrivacySafetyHub(tk.Tk):
 
         self.app_card(apps, "Main Locker", "Full lock, unlock, vault, audit log, and owner USB controls.", self.open_main, 0, 0, locker.WHITE, locker.BLACK)
         self.app_card(apps, "Locked File Browser", "Find .locked files fast, inspect them, and jump into unlock mode.", self.open_browser, 0, 1, "#252936", locker.TEXT)
-        self.app_card(apps, "Quick Lock Note", "Type or paste text and turn it into a locked note quickly.", self.open_quick_note, 1, 0, locker.YELLOW, locker.BLACK)
-        self.app_card(apps, "Key Inspector", "Check a master USB key, see drive info, and verify owner-key matching.", self.open_key_inspector, 1, 1, "#252936", locker.TEXT)
-        self.app_card(apps, "PERM UNLOCK Workbench", "See what is in the PERM UNLOCK folder and relock edited items with or without removing the readable copy.", self.open_perm_unlock_workbench, 2, 0, locker.YELLOW, locker.BLACK)
-        self.app_card(apps, "Personal Vault Pad", "Open the vault in a simpler note-style window with quick copy, import, duplicate, delete, and locked export tools.", self.open_personal_vault_pad, 2, 1, "#252936", locker.TEXT)
-        self.app_card(apps, "Audit Log Viewer", "Read the privacy-safe activity chain, verify it, copy event IDs, and export raw or locked audit reports.", self.open_audit_log_viewer, 3, 0, locker.WHITE, locker.BLACK)
-        self.app_card(apps, "Text Log Processor", "Paste or load table-style log text, then count actions, catch failures, and export a cleaner summary.", self.open_text_log_processor, 3, 1, locker.YELLOW, locker.BLACK)
-        self.app_card(apps, "Global Breach Guard", "Run a global topmost breach watcher that checks the signed audit trail and throws on-screen alerts for high-risk activity.", self.open_global_breach_guard, 4, 0, locker.WHITE, locker.BLACK)
-        self.app_card(apps, "Vault Health Center", "Check locked-file structure, key compatibility, legacy formats, and export a privacy-safe health report.", self.open_vault_health_center, 4, 1, "#252936", locker.TEXT)
+        self.app_card(apps, "Quick Lock Note", "Type or paste text and turn it into a locked note quickly.", self.open_quick_note, 0, 2, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Key Inspector", "Check a master USB key, see drive info, and verify owner-key matching.", self.open_key_inspector, 1, 0, "#252936", locker.TEXT)
+        self.app_card(apps, "PERM UNLOCK Workbench", "See what is in the PERM UNLOCK folder and relock edited items safely.", self.open_perm_unlock_workbench, 1, 1, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Personal Vault Pad", "Open the vault in a simpler note-style window with quick local tools.", self.open_personal_vault_pad, 1, 2, "#252936", locker.TEXT)
+        self.app_card(apps, "Audit Log Viewer", "Read, verify, and export the privacy-safe activity chain.", self.open_audit_log_viewer, 2, 0, locker.WHITE, locker.BLACK)
+        self.app_card(apps, "Text Log Processor", "Parse pasted audit-style text into a cleaner local summary.", self.open_text_log_processor, 2, 1, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Global Breach Guard", "Watch the signed local audit trail and show high-risk alerts.", self.open_global_breach_guard, 2, 2, locker.WHITE, locker.BLACK)
+        self.app_card(apps, "Vault Health Center", "Check locked-file structure, compatibility, legacy formats, and safe health totals.", self.open_vault_health_center, 3, 0, "#252936", locker.TEXT)
+        self.app_card(apps, "Trust & Recovery Center", "Combine Defender, audit, USB, license, signed-update, and public trust posture.", self.open_trust_recovery_center, 3, 1, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Customer Workspace", "Review account health, actions, rank tools, releases, and safe exports.", self.open_customer_workspace, 3, 2, "#252936", locker.TEXT)
 
-        for col in range(2):
+        for col in range(3):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(5):
+        for row in range(4):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -287,6 +289,22 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Vault Health Center.")
             messagebox.showerror("Could not open Vault Health Center", str(exc))
+
+    def open_trust_recovery_center(self):
+        try:
+            locker.launch_companion_script("trust_recovery_center.py")
+            self.status.set("Opened Trust & Recovery Center.")
+        except Exception as exc:
+            self.status.set("Could not open Trust & Recovery Center.")
+            messagebox.showerror("Could not open Trust & Recovery Center", str(exc))
+
+    def open_customer_workspace(self):
+        try:
+            locker.launch_companion_script("customer_hub.py")
+            self.status.set("Opened Customer Workspace.")
+        except Exception as exc:
+            self.status.set("Could not open Customer Workspace.")
+            messagebox.showerror("Could not open Customer Workspace", str(exc))
 
 
 if __name__ == "__main__":
