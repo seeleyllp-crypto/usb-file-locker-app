@@ -18,13 +18,16 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.13.5 lets OWNER UPDATE LAB run the exact verified candidate
+  privately without publishing or replacing the stable app. OWNER LAB mode is
+  visibly marked and cannot install updates or change file associations. It uses
+  normal Windows user data so real license, USB, lock, and unlock flows can be
+  tested.
 - Version 2026.07.13.4 adds a local aggregate health baseline, automatic drift
   warnings, key-folder coverage, attention-only filtering, and privacy-safe
   copied summaries to VAULT HEALTH CENTER. Baselines and summaries exclude
-  names, paths, key IDs, secrets, PINs, licenses, and contents. OWNER UPDATE LAB
-  can run the exact verified candidate privately without publishing or replacing
-  the stable app. Lab runtimes cannot install updates or change file associations.
-  Signed updates preserve the baseline with other LocalAppData.
+  names, paths, key IDs, secrets, PINs, licenses, and contents. Signed updates
+  preserve the baseline with other LocalAppData.
 - Version 2026.07.13.3 adds VAULT HEALTH CENTER for read-only locked-file
   structure checks, legacy review, recovery status, multi-key coverage, safe
   cancellation, and aggregate snapshot comparison. It also adds signed release

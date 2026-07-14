@@ -46,9 +46,9 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Vault Health Center adds local aggregate baselines, automatic drift warnings, attention filtering, and key-folder coverage.",
-    "Customers can copy, export, and compare safe health summaries without filenames, paths, key IDs, secrets, or contents.",
-    "Owner Update Lab can run the verified candidate privately while owner tools remain excluded from customer packages.",
+    "Owner Update Lab can extract and run the exact verified candidate privately without publishing or replacing the stable app.",
+    "OWNER LAB mode is visibly marked and disables update installation and file-association changes.",
+    "Private owner tools remain excluded from customer update packages.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
