@@ -46,11 +46,12 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Customer Success Workspace adds a six-factor operational score, 30-day plan, benefit map, action filters, tool search, and separate safe support and recovery exports.",
-    "Local Control Center runs a same-PC website on 127.0.0.1 with USB-presence checks, a Windows-protected scrypt PIN verifier, rate limits, CSRF protection, and 15-minute sessions.",
-    "Local Control Center launches only eight approved desktop apps; it never accepts remote connections or performs file lock and unlock operations in the browser.",
-    "Owner Customer Experience Console adds an aggregate experience score, customer journey, renewal buckets, rank percentages, surface readiness, and journey CSV export.",
-    "Customer and owner APIs exclude customer identity, license proof, machine identity, receipts, paths, PINs, USB secrets, file contents, and control credentials.",
+    "Local Control Dashboard now groups twelve approved customer apps by core, recovery, private-work, privacy, and monitoring categories with live package-availability checks.",
+    "The dashboard shows coarse license, plan, desktop, API, service, update, runtime, USB, and session status without exposing keys, receipts, identities, paths, PINs, or file contents.",
+    "Customers can refresh status, explicitly extend a session, clear the bounded in-memory launch history, copy the loopback URL, or lock the browser session from the desktop window.",
+    "Removing or changing the selected USB automatically invalidates the browser control session; every approved launch still rechecks USB presence and CSRF authorization.",
+    "Launch history keeps at most twenty action IDs, labels, UTC timestamps, and success states in server memory and disappears when the local server stops.",
+    "The controller remains bound only to 127.0.0.1 and cannot choose files, capture encryption PINs, unlock data, accept remote connections, or execute arbitrary commands.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

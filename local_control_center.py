@@ -4,6 +4,7 @@ import hmac
 import html
 import json
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -27,14 +28,78 @@ PIN_SCRYPT_R = 8
 PIN_SCRYPT_P = 1
 
 CONTROL_ACTIONS = {
-    "main_locker": ("Main Locker", None),
-    "customer_workspace": ("Customer Workspace", "customer_hub.py"),
-    "vault_health": ("Vault Health Center", "vault_health_center.py"),
-    "locked_browser": ("Locked File Browser", "locked_file_browser.py"),
-    "key_inspector": ("Key Inspector", "key_inspector.py"),
-    "personal_vault": ("Personal Vault Pad", "personal_vault_pad.py"),
-    "perm_unlock": ("PERM Unlock Workbench", "perm_unlock_workbench.py"),
-    "audit_log": ("Audit Log Viewer", "audit_log_viewer.py"),
+    "main_locker": {
+        "label": "Main Locker",
+        "script": None,
+        "category": "Core",
+        "summary": "Open the main file and folder locking workspace.",
+    },
+    "customer_workspace": {
+        "label": "Customer Workspace",
+        "script": "customer_hub.py",
+        "category": "Core",
+        "summary": "Review privacy-safe account, update, and recovery guidance.",
+    },
+    "vault_health": {
+        "label": "Vault Health Center",
+        "script": "vault_health_center.py",
+        "category": "Recovery",
+        "summary": "Run read-only locked-file and recovery-readiness checks.",
+    },
+    "locked_browser": {
+        "label": "Locked File Browser",
+        "script": "locked_file_browser.py",
+        "category": "Recovery",
+        "summary": "Find locked files without sending their names or paths online.",
+    },
+    "key_inspector": {
+        "label": "Key Inspector",
+        "script": "key_inspector.py",
+        "category": "Recovery",
+        "summary": "Review the selected key and owner-USB readiness locally.",
+    },
+    "perm_unlock": {
+        "label": "PERM Unlock Workbench",
+        "script": "perm_unlock_workbench.py",
+        "category": "Recovery",
+        "summary": "Open the edit-and-relock workflow in its normal desktop window.",
+    },
+    "personal_vault": {
+        "label": "Personal Vault Pad",
+        "script": "personal_vault_pad.py",
+        "category": "Private Work",
+        "summary": "Open the local encrypted personal vault editor.",
+    },
+    "quick_note": {
+        "label": "Quick Lock Note",
+        "script": "quick_lock_note.py",
+        "category": "Private Work",
+        "summary": "Create a short locked note through the desktop app.",
+    },
+    "audit_log": {
+        "label": "Audit Log Viewer",
+        "script": "audit_log_viewer.py",
+        "category": "Privacy",
+        "summary": "Review privacy-safe, hash-chained local activity records.",
+    },
+    "privacy_hub": {
+        "label": "Privacy Safety Hub",
+        "script": "privacy_safety_hub.py",
+        "category": "Privacy",
+        "summary": "Open customer privacy and defensive safety controls.",
+    },
+    "text_logs": {
+        "label": "Text Log Processor",
+        "script": "text_log_processor.py",
+        "category": "Privacy",
+        "summary": "Process pasted text logs without automatic file collection.",
+    },
+    "breach_guard": {
+        "label": "Global Breach Guard",
+        "script": "global_breach_guard.py",
+        "category": "Monitoring",
+        "summary": "Open the local watcher for repeated privacy-safe risk events.",
+    },
 }
 
 
@@ -140,12 +205,58 @@ def launch_control_action(action_id):
     action = CONTROL_ACTIONS.get(str(action_id or ""))
     if not action:
         raise ValueError("That local control action is not allowed.")
-    _label, script_name = action
+    script_name = action["script"]
     if script_name is None:
         locker.launch_main_app_process()
     else:
         locker.launch_companion_script(script_name)
-    return action[0]
+    return action["label"]
+
+
+def control_action_available(action):
+    script_name = action.get("script")
+    if script_name is None:
+        return True
+    if getattr(sys, "frozen", False):
+        return (locker.RUNTIME_DIR / f"{Path(script_name).stem}.exe").is_file()
+    return (locker.SOURCE_DIR / script_name).is_file()
+
+
+def control_action_catalog():
+    return [
+        {
+            "id": action_id,
+            "label": action["label"],
+            "category": action["category"],
+            "summary": action["summary"],
+            "available": control_action_available(action),
+        }
+        for action_id, action in CONTROL_ACTIONS.items()
+    ]
+
+
+def safe_dashboard_text(value, fallback="Unknown"):
+    text = " ".join(str(value or "").split())[:160]
+    lowered = text.lower()
+    if not text:
+        return fallback
+    if "\\" in text or ":/" in text or "vlk1." in lowered or "vlr1." in lowered:
+        return "Hidden by the local control privacy rule"
+    return text
+
+
+def local_customer_status():
+    settings = locker.load_settings()
+    state = locker.load_license_state(settings)
+    details = locker.customer_center_details(state, settings)
+    return {
+        "license": safe_dashboard_text(details.get("license_status"), "Unlicensed"),
+        "plan": safe_dashboard_text(details.get("plan"), "No active plan"),
+        "desktop": safe_dashboard_text(details.get("desktop"), locker.DESKTOP_APP_VERSION),
+        "api": safe_dashboard_text(details.get("api")),
+        "service": safe_dashboard_text(details.get("service")),
+        "automatic_updates": safe_dashboard_text(details.get("automatic_updates")),
+    }
 
 
 class ControlState:
@@ -158,6 +269,7 @@ class ControlState:
         self.session_expires_at = 0.0
         self.failed_attempts = []
         self.lockout_until = 0.0
+        self.launch_history = []
         self.lock = threading.RLock()
 
     def usb_status(self):
@@ -214,15 +326,76 @@ class ControlState:
             usb_ok, usb_message = self.usb_status()
             if not usb_ok:
                 raise PermissionError(usb_message)
-            label = launch_control_action(action_id)
+            action_id = str(action_id or "")
+            action = CONTROL_ACTIONS.get(action_id)
+            if not action:
+                raise ValueError("That local control action is not allowed.")
+            try:
+                label = launch_control_action(action_id)
+            except Exception:
+                self.record_launch(action_id, "failed")
+                locker.log_event("local_control_launch", action_id, "failed")
+                raise
+            self.record_launch(action_id, "ok")
             self.session_expires_at = time.monotonic() + SESSION_SECONDS
-            locker.log_event("local_control_launch", str(action_id), "ok")
+            locker.log_event("local_control_launch", action_id, "ok")
             return label
 
+    def record_launch(self, action_id, result):
+        with self.lock:
+            action = CONTROL_ACTIONS.get(str(action_id or ""))
+            if not action:
+                return
+            self.launch_history.append(
+                {
+                    "at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "action_id": str(action_id),
+                    "label": action["label"],
+                    "result": "ok" if result == "ok" else "failed",
+                }
+            )
+            self.launch_history = self.launch_history[-20:]
+
+    def extend_session(self, token, csrf):
+        with self.lock:
+            if not self.is_authorized(token):
+                raise PermissionError("The local control session expired.")
+            if not hmac.compare_digest(str(csrf or ""), self.session_csrf):
+                raise PermissionError("The local control request could not be verified.")
+            usb_ok, usb_message = self.usb_status()
+            if not usb_ok:
+                raise PermissionError(usb_message)
+            self.session_expires_at = time.monotonic() + SESSION_SECONDS
+
+    def clear_history(self, token, csrf):
+        with self.lock:
+            if not self.is_authorized(token):
+                raise PermissionError("The local control session expired.")
+            if not hmac.compare_digest(str(csrf or ""), self.session_csrf):
+                raise PermissionError("The local control request could not be verified.")
+            self.launch_history.clear()
+
+    def dashboard_snapshot(self):
+        with self.lock:
+            apps = control_action_catalog()
+            remaining = max(0, int(self.session_expires_at - time.monotonic()))
+            return {
+                "version": locker.DESKTOP_APP_VERSION,
+                "runtime": "Owner lab" if locker.LAB_MODE else "Stable app",
+                "remaining_seconds": remaining,
+                "remaining_minutes": (remaining + 59) // 60,
+                "apps": apps,
+                "available_apps": sum(bool(item["available"]) for item in apps),
+                "customer": local_customer_status(),
+                "history": list(reversed(self.launch_history)),
+                "history_limit": 20,
+            }
+
     def lock_session(self):
-        self.session_token = ""
-        self.session_csrf = ""
-        self.session_expires_at = 0.0
+        with self.lock:
+            self.session_token = ""
+            self.session_csrf = ""
+            self.session_expires_at = 0.0
 
 
 class LocalControlHTTPServer(ThreadingHTTPServer):
@@ -235,7 +408,7 @@ class LocalControlHTTPServer(ThreadingHTTPServer):
 
 
 class LocalControlHandler(BaseHTTPRequestHandler):
-    server_version = "VaultLinkLocalControl/1"
+    server_version = "VaultLinkLocalControl/2"
 
     def log_message(self, _format, *_args):
         return
@@ -303,24 +476,71 @@ class LocalControlHandler(BaseHTTPRequestHandler):
         message_html = html.escape(message)
         tone_class = "good" if tone == "good" else "bad" if tone == "bad" else ""
         if authenticated:
-            cards = []
-            for action_id, (label, _script_name) in CONTROL_ACTIONS.items():
-                cards.append(
-                    '<form method="post" action="/action" class="tool">'
-                    f'<input type="hidden" name="csrf" value="{html.escape(self.server.state.session_csrf, quote=True)}">'
-                    f'<input type="hidden" name="action" value="{html.escape(action_id, quote=True)}">'
-                    f'<button type="submit">{html.escape(label)}</button>'
-                    '<p>Launches the approved local Windows app. File actions still require confirmation inside that app.</p>'
-                    '</form>'
+            snapshot = self.server.state.dashboard_snapshot()
+            csrf = html.escape(self.server.state.session_csrf, quote=True)
+            categories = {}
+            for item in snapshot["apps"]:
+                categories.setdefault(item["category"], []).append(item)
+            category_sections = []
+            for category, items in categories.items():
+                cards = []
+                for item in items:
+                    available = bool(item["available"])
+                    button_text = f"OPEN {item['label'].upper()}" if available else "APP NOT AVAILABLE"
+                    cards.append(
+                        '<form method="post" action="/action" class="tool">'
+                        f'<input type="hidden" name="csrf" value="{csrf}">'
+                        f'<input type="hidden" name="action" value="{html.escape(item["id"], quote=True)}">'
+                        f'<div class="eyebrow {"good" if available else "bad"}">{"AVAILABLE" if available else "MISSING"}</div>'
+                        f'<h3>{html.escape(item["label"])}</h3>'
+                        f'<p>{html.escape(item["summary"])}</p>'
+                        f'<button type="submit" {"" if available else "disabled"}>{html.escape(button_text)}</button>'
+                        '</form>'
+                    )
+                category_sections.append(
+                    f'<section><div class="section-head"><h2>{html.escape(category)}</h2><span>{len(items)} approved app(s)</span></div>'
+                    f'<div class="grid">{"".join(cards)}</div></section>'
                 )
+            customer = snapshot["customer"]
+            status_rows = [
+                ("License", customer["license"]),
+                ("Plan", customer["plan"]),
+                ("Desktop", customer["desktop"]),
+                ("API", customer["api"]),
+                ("Service", customer["service"]),
+                ("Verified auto-updates", customer["automatic_updates"]),
+            ]
+            status_cards = "".join(
+                f'<article class="status-item"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></article>'
+                for label, value in status_rows
+            )
+            history_rows = "".join(
+                '<div class="history-row">'
+                f'<span>{html.escape(item["at_utc"])}</span>'
+                f'<strong>{html.escape(item["label"])}</strong>'
+                f'<span class="result {html.escape(item["result"])}">{html.escape(item["result"].upper())}</span>'
+                '</div>'
+                for item in snapshot["history"]
+            ) or '<div class="empty">No apps launched in this server session.</div>'
             content = (
                 '<section class="status-band"><strong>CONTROL SESSION UNLOCKED</strong>'
-                f'<span>{html.escape(usb_message)}</span><span>Automatically locks after 15 minutes of inactivity.</span></section>'
-                '<section><h2>Approved Local Apps</h2><div class="grid">'
-                + "".join(cards)
-                + '</div></section><form method="post" action="/logout" class="logout">'
-                f'<input type="hidden" name="csrf" value="{html.escape(self.server.state.session_csrf, quote=True)}">'
-                '<button type="submit">LOCK CONTROL SESSION</button></form>'
+                f'<span>{html.escape(usb_message)}</span><span>{snapshot["remaining_minutes"]} minute(s) remaining.</span></section>'
+                '<div class="metrics">'
+                f'<div class="metric"><span>Apps available</span><strong>{snapshot["available_apps"]} / {len(snapshot["apps"])}</strong></div>'
+                f'<div class="metric"><span>Session remaining</span><strong>{snapshot["remaining_seconds"]} sec</strong></div>'
+                f'<div class="metric"><span>Version</span><strong>{html.escape(snapshot["version"])}</strong></div>'
+                f'<div class="metric"><span>Runtime</span><strong>{html.escape(snapshot["runtime"])}</strong></div>'
+                '</div><div class="toolbar">'
+                '<form method="get" action="/"><button type="submit">REFRESH STATUS</button></form>'
+                f'<form method="post" action="/extend"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">EXTEND 15 MIN</button></form>'
+                f'<form method="post" action="/clear-history"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">CLEAR IN-MEMORY HISTORY</button></form>'
+                f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">LOCK CONTROL SESSION</button></form>'
+                '</div><section><div class="section-head"><h2>Local Status</h2><span>Coarse values only; no key, receipt, identity, or path.</span></div>'
+                f'<div class="status-grid">{status_cards}</div></section>'
+                + "".join(category_sections)
+                + '<section><div class="section-head"><h2>Recent Launches</h2><span>Last 20 in memory; erased when the server stops.</span></div>'
+                f'<div class="history">{history_rows}</div></section>'
+                '<section class="privacy"><h2>Control Boundary</h2><p>This page can launch only the approved apps shown above. It cannot choose files, read file contents, type encryption PINs, unlock data, run arbitrary commands, or accept a remote connection.</p></section>'
             )
         else:
             content = f'''<section class="login">
@@ -336,10 +556,10 @@ class LocalControlHandler(BaseHTTPRequestHandler):
         page = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VaultLink Local Control</title><style>
-:root{{--bg:#0d1014;--band:#151a20;--panel:#1c222a;--field:#080b0e;--line:#394550;--text:#f4f7f8;--muted:#aab5bf;--green:#62dc86;--blue:#69bee9;--red:#ff7b72}}
+:root{{--bg:#0d1014;--band:#151a20;--panel:#1c222a;--field:#080b0e;--line:#394550;--text:#f4f7f8;--muted:#aab5bf;--green:#62dc86;--blue:#69bee9;--yellow:#ffd166;--red:#ff7b72}}
 *{{box-sizing:border-box;letter-spacing:0}}body{{margin:0;min-width:320px;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",Arial,sans-serif}}
 header,footer{{background:#11161b;border-color:var(--line);border-style:solid;border-width:0 0 1px}}header>div,main,footer>div{{width:min(980px,calc(100% - 32px));margin:auto}}header>div{{min-height:70px;display:flex;align-items:center;justify-content:space-between;gap:12px}}header span,footer{{color:var(--muted)}}main{{padding:28px 0 44px}}h1{{font-size:26px;margin:0}}h2{{font-size:18px;margin:0 0 8px}}.notice{{min-height:24px;margin-bottom:12px;color:var(--muted)}}.notice.good{{color:var(--green)}}.notice.bad{{color:var(--red)}}
-.login,.status-band,section{{padding:18px;border:1px solid var(--line);background:var(--band)}}.login{{max-width:560px}}label{{display:block;margin:14px 0 6px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}}input{{width:100%;height:44px;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:var(--field);color:var(--text);font:inherit}}button{{min-height:42px;padding:0 14px;border:0;border-radius:5px;background:var(--blue);color:#071118;font-weight:800;cursor:pointer}}.login button{{margin-top:12px}}.status-band{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}}.status-band strong{{color:var(--green)}}.status-band span{{color:var(--muted)}}section+section{{margin-top:16px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}}.tool{{padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}}.tool button{{width:100%;background:#29333d;color:var(--text)}}.tool p{{margin:8px 0 0;color:var(--muted)}}.logout{{margin-top:16px}}.logout button{{background:var(--red);color:#160606}}footer{{border-width:1px 0 0}}footer>div{{padding:20px 0 24px}}@media(max-width:560px){{header>div{{align-items:flex-start;flex-direction:column;padding:14px 0}}}}
+.login,.status-band{{padding:18px;border:1px solid var(--line);background:var(--band)}}.login{{max-width:560px}}label{{display:block;margin:14px 0 6px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}}input{{width:100%;height:44px;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:var(--field);color:var(--text);font:inherit}}button{{min-height:42px;padding:0 14px;border:0;border-radius:5px;background:var(--blue);color:#071118;font-weight:800;cursor:pointer}}button:disabled{{cursor:not-allowed;background:#252b32;color:#7e8993}}button.danger{{background:var(--red);color:#160606}}.login button{{margin-top:12px}}.status-band{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px}}.status-band strong{{color:var(--green)}}.status-band span{{color:var(--muted)}}.metrics{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);background:var(--band)}}.metric{{padding:14px;border-right:1px solid var(--line)}}.metric:last-child{{border-right:0}}.metric span,.status-item span{{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}}.metric strong{{display:block;margin-top:4px;font-size:17px;overflow-wrap:anywhere}}.toolbar{{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}}section{{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:10px}}.section-head span{{color:var(--muted);text-align:right}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}.tool{{padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}}.tool h3{{margin:4px 0 0;font-size:15px}}.tool button{{width:100%;margin-top:12px;background:#29333d;color:var(--text)}}.tool p{{min-height:42px;margin:7px 0 0;color:var(--muted)}}.eyebrow{{font-size:10px;font-weight:800}}.eyebrow.good,.result.ok{{color:var(--green)}}.eyebrow.bad,.result.failed{{color:var(--red)}}.status-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}}.status-item{{min-width:0;padding:13px;border-left:3px solid var(--blue);background:var(--panel)}}.status-item strong{{display:block;margin-top:4px;overflow-wrap:anywhere}}.history{{display:grid;gap:6px}}.history-row{{display:grid;grid-template-columns:190px minmax(0,1fr) auto;gap:12px;padding:10px 12px;background:var(--panel)}}.history-row span:first-child{{color:var(--muted);font-family:Consolas,monospace}}.result{{font-size:11px;font-weight:800}}.empty{{padding:18px;border:1px dashed var(--line);color:var(--muted);text-align:center}}.privacy p{{margin:0;color:var(--muted)}}footer{{border-width:1px 0 0}}footer>div{{padding:20px 0 24px}}@media(max-width:760px){{.metrics{{grid-template-columns:repeat(2,1fr)}}.status-grid{{grid-template-columns:1fr 1fr}}.history-row{{grid-template-columns:1fr auto}}.history-row span:first-child{{grid-column:1 / -1}}}}@media(max-width:560px){{header>div,.section-head{{align-items:flex-start;flex-direction:column;padding:14px 0}}.section-head span{{text-align:left}}.metrics,.status-grid{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--line)}}}}
 </style></head><body><header><div><h1>VaultLink Local Control</h1><span>LOOPBACK ONLY | SAME PC</span></div></header><main><div class="notice {tone_class}">{message_html}</div>{content}</main><footer><div>Version {html.escape(locker.DESKTOP_APP_VERSION)}. This page cannot receive remote connections, upload secrets, or lock and unlock files itself.</div></footer></body></html>'''
         return page
 
@@ -398,6 +618,20 @@ header,footer{{background:#11161b;border-color:var(--line);border-style:solid;bo
                 cookie="VaultLinkLocalSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict",
             )
             return
+        if path == "/extend":
+            try:
+                self.server.state.extend_session(token, form.get("csrf"))
+                self.send_page(self.render("Local control session extended by 15 minutes.", "good"))
+            except PermissionError as exc:
+                self.send_page(self.render(str(exc), "bad"), status=403)
+            return
+        if path == "/clear-history":
+            try:
+                self.server.state.clear_history(token, form.get("csrf"))
+                self.send_page(self.render("In-memory launch history cleared.", "good"))
+            except PermissionError as exc:
+                self.send_page(self.render(str(exc), "bad"), status=403)
+            return
         if path == "/action":
             try:
                 label = self.server.state.run_action(token, form.get("csrf"), form.get("action"))
@@ -405,7 +639,6 @@ header,footer{{background:#11161b;border-color:var(--line);border-style:solid;bo
             except PermissionError as exc:
                 self.send_page(self.render(str(exc), "bad"), status=403)
             except Exception:
-                locker.log_event("local_control_launch", str(form.get("action", "")), "failed")
                 self.send_page(
                     self.render("The approved app could not be opened. Check the desktop Local Control Center.", "bad"),
                     status=400,
@@ -418,8 +651,8 @@ class LocalControlCenter(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink Local Control Center")
-        self.geometry("650x500")
-        self.minsize(600, 470)
+        self.geometry("680x560")
+        self.minsize(620, 520)
         self.configure(bg=locker.BG)
         settings = locker.load_settings()
         self.key_path = tk.StringVar(value=str(settings.get("last_key_path", "") or ""))
@@ -428,9 +661,13 @@ class LocalControlCenter(tk.Tk):
         self.server_thread = None
         self.url = ""
         self.open_button = None
+        self.copy_button = None
+        self.lock_session_button = None
         self.stop_button = None
+        self.last_usb_ready = True
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
+        self.after(1500, self.monitor_server_key)
 
     def build_ui(self):
         outer = tk.Frame(self, bg=locker.BG)
@@ -462,6 +699,13 @@ class LocalControlCenter(tk.Tk):
         self.open_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=8)
         self.stop_button = tk.Button(buttons, text="STOP", command=self.stop_server, state="disabled", bg=locker.RED, fg=locker.WHITE, relief="flat", font=("Segoe UI", 10, "bold"))
         self.stop_button.pack(side="right", ipadx=12, ipady=8)
+        session_buttons = tk.Frame(panel, bg=locker.PANEL)
+        session_buttons.pack(fill="x", padx=18, pady=(0, 8))
+        self.copy_button = tk.Button(session_buttons, text="COPY LOCAL URL", command=self.copy_url, state="disabled", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.copy_button.pack(side="left", ipadx=10, ipady=6)
+        self.lock_session_button = tk.Button(session_buttons, text="LOCK BROWSER SESSION", command=self.lock_website_session, state="disabled", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.lock_session_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        tk.Label(session_buttons, text=f"{len(CONTROL_ACTIONS)} approved apps | local status | 20-entry memory history", bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="right")
         tk.Label(panel, textvariable=self.status, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 9), wraplength=560, justify="left").pack(anchor="w", padx=18, pady=(8, 18))
 
     def choose_key(self):
@@ -525,7 +769,10 @@ class LocalControlCenter(tk.Tk):
         self.server_thread = threading.Thread(target=server.serve_forever, name="VaultLinkLocalControl", daemon=True)
         self.server_thread.start()
         self.open_button.configure(state="normal")
+        self.copy_button.configure(state="normal")
+        self.lock_session_button.configure(state="normal")
         self.stop_button.configure(state="normal")
+        self.last_usb_ready = True
         self.status.set(f"Local website running on this PC only: {self.url}")
         locker.log_event("local_control_start", "loopback", "ok")
         self.open_site()
@@ -534,6 +781,38 @@ class LocalControlCenter(tk.Tk):
         if not self.url:
             return
         webbrowser.open(self.url, new=2)
+
+    def copy_url(self):
+        if not self.url:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.url)
+        self.update_idletasks()
+        self.status.set("Same-PC local website address copied.")
+
+    def lock_website_session(self):
+        if self.server is None:
+            return
+        self.server.state.lock_session()
+        self.status.set("Browser control session locked. The local website is still running.")
+        locker.log_event("local_control_desktop_lock", "loopback", "ok")
+
+    def monitor_server_key(self):
+        try:
+            if self.server is not None:
+                ready, _message = self.server.state.usb_status()
+                if not ready and self.last_usb_ready:
+                    self.server.state.lock_session()
+                    self.status.set("USB key removed or changed. Browser control session locked automatically.")
+                    locker.log_event("local_control_usb_removed", "loopback", "failed")
+                self.last_usb_ready = ready
+        finally:
+            try:
+                exists = bool(self.winfo_exists())
+            except tk.TclError:
+                exists = False
+            if exists:
+                self.after(1500, self.monitor_server_key)
 
     def stop_server(self):
         server = self.server
@@ -545,7 +824,10 @@ class LocalControlCenter(tk.Tk):
         server.shutdown()
         server.server_close()
         self.open_button.configure(state="disabled")
+        self.copy_button.configure(state="disabled")
+        self.lock_session_button.configure(state="disabled")
         self.stop_button.configure(state="disabled")
+        self.last_usb_ready = True
         self.status.set("Local control website stopped. No network listener remains.")
         locker.log_event("local_control_stop", "loopback", "ok")
 

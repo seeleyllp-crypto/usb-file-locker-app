@@ -69,13 +69,13 @@ class DesktopHelperTests(unittest.TestCase):
             "action_center": {"count": 9, "items": []},
         }
         with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
-            result = locker.load_customer_workspace_online(state, "2026.07.14.2")
+            result = locker.load_customer_workspace_online(state, "2026.07.14.3")
         self.assertIs(result, response)
         server_url, path, payload = post.call_args.args
         self.assertEqual(server_url, "https://api.example.test")
         self.assertEqual(path, "/api/v1/licenses/customer-workspace")
         self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
-        self.assertEqual(payload["app_version"], "2026.07.14.2")
+        self.assertEqual(payload["app_version"], "2026.07.14.3")
         serialized_payload = json.dumps(payload)
         self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
         self.assertNotIn("machine_id", payload)
@@ -135,11 +135,20 @@ class DesktopHelperTests(unittest.TestCase):
             "personal_vault_pad.py",
             "perm_unlock_workbench.py",
             "audit_log_viewer.py",
+            "quick_lock_note.py",
+            "privacy_safety_hub.py",
+            "text_log_processor.py",
+            "global_breach_guard.py",
         }
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 12)
         self.assertEqual(
-            {script for _label, script in local_control_center.CONTROL_ACTIONS.values()},
+            {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
         )
+        for action in local_control_center.CONTROL_ACTIONS.values():
+            self.assertTrue(action["label"])
+            self.assertTrue(action["category"])
+            self.assertTrue(action["summary"])
         with mock.patch.object(locker, "launch_main_app_process") as main_launch, mock.patch.object(
             locker, "launch_companion_script"
         ) as companion_launch:
@@ -158,12 +167,41 @@ class DesktopHelperTests(unittest.TestCase):
                 state.run_action("session", "csrf", "main_locker")
         self.assertNotIn("D:/private", str(raised.exception))
         self.assertNotIn("PRIVATE-KEY-ID", str(raised.exception))
+        self.assertEqual(state.launch_history, [])
+
+        state.session_token = "session"
+        state.session_csrf = "csrf"
+        state.session_expires_at = local_control_center.time.monotonic() + 60
+        with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")), mock.patch.object(
+            local_control_center, "launch_control_action", return_value="Main Locker"
+        ):
+            self.assertEqual(state.run_action("session", "csrf", "main_locker"), "Main Locker")
+            state.extend_session("session", "csrf")
+        self.assertEqual(len(state.launch_history), 1)
+        self.assertEqual(state.launch_history[0]["action_id"], "main_locker")
+        self.assertEqual(state.launch_history[0]["result"], "ok")
+        self.assertNotIn("D:/private", json.dumps(state.launch_history))
+        for _index in range(25):
+            state.record_launch("main_locker", "ok")
+        self.assertEqual(len(state.launch_history), 20)
+        state.clear_history("session", "csrf")
+        self.assertEqual(state.launch_history, [])
+        self.assertEqual(
+            local_control_center.safe_dashboard_text("D:/private/customer/file.txt"),
+            "Hidden by the local control privacy rule",
+        )
+        self.assertEqual(
+            local_control_center.safe_dashboard_text(VALID_TEST_LICENSE),
+            "Hidden by the local control privacy rule",
+        )
 
     def test_local_control_http_boundary_hides_key_data_and_sets_browser_guards(self):
         class DummyState:
             login_csrf = "LOGIN-CSRF"
             session_token = ""
             session_csrf = "SESSION-CSRF"
+            extended = False
+            history_cleared = False
 
             def usb_status(self):
                 return True, "USB key verified locally."
@@ -182,6 +220,32 @@ class DesktopHelperTests(unittest.TestCase):
 
             def run_action(self, _token, _csrf, _action):
                 return "Main Locker"
+
+            def extend_session(self, _token, _csrf):
+                self.extended = True
+
+            def clear_history(self, _token, _csrf):
+                self.history_cleared = True
+
+            def dashboard_snapshot(self):
+                return {
+                    "version": locker.DESKTOP_APP_VERSION,
+                    "runtime": "Owner lab",
+                    "remaining_seconds": 900,
+                    "remaining_minutes": 15,
+                    "apps": local_control_center.control_action_catalog(),
+                    "available_apps": len(local_control_center.CONTROL_ACTIONS),
+                    "customer": {
+                        "license": "Active",
+                        "plan": "Rank 5",
+                        "desktop": locker.DESKTOP_APP_VERSION,
+                        "api": "0.26.0",
+                        "service": "Normal",
+                        "automatic_updates": "On",
+                    },
+                    "history": [],
+                    "history_limit": 20,
+                }
 
         state = DummyState()
         server = local_control_center.LocalControlHTTPServer(
@@ -220,8 +284,45 @@ class DesktopHelperTests(unittest.TestCase):
             cookie = response.getheader("Set-Cookie")
             self.assertIn("HttpOnly", cookie)
             self.assertIn("SameSite=Strict", cookie)
-            self.assertIn("Approved Local Apps", unlocked_page)
+            self.assertIn("Local Status", unlocked_page)
+            self.assertIn("Recent Launches", unlocked_page)
+            self.assertIn("EXTEND 15 MIN", unlocked_page)
+            self.assertIn("Global Breach Guard", unlocked_page)
+            self.assertIn("12 / 12", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
+            self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
+
+            session_cookie = cookie.split(";", 1)[0]
+            body = urllib.parse.urlencode({"csrf": state.session_csrf})
+            connection.request(
+                "POST",
+                "/extend",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": f"http://127.0.0.1:{port}",
+                    "Cookie": session_cookie,
+                },
+            )
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(state.extended)
+
+            connection.request(
+                "POST",
+                "/clear-history",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": f"http://127.0.0.1:{port}",
+                    "Cookie": session_cookie,
+                },
+            )
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(state.history_cleared)
         finally:
             connection.close()
             server.shutdown()

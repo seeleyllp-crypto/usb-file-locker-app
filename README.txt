@@ -18,6 +18,16 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.3 expands LOCAL CONTROL CENTER into a same-PC dashboard
+  for 12 approved customer apps. It groups tools by task, checks whether each
+  app is available, shows coarse license/update/service/session status, supports
+  explicit session extension and desktop session lock, and keeps at most 20
+  privacy-safe launch entries in memory. Removing or changing the USB key locks
+  browser control automatically. The history disappears when the server stops.
+- The local dashboard still binds only to 127.0.0.1. It cannot choose files,
+  capture encryption PINs, unlock data, accept remote connections, or execute
+  arbitrary commands. Status and history exclude keys, receipts, identities,
+  paths, PINs, filenames, and file contents.
 - Version 2026.07.14.2 adds CUSTOMER SUCCESS tools: a six-factor workspace
   score, 30-day plan, benefit map, action filters, tool search, safe support
   pack, and offline recovery-card export. The owner console adds an aggregate
