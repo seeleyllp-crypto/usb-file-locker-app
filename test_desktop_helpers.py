@@ -1,10 +1,13 @@
 import base64
 import hashlib
+import http.client
 import json
 import os
 import queue
 import tempfile
+import threading
 import unittest
+import urllib.parse
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +17,7 @@ import audit_log_viewer
 import build_signed_update
 import customer_hub
 import license_issuer
+import local_control_center
 import owner_update_lab
 import usb_file_locker as locker
 import vault_health_center
@@ -60,18 +64,18 @@ class DesktopHelperTests(unittest.TestCase):
         )
         response = {
             "ok": True,
-            "workspace_schema_version": 1,
+            "workspace_schema_version": 2,
             "summary": {"status": "active", "plan": {"rank": 3, "name": "Personal Plus"}},
             "action_center": {"count": 9, "items": []},
         }
         with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
-            result = locker.load_customer_workspace_online(state, "2026.07.14.1")
+            result = locker.load_customer_workspace_online(state, "2026.07.14.2")
         self.assertIs(result, response)
         server_url, path, payload = post.call_args.args
         self.assertEqual(server_url, "https://api.example.test")
         self.assertEqual(path, "/api/v1/licenses/customer-workspace")
         self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
-        self.assertEqual(payload["app_version"], "2026.07.14.1")
+        self.assertEqual(payload["app_version"], "2026.07.14.2")
         serialized_payload = json.dumps(payload)
         self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
         self.assertNotIn("machine_id", payload)
@@ -80,7 +84,7 @@ class DesktopHelperTests(unittest.TestCase):
         with mock.patch.object(
             locker,
             "license_api_post_json",
-            return_value={"workspace_schema_version": 2, "summary": {}},
+            return_value={"workspace_schema_version": 3, "summary": {}},
         ):
             with self.assertRaisesRegex(ValueError, "unsupported customer workspace"):
                 locker.load_customer_workspace_online(state)
@@ -88,7 +92,7 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 14)
+        self.assertEqual(len(launchers), 15)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
@@ -98,10 +102,131 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("vault_health_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("local_control_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Local Control Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
+        self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
+
+    def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
+        pin = "Safe-Control-4291"
+        first = local_control_center.create_pin_record(pin, b"A" * 16)
+        second = local_control_center.create_pin_record(pin, b"B" * 16)
+        self.assertTrue(local_control_center.verify_pin_record(pin, first))
+        self.assertFalse(local_control_center.verify_pin_record("wrong-pin", first))
+        self.assertNotEqual(first["digest"], second["digest"])
+        self.assertNotIn(pin, json.dumps(first))
+        with self.assertRaisesRegex(ValueError, "6 to 64"):
+            local_control_center.create_pin_record("12345")
+        with self.assertRaisesRegex(ValueError, "less repetitive"):
+            local_control_center.create_pin_record("111111")
+
+    def test_local_control_is_loopback_only_and_launches_only_allowlisted_apps(self):
+        self.assertEqual(local_control_center.LOCAL_HOST, "127.0.0.1")
+        self.assertEqual(local_control_center.SESSION_SECONDS, 15 * 60)
+        expected_scripts = {
+            None,
+            "customer_hub.py",
+            "vault_health_center.py",
+            "locked_file_browser.py",
+            "key_inspector.py",
+            "personal_vault_pad.py",
+            "perm_unlock_workbench.py",
+            "audit_log_viewer.py",
+        }
+        self.assertEqual(
+            {script for _label, script in local_control_center.CONTROL_ACTIONS.values()},
+            expected_scripts,
+        )
+        with mock.patch.object(locker, "launch_main_app_process") as main_launch, mock.patch.object(
+            locker, "launch_companion_script"
+        ) as companion_launch:
+            self.assertEqual(local_control_center.launch_control_action("main_locker"), "Main Locker")
+            main_launch.assert_called_once_with()
+            self.assertEqual(local_control_center.launch_control_action("key_inspector"), "Key Inspector")
+            companion_launch.assert_called_once_with("key_inspector.py")
+        with self.assertRaisesRegex(ValueError, "not allowed"):
+            local_control_center.launch_control_action("arbitrary-command")
+        state = local_control_center.ControlState("D:/private/master.key", "PRIVATE-KEY-ID")
+        state.session_token = "session"
+        state.session_csrf = "csrf"
+        state.session_expires_at = local_control_center.time.monotonic() + 60
+        with mock.patch.object(state, "usb_status", return_value=(False, "The selected USB key is missing or no longer matches.")):
+            with self.assertRaises(PermissionError) as raised:
+                state.run_action("session", "csrf", "main_locker")
+        self.assertNotIn("D:/private", str(raised.exception))
+        self.assertNotIn("PRIVATE-KEY-ID", str(raised.exception))
+
+    def test_local_control_http_boundary_hides_key_data_and_sets_browser_guards(self):
+        class DummyState:
+            login_csrf = "LOGIN-CSRF"
+            session_token = ""
+            session_csrf = "SESSION-CSRF"
+
+            def usb_status(self):
+                return True, "USB key verified locally."
+
+            def is_authorized(self, token):
+                return bool(self.session_token and token == self.session_token)
+
+            def authenticate(self, pin, csrf):
+                if pin == "Control-2468" and csrf == self.login_csrf:
+                    self.session_token = "SESSION-TOKEN"
+                    return True, "Local control session unlocked."
+                return False, "The local control PIN was not accepted."
+
+            def lock_session(self):
+                self.session_token = ""
+
+            def run_action(self, _token, _csrf, _action):
+                return "Main Locker"
+
+        state = DummyState()
+        server = local_control_center.LocalControlHTTPServer(
+            (local_control_center.LOCAL_HOST, 0),
+            local_control_center.LocalControlHandler,
+            state,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection(local_control_center.LOCAL_HOST, port, timeout=5)
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            page = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+            self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
+            self.assertIn("Unlock Local Control", page)
+            self.assertNotIn("D:/master_usb_file_locker.key", page)
+            self.assertNotIn("SESSION-TOKEN", page)
+
+            body = urllib.parse.urlencode({"pin": "Control-2468", "csrf": state.login_csrf})
+            connection.request(
+                "POST",
+                "/login",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": f"http://127.0.0.1:{port}",
+                },
+            )
+            response = connection.getresponse()
+            unlocked_page = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            cookie = response.getheader("Set-Cookie")
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("SameSite=Strict", cookie)
+            self.assertIn("Approved Local Apps", unlocked_page)
+            self.assertNotIn("SESSION-TOKEN", unlocked_page)
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:

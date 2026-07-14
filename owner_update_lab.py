@@ -46,10 +46,11 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Customer Workspace combines account health, anonymous seats, signed releases, a prioritized action plan, rank tools, milestones, upgrades, and customer routes.",
-    "The Windows Customer Workspace loads the composite response from the saved license and supports a privacy-safe JSON export.",
-    "Owner Customer Experience Console reports aggregate rank coverage, support, service, release adoption, customer surfaces, shop readiness, and storage health.",
-    "Workspace APIs exclude customer identity, license proof, machine identity, receipts, paths, PINs, USB secrets, and file contents.",
+    "Customer Success Workspace adds a six-factor operational score, 30-day plan, benefit map, action filters, tool search, and separate safe support and recovery exports.",
+    "Local Control Center runs a same-PC website on 127.0.0.1 with USB-presence checks, a Windows-protected scrypt PIN verifier, rate limits, CSRF protection, and 15-minute sessions.",
+    "Local Control Center launches only eight approved desktop apps; it never accepts remote connections or performs file lock and unlock operations in the browser.",
+    "Owner Customer Experience Console adds an aggregate experience score, customer journey, renewal buckets, rank percentages, surface readiness, and journey CSV export.",
+    "Customer and owner APIs exclude customer identity, license proof, machine identity, receipts, paths, PINs, USB secrets, file contents, and control credentials.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

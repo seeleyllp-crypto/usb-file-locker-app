@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.14.1"
+DESKTOP_APP_VERSION = "2026.07.14.2"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2677,7 +2677,7 @@ def load_customer_workspace_online(state, app_version=None):
             "app_version": str(app_version or DESKTOP_APP_VERSION).strip()[:80],
         },
     )
-    if payload.get("workspace_schema_version") != 1 or not isinstance(payload.get("summary"), dict):
+    if payload.get("workspace_schema_version") != 2 or not isinstance(payload.get("summary"), dict):
         raise ValueError("The API returned an unsupported customer workspace response.")
     return payload
 
@@ -4964,6 +4964,19 @@ class USBFileLocker(tk.Tk):
         self.readiness_button = tk.Button(customer_row, text="RECOVERY READINESS", command=self.open_recovery_readiness, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.readiness_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
+        local_control_row = tk.Frame(panel, bg=PANEL)
+        local_control_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(local_control_row, text="SAME-PC WEBSITE", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+        self.local_control_button = tk.Button(local_control_row, text="LOCAL CONTROL CENTER", command=self.open_local_control_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.local_control_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        tk.Label(
+            local_control_row,
+            text="Requires the USB key and a separate control PIN. It listens only on 127.0.0.1.",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        ).pack(side="left", padx=(12, 0))
+
         storage_row = tk.Frame(panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
         tk.Label(storage_row, text="DATA AND BACKUPS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
@@ -5704,6 +5717,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open the Customer Workspace.")
             log_event("customer_workspace_open", "api", "failed")
             messagebox.showerror("Could not open Customer Workspace", str(exc), parent=self)
+
+    def open_local_control_center(self):
+        try:
+            launch_companion_script("local_control_center.py")
+            self.status.set("Opened the same-PC Local Control Center.")
+            log_event("local_control_center_open", "loopback", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the Local Control Center.")
+            log_event("local_control_center_open", "loopback", "failed")
+            messagebox.showerror("Could not open Local Control Center", str(exc), parent=self)
 
     def open_owner_news(self):
         if self.news_window is not None and self.news_window.winfo_exists():

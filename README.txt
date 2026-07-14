@@ -18,6 +18,17 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.2 adds CUSTOMER SUCCESS tools: a six-factor workspace
+  score, 30-day plan, benefit map, action filters, tool search, safe support
+  pack, and offline recovery-card export. The owner console adds an aggregate
+  experience score, customer journey, renewal buckets, rank percentages,
+  surface readiness, and journey CSV export.
+- Version 2026.07.14.2 also adds LOCAL CONTROL CENTER. It runs only on
+  127.0.0.1 on the same PC, requires the selected USB key plus a separate
+  Windows-protected scrypt control PIN, rate-limits failed attempts, uses CSRF
+  protection, and locks the session after 15 minutes. It launches only eight
+  approved desktop apps. It cannot accept remote connections, upload secrets,
+  execute arbitrary commands, or lock and unlock files inside the browser.
 - Version 2026.07.14.1 is the CUSTOMER WORKSPACE update. It combines license
   health, anonymous seats, signed release status, a nine-item action plan,
   unlocked rank tools, milestones, upgrade options, customer links, and a

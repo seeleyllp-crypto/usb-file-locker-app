@@ -36,6 +36,8 @@ class CustomerHub(tk.Tk):
         self.verify_button = None
         self.workspace_button = None
         self.export_button = None
+        self.support_export_button = None
+        self.recovery_export_button = None
         self.refresh_button = None
         self.rank_box = None
         self.workspace_box = None
@@ -112,8 +114,14 @@ class CustomerHub(tk.Tk):
         workspace_head = tk.Frame(outer, bg=locker.BG)
         workspace_head.pack(fill="x", pady=(14, 6))
         tk.Label(workspace_head, text="CUSTOMER ACTION PLAN", bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
-        self.export_button = tk.Button(workspace_head, text="EXPORT SAFE JSON", command=self.export_workspace, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
-        self.export_button.pack(side="right", ipadx=10, ipady=5)
+        workspace_actions = tk.Frame(outer, bg=locker.BG)
+        workspace_actions.pack(fill="x", pady=(0, 6))
+        self.export_button = tk.Button(workspace_actions, text="EXPORT SAFE JSON", command=self.export_workspace, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.export_button.pack(side="left", ipadx=10, ipady=5)
+        self.support_export_button = tk.Button(workspace_actions, text="EXPORT SUPPORT PACK", command=self.export_support_pack, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.support_export_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        self.recovery_export_button = tk.Button(workspace_actions, text="EXPORT RECOVERY CARD", command=self.export_recovery_card, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.recovery_export_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         self.workspace_box = tk.Text(outer, height=12, bg=locker.FIELD, fg=locker.TEXT, relief="flat", wrap="word", font=("Segoe UI", 9), padx=12, pady=10, state="disabled")
         self.workspace_box.pack(fill="both", expand=True)
         tk.Label(outer, textvariable=self.status_var, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9), wraplength=760, justify="left").pack(anchor="w", pady=(10, 0))
@@ -130,8 +138,10 @@ class CustomerHub(tk.Tk):
             self.verify_button.configure(state="normal" if has_proof and not self.busy else "disabled")
         if self.workspace_button is not None:
             self.workspace_button.configure(state="normal" if self.state.get("license_key") and not self.busy else "disabled")
-        if self.export_button is not None:
-            self.export_button.configure(state="normal" if self.workspace and not self.busy else "disabled")
+        export_state = "normal" if self.workspace and not self.busy else "disabled"
+        for button in (self.export_button, self.support_export_button, self.recovery_export_button):
+            if button is not None:
+                button.configure(state=export_state)
 
     def render_ranks(self, items):
         lines = []
@@ -160,15 +170,27 @@ class CustomerHub(tk.Tk):
             checkup = self.workspace.get("checkup") or {}
             action_center = self.workspace.get("action_center") or {}
             rank_tools = self.workspace.get("rank_tools") or {}
+            score = self.workspace.get("workspace_score") or {}
+            success_plan = self.workspace.get("success_plan") or {}
+            benefit_map = self.workspace.get("benefit_map") or {}
             lines.extend(
                 [
+                    f"WORKSPACE SCORE | {score.get('score', 0)} / {score.get('maximum', 100)} - {str(score.get('label', 'unknown')).upper()}",
                     f"STATUS | {str(summary.get('status', 'unknown')).upper()}",
                     f"RANK | {plan.get('rank', '?')} - {plan.get('name', 'Unknown')}",
                     f"ATTENTION | {checkup.get('attention_count', 0)} item(s)",
                     f"RANK TOOLS | {rank_tools.get('unlocked_count', 0)} unlocked",
+                    f"BENEFITS | {benefit_map.get('unlocked_count', 0)} included",
                     "",
+                    "30-DAY SUCCESS PLAN",
                 ]
             )
+            for label, key in (("TODAY", "today"), ("THIS WEEK", "this_week"), ("THIS MONTH", "this_month")):
+                items = success_plan.get(key) or []
+                lines.append(f"{label} | {len(items)} action(s)")
+                for item in items:
+                    lines.append(f"   - {item.get('title', 'Review item')}")
+            lines.extend(["", "PRIORITY ACTION DETAILS"])
             for index, item in enumerate(action_center.get("items") or [], 1):
                 lines.append(
                     f"{index}. {str(item.get('when', 'maintain')).upper()} | {item.get('title', 'Review item')}\n"
@@ -206,26 +228,50 @@ class CustomerHub(tk.Tk):
         threading.Thread(target=worker, name="CustomerWorkspaceLoad", daemon=True).start()
         self.after(75, self.poll_results)
 
-    def export_workspace(self):
+    def export_payload(self, payload, title, initialfile, audit_action):
         if not self.workspace:
             self.status_var.set("Load the full customer workspace before exporting.")
             return
         destination = filedialog.asksaveasfilename(
             parent=self,
-            title="Export privacy-safe customer workspace",
+            title=title,
             defaultextension=".json",
-            initialfile="vaultlink-customer-workspace.json",
+            initialfile=initialfile,
             filetypes=[("JSON report", "*.json")],
         )
         if not destination:
             return
         try:
-            locker.write_text_atomic(destination, json.dumps(self.workspace, indent=2))
-            self.status_var.set("Privacy-safe customer workspace exported.")
-            locker.log_event("customer_workspace_export", "local", "ok")
+            locker.write_text_atomic(destination, json.dumps(payload, indent=2))
+            self.status_var.set(f"{title} saved.")
+            locker.log_event(audit_action, "local", "ok")
         except Exception as exc:
-            locker.log_event("customer_workspace_export", "local", "failed")
-            messagebox.showerror("Could not export workspace", str(exc), parent=self)
+            locker.log_event(audit_action, "local", "failed")
+            messagebox.showerror(f"Could not save {title.lower()}", str(exc), parent=self)
+
+    def export_workspace(self):
+        self.export_payload(
+            self.workspace,
+            "Privacy-safe customer workspace",
+            "vaultlink-customer-workspace.json",
+            "customer_workspace_export",
+        )
+
+    def export_support_pack(self):
+        self.export_payload(
+            (self.workspace or {}).get("support_pack") or {},
+            "Privacy-safe support pack",
+            "vaultlink-support-pack.json",
+            "customer_support_pack_export",
+        )
+
+    def export_recovery_card(self):
+        self.export_payload(
+            (self.workspace or {}).get("recovery_card") or {},
+            "Offline recovery card",
+            "vaultlink-offline-recovery-card.json",
+            "customer_recovery_card_export",
+        )
 
     def refresh_public_info(self):
         if self.busy:
