@@ -11,6 +11,24 @@ from tkinter import filedialog, messagebox, ttk
 import usb_file_locker as locker
 
 
+BASELINE_FILE = locker.APP_DIR / "vault_health_baseline.json"
+BASELINE_COUNTER_KEYS = {
+    "health_counts": {"healthy", "legacy", "review", "unreadable", "issue", "unknown"},
+    "format_counts": {"portable", "legacy windows-only", "unreadable", "unknown"},
+    "kind_counts": {"file", "folder", "vault_export", "unknown"},
+    "key_match_counts": {"match", "mismatch", "missing key id", "not checked", "unknown"},
+    "recovery_counts": {
+        "key id covered",
+        "key not checked",
+        "matching key needed",
+        "upgrade first",
+        "review",
+        "unreadable",
+        "unknown",
+    },
+}
+
+
 def normalize_key_ids(loaded_key_ids):
     if not loaded_key_ids:
         return set()
@@ -32,6 +50,10 @@ def recovery_status(row, key_check_enabled=False):
     if row.get("key_match") == "match":
         return "Key ID covered"
     return "Matching key needed"
+
+
+def row_needs_attention(row):
+    return str(row.get("health", "")).lower() != "healthy" or str(row.get("recovery", "")).lower() == "matching key needed"
 
 
 def inspect_locked_file(path, loaded_key_ids=None):
@@ -160,6 +182,95 @@ def build_privacy_safe_health_report(rows, scope="scan", loaded_key=False):
     }
 
 
+def normalize_baseline_counter(report, field):
+    source = report.get(field) or {}
+    if not isinstance(source, dict):
+        raise ValueError(f"Baseline {field} must be an object.")
+    normalized = {}
+    for key in BASELINE_COUNTER_KEYS[field]:
+        try:
+            value = int(source.get(key, 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Baseline {field} contains an invalid count.") from exc
+        if value < 0 or value > 1_000_000_000:
+            raise ValueError(f"Baseline {field} contains an out-of-range count.")
+        if value:
+            normalized[key] = value
+    return dict(sorted(normalized.items()))
+
+
+def build_health_baseline(report):
+    if not isinstance(report, dict) or report.get("report_type") != "vaultlink-vault-health":
+        raise ValueError("Only a VaultLink privacy-safe health report can become a baseline.")
+    try:
+        locked_file_count = int(report.get("locked_file_count", 0))
+        loaded_key_count = int(report.get("loaded_key_count", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("The health report contains invalid aggregate totals.") from exc
+    if locked_file_count < 0 or loaded_key_count < 0:
+        raise ValueError("The health report contains negative aggregate totals.")
+    coverage = report.get("key_coverage_percent")
+    if coverage is not None:
+        try:
+            coverage = round(float(coverage), 1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("The health report contains invalid key coverage.") from exc
+        if not 0 <= coverage <= 100:
+            raise ValueError("The health report contains out-of-range key coverage.")
+    return {
+        "schema_version": 1,
+        "baseline_type": "vaultlink-vault-health-aggregate",
+        "saved_at_utc": locker.utc_now_text(),
+        "locked_file_count": min(locked_file_count, 1_000_000_000),
+        "loaded_key_count": min(loaded_key_count, 1_000_000),
+        "key_coverage_percent": coverage,
+        **{
+            field: normalize_baseline_counter(report, field)
+            for field in BASELINE_COUNTER_KEYS
+        },
+        "privacy_note": "Aggregate counters only. No filenames, paths, key IDs, secrets, PINs, passwords, licenses, or contents.",
+    }
+
+
+def save_health_baseline(report, path=BASELINE_FILE):
+    baseline = build_health_baseline(report)
+    locker.write_text_atomic(Path(path), json.dumps(baseline, indent=2))
+    return baseline
+
+
+def load_health_baseline(path=BASELINE_FILE):
+    baseline = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(baseline, dict) or baseline.get("baseline_type") != "vaultlink-vault-health-aggregate":
+        raise ValueError("That file is not a VaultLink aggregate health baseline.")
+    report_shape = {
+        "report_type": "vaultlink-vault-health",
+        "locked_file_count": baseline.get("locked_file_count", 0),
+        "loaded_key_count": baseline.get("loaded_key_count", 0),
+        "key_coverage_percent": baseline.get("key_coverage_percent"),
+        **{
+            field: baseline.get(field, {})
+            for field in BASELINE_COUNTER_KEYS
+        },
+    }
+    normalized = build_health_baseline(report_shape)
+    saved_at = str(baseline.get("saved_at_utc", "")).strip()
+    normalized["saved_at_utc"] = saved_at if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", saved_at) else "unknown"
+    return normalized
+
+
+def baseline_as_health_report(baseline):
+    return {
+        "report_type": "vaultlink-vault-health",
+        "locked_file_count": baseline.get("locked_file_count", 0),
+        "loaded_key_count": baseline.get("loaded_key_count", 0),
+        "key_coverage_percent": baseline.get("key_coverage_percent"),
+        **{
+            field: dict(baseline.get(field) or {})
+            for field in BASELINE_COUNTER_KEYS
+        },
+    }
+
+
 def compare_health_reports(previous, current):
     for label, report in (("Previous", previous), ("Current", current)):
         if not isinstance(report, dict) or report.get("report_type") != "vaultlink-vault-health":
@@ -171,8 +282,14 @@ def compare_health_reports(previous, current):
         except (TypeError, ValueError):
             return 0
 
-    previous_concerns = sum(count(previous, "health_counts", name) for name in ("legacy", "review", "unreadable"))
-    current_concerns = sum(count(current, "health_counts", name) for name in ("legacy", "review", "unreadable"))
+    def concern_count(report):
+        recovery = report.get("recovery_counts") or {}
+        if isinstance(recovery, dict) and recovery:
+            return sum(count(report, "recovery_counts", name) for name in ("matching key needed", "upgrade first", "review", "unreadable"))
+        return sum(count(report, "health_counts", name) for name in ("legacy", "review", "unreadable"))
+
+    previous_concerns = concern_count(previous)
+    current_concerns = concern_count(current)
     if current_concerns < previous_concerns:
         trend = "improved"
     elif current_concerns > previous_concerns:
@@ -192,6 +309,21 @@ def compare_health_reports(previous, current):
         "key_covered_delta": count(current, "key_match_counts", "match") - count(previous, "key_match_counts", "match"),
         "privacy_note": "The comparison uses aggregate counters only and contains no filenames, paths, key IDs, secrets, or contents.",
     }
+
+
+def build_safe_summary_text(report):
+    health = report.get("health_counts") or {}
+    recovery = report.get("recovery_counts") or {}
+    coverage = report.get("key_coverage_percent")
+    coverage_text = "not checked" if coverage is None else f"{float(coverage):.1f}%"
+    return (
+        "VaultLink privacy-safe health summary\n"
+        f"Locked items: {int(report.get('locked_file_count', 0))}\n"
+        f"Healthy: {int(health.get('healthy', 0))} | Legacy: {int(health.get('legacy', 0))} | "
+        f"Review: {int(health.get('review', 0))} | Unreadable: {int(health.get('unreadable', 0))}\n"
+        f"Key coverage: {coverage_text} | Matching key needed: {int(recovery.get('matching key needed', 0))}\n"
+        "Contains aggregate counters only; no names, paths, key IDs, secrets, PINs, licenses, or contents."
+    )
 
 
 class VaultHealthCenter(tk.Tk):
@@ -215,10 +347,12 @@ class VaultHealthCenter(tk.Tk):
         self.status_var = tk.StringVar(value="Ready for a read-only locked-file health scan.")
         self.key_var = tk.StringVar(value="KEY COVERAGE: NO KEYS LOADED")
         self.summary_var = tk.StringVar(value="No scan has run yet.")
-        self.comparison_var = tk.StringVar(value="SAFE SNAPSHOT: Run a scan, export it, then compare a later scan.")
+        self.comparison_var = tk.StringVar(value="LOCAL BASELINE: Not saved")
         self.search_var = tk.StringVar()
+        self.attention_only_var = tk.BooleanVar(value=False)
         self.scan_buttons = []
         self.build_ui()
+        self.refresh_baseline_status()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
 
     def build_ui(self):
@@ -271,33 +405,56 @@ class VaultHealthCenter(tk.Tk):
             self.scan_buttons.append(button)
         self.stop_button = tk.Button(primary_toolbar, text="STOP SCAN", command=self.cancel_scan, state="disabled", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.stop_button.pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
+        for label, command in (("OPEN MAIN LOCKER", self.open_main_locker), ("OPEN LOCKED BROWSER", self.open_locked_browser)):
+            tk.Button(primary_toolbar, text=label, command=command, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
 
         secondary_toolbar = tk.Frame(outer, bg=locker.BG)
         secondary_toolbar.pack(fill="x", pady=(0, 12))
         secondary_actions = [
             ("ADD KEY FOR COVERAGE", self.load_key, "#252936", locker.TEXT),
+            ("ADD KEY FOLDER", self.load_key_folder, "#252936", locker.TEXT),
             ("CLEAR KEY IDS", self.clear_keys, "#252936", locker.TEXT),
-            ("COMPARE SAFE SNAPSHOT", self.compare_snapshot, "#252936", locker.TEXT),
             ("EXPORT SAFE REPORT", self.export_report, "#252936", locker.TEXT),
-            ("OPEN MAIN LOCKER", self.open_main_locker, "#252936", locker.TEXT),
-            ("OPEN LOCKED BROWSER", self.open_locked_browser, "#252936", locker.TEXT),
+            ("COPY SAFE SUMMARY", self.copy_safe_summary, "#252936", locker.TEXT),
         ]
         for label, command, background, foreground in secondary_actions:
             button = tk.Button(secondary_toolbar, text=label, command=command, bg=background, fg=foreground, relief="flat", font=("Segoe UI", 8, "bold"))
-            button.pack(side="left", padx=(0, 8), ipadx=9, ipady=7)
+            button.pack(side="left", padx=(0, 8), ipadx=7, ipady=7)
+        baseline_button = tk.Menubutton(secondary_toolbar, text="BASELINE AND SNAPSHOTS", bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), activebackground="#303646", activeforeground=locker.TEXT)
+        baseline_menu = tk.Menu(baseline_button, tearoff=False, bg=locker.FIELD, fg=locker.TEXT, activebackground=locker.GREEN, activeforeground=locker.BLACK)
+        baseline_menu.add_command(label="Save current local baseline", command=self.save_local_baseline)
+        baseline_menu.add_command(label="Compare local baseline now", command=self.compare_local_baseline)
+        baseline_menu.add_command(label="Clear local baseline", command=self.clear_local_baseline)
+        baseline_menu.add_separator()
+        baseline_menu.add_command(label="Compare external safe snapshot", command=self.compare_snapshot)
+        baseline_button.configure(menu=baseline_menu)
+        baseline_button.pack(side="left", padx=(0, 8), ipadx=7, ipady=7)
 
         summary = tk.Frame(outer, bg=locker.PANEL)
         summary.pack(fill="x", pady=(0, 12))
         tk.Label(summary, textvariable=self.key_var, bg=locker.PANEL, fg=locker.YELLOW, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
         tk.Label(summary, textvariable=self.summary_var, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 10, "bold"), wraplength=1050, justify="left").pack(anchor="w", padx=16, pady=2)
-        tk.Label(summary, textvariable=self.comparison_var, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8), wraplength=1050, justify="left").pack(anchor="w", padx=16, pady=(2, 12))
+        self.comparison_label = tk.Label(summary, textvariable=self.comparison_var, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 8), wraplength=1050, justify="left")
+        self.comparison_label.pack(anchor="w", padx=16, pady=(2, 12))
 
         search_row = tk.Frame(outer, bg=locker.BG)
         search_row.pack(fill="x", pady=(0, 10))
         tk.Label(search_row, text="FILTER", bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         search = tk.Entry(search_row, textvariable=self.search_var, bg=locker.FIELD, fg=locker.TEXT, insertbackground=locker.TEXT, relief="flat", font=("Segoe UI", 10))
-        search.pack(side="left", fill="x", expand=True, padx=(10, 0), ipady=6)
+        search.pack(side="left", fill="x", expand=True, padx=(10, 12), ipady=6)
         search.bind("<KeyRelease>", lambda _event: self.apply_filter())
+        tk.Checkbutton(
+            search_row,
+            text="ATTENTION ONLY",
+            variable=self.attention_only_var,
+            command=self.apply_filter,
+            bg=locker.BG,
+            fg=locker.YELLOW,
+            selectcolor=locker.FIELD,
+            activebackground=locker.BG,
+            activeforeground=locker.YELLOW,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="right")
 
         body = tk.PanedWindow(outer, sashwidth=6, bg=locker.BG, bd=0, relief="flat")
         body.pack(fill="both", expand=True)
@@ -398,6 +555,7 @@ class VaultHealthCenter(tk.Tk):
         else:
             self.status_var.set("Read-only vault health scan complete. No locked file was modified or decrypted.")
             locker.log_event("vault_health_scan", "scan", "ok")
+            self.compare_local_baseline(silent=True)
 
     def update_summary(self):
         report = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
@@ -419,43 +577,72 @@ class VaultHealthCenter(tk.Tk):
         try:
             key = locker.load_key_file(path)
             self.loaded_key_ids.add(key["key_id"].lower())
-            key_count = len(self.loaded_key_ids)
-            self.key_var.set(f"KEY COVERAGE: {key_count} KEY ID{'S' if key_count != 1 else ''} LOADED")
             self.status_var.set("Added a key ID for aggregate coverage checks. The USB secret is not retained by this window.")
-            if self.rows:
-                self.rows = [inspect_locked_file(row["path"], self.loaded_key_ids) for row in self.rows]
-                self.apply_filter()
-                self.update_summary()
+            self.refresh_key_results()
             locker.log_event("vault_health_key_check", "key", "ok")
         except Exception as exc:
             self.status_var.set("Could not load the selected key for compatibility checking.")
             locker.log_event("vault_health_key_check", "key", "failed")
             messagebox.showerror("Key check failed", str(exc), parent=self)
 
-    def clear_keys(self):
-        self.loaded_key_ids.clear()
-        self.key_var.set("KEY COVERAGE: NO KEYS LOADED")
+    def load_key_folder(self):
+        folder = filedialog.askdirectory(title="Choose folder containing USB locker keys", parent=self)
+        if not folder:
+            return
+        try:
+            candidates = [path for path in Path(folder).iterdir() if path.is_file() and path.suffix.lower() == ".key"]
+        except Exception as exc:
+            locker.log_event("vault_health_key_folder", "key", "failed")
+            messagebox.showerror("Could not read key folder", str(exc), parent=self)
+            return
+        limited = len(candidates) > 250
+        loaded = 0
+        invalid = 0
+        for path in sorted(candidates, key=lambda candidate: candidate.name.lower())[:250]:
+            try:
+                key = locker.load_key_file(path)
+                before = len(self.loaded_key_ids)
+                self.loaded_key_ids.add(key["key_id"].lower())
+                loaded += int(len(self.loaded_key_ids) > before)
+                del key
+            except Exception:
+                invalid += 1
+        self.refresh_key_results()
+        limit_text = " The first 250 key files were checked." if limited else ""
+        self.status_var.set(f"Added {loaded} unique key ID(s); skipped {invalid} invalid key file(s).{limit_text}")
+        locker.log_event("vault_health_key_folder", "key", "ok" if not invalid else "partial")
+
+    def refresh_key_results(self):
+        key_count = len(self.loaded_key_ids)
+        self.key_var.set(f"KEY COVERAGE: {key_count} KEY ID{'S' if key_count != 1 else ''} LOADED" if key_count else "KEY COVERAGE: NO KEYS LOADED")
         if self.rows:
-            self.rows = [inspect_locked_file(row["path"]) for row in self.rows]
+            self.rows = [inspect_locked_file(row["path"], self.loaded_key_ids) for row in self.rows]
             self.apply_filter()
             self.update_summary()
+            self.compare_local_baseline(silent=True)
+
+    def clear_keys(self):
+        self.loaded_key_ids.clear()
+        self.refresh_key_results()
         self.status_var.set("Cleared all loaded key IDs from this window. Locked files were not changed.")
         locker.log_event("vault_health_key_check", "clear", "ok")
 
     def apply_filter(self):
         needle = self.search_var.get().strip().lower()
-        if needle:
-            self.filtered_rows = [
-                row for row in self.rows
-                if needle in row["name"].lower()
+        attention_only = self.attention_only_var.get()
+        self.filtered_rows = [
+            row for row in self.rows
+            if (not attention_only or row_needs_attention(row))
+            and (
+                not needle
+                or needle in row["name"].lower()
                 or needle in row["folder"].lower()
                 or needle in row["format"].lower()
                 or needle in row["health"].lower()
                 or needle in row["key_match"].lower()
                 or needle in row["recovery"].lower()
-            ]
-        else:
-            self.filtered_rows = list(self.rows)
+            )
+        ]
         self.tree.delete(*self.tree.get_children())
         for index, row in enumerate(self.filtered_rows):
             self.tree.insert("", "end", iid=str(index), values=(row["name"], row["format"], row["health"], row["key_match"], row["recovery"]))
@@ -516,6 +703,102 @@ class VaultHealthCenter(tk.Tk):
             locker.log_event("vault_health_report_export", "report", "failed")
             messagebox.showerror("Report export failed", str(exc), parent=self)
 
+    def copy_safe_summary(self):
+        report = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(build_safe_summary_text(report))
+            self.status_var.set("Copied aggregate health counters without filenames, paths, key IDs, or secrets.")
+            locker.log_event("vault_health_summary_copy", "report", "ok")
+        except Exception as exc:
+            locker.log_event("vault_health_summary_copy", "report", "failed")
+            messagebox.showerror("Could not copy summary", str(exc), parent=self)
+
+    def set_comparison_display(self, comparison, prefix="LOCAL BASELINE"):
+        self.comparison_var.set(
+            f"{prefix}: {comparison['trend'].upper()} | Files {comparison['locked_file_count_delta']:+d} | "
+            f"Healthy {comparison['healthy_delta']:+d} | Legacy {comparison['legacy_delta']:+d} | "
+            f"Review {comparison['review_delta']:+d} | Unreadable {comparison['unreadable_delta']:+d} | "
+            f"Key covered {comparison['key_covered_delta']:+d}"
+        )
+        color = locker.YELLOW if comparison["trend"] == "needs attention" else locker.GREEN if comparison["trend"] == "improved" else locker.MUTED
+        self.comparison_label.configure(fg=color)
+
+    def refresh_baseline_status(self):
+        if not BASELINE_FILE.is_file():
+            self.comparison_var.set("LOCAL BASELINE: Not saved")
+            self.comparison_label.configure(fg=locker.MUTED)
+            return
+        try:
+            baseline = load_health_baseline()
+            self.comparison_var.set(
+                f"LOCAL BASELINE: Saved {baseline.get('saved_at_utc', 'unknown time')} | "
+                f"Locked items {baseline.get('locked_file_count', 0)}"
+            )
+            self.comparison_label.configure(fg=locker.MUTED)
+        except Exception:
+            self.comparison_var.set("LOCAL BASELINE: Invalid or damaged; clear it before saving a new one")
+            self.comparison_label.configure(fg=locker.YELLOW)
+
+    def save_local_baseline(self):
+        if not self.rows:
+            messagebox.showinfo("Run a scan first", "Run a vault health scan before saving a local baseline.", parent=self)
+            return
+        if BASELINE_FILE.exists() and not messagebox.askyesno(
+            "Replace local baseline",
+            "Replace the current aggregate health baseline with this scan?",
+            parent=self,
+        ):
+            return
+        try:
+            report = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
+            baseline = save_health_baseline(report)
+            self.comparison_var.set(f"LOCAL BASELINE: SAVED | Locked items {baseline['locked_file_count']}")
+            self.comparison_label.configure(fg=locker.GREEN)
+            self.status_var.set("Saved aggregate counters only. The local baseline contains no names, paths, key IDs, secrets, or contents.")
+            locker.log_event("vault_health_baseline", "save", "ok")
+        except Exception as exc:
+            locker.log_event("vault_health_baseline", "save", "failed")
+            messagebox.showerror("Could not save baseline", str(exc), parent=self)
+
+    def compare_local_baseline(self, silent=False):
+        if not self.rows or not BASELINE_FILE.is_file():
+            if not silent:
+                messagebox.showinfo("Baseline unavailable", "Run a scan and save a local baseline first.", parent=self)
+            else:
+                self.refresh_baseline_status()
+            return
+        try:
+            baseline = load_health_baseline()
+            current = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
+            comparison = compare_health_reports(baseline_as_health_report(baseline), current)
+            self.set_comparison_display(comparison)
+            if not silent:
+                self.status_var.set("Compared the current aggregate counters with the local privacy-safe baseline.")
+            locker.log_event("vault_health_baseline", "compare", "ok")
+        except Exception as exc:
+            locker.log_event("vault_health_baseline", "compare", "failed")
+            if silent:
+                self.comparison_var.set("LOCAL BASELINE: Comparison failed; baseline may need to be cleared")
+                self.comparison_label.configure(fg=locker.YELLOW)
+            else:
+                messagebox.showerror("Baseline comparison failed", str(exc), parent=self)
+
+    def clear_local_baseline(self):
+        if not BASELINE_FILE.exists():
+            self.refresh_baseline_status()
+            return
+        if not messagebox.askyesno("Clear local baseline", "Remove the aggregate health baseline from this Windows account?", parent=self):
+            return
+        try:
+            BASELINE_FILE.unlink(missing_ok=True)
+            self.refresh_baseline_status()
+            self.status_var.set("Cleared the local aggregate health baseline. Locked files were not changed.")
+            locker.log_event("vault_health_baseline", "clear", "ok")
+        except Exception as exc:
+            locker.log_event("vault_health_baseline", "clear", "failed")
+            messagebox.showerror("Could not clear baseline", str(exc), parent=self)
+
     def compare_snapshot(self):
         if not self.rows:
             messagebox.showinfo("Run a scan first", "Run a vault health scan before comparing a previous safe snapshot.", parent=self)
@@ -531,12 +814,7 @@ class VaultHealthCenter(tk.Tk):
             previous = json.loads(Path(path).read_text(encoding="utf-8"))
             current = build_privacy_safe_health_report(self.rows, self.scope, len(self.loaded_key_ids))
             comparison = compare_health_reports(previous, current)
-            self.comparison_var.set(
-                f"SAFE SNAPSHOT: {comparison['trend'].upper()} | Files {comparison['locked_file_count_delta']:+d} | "
-                f"Healthy {comparison['healthy_delta']:+d} | Legacy {comparison['legacy_delta']:+d} | "
-                f"Review {comparison['review_delta']:+d} | Unreadable {comparison['unreadable_delta']:+d} | "
-                f"Key covered {comparison['key_covered_delta']:+d}"
-            )
+            self.set_comparison_display(comparison, "SAFE SNAPSHOT")
             self.status_var.set("Compared aggregate privacy-safe counters. No filenames, paths, or key IDs were imported.")
             locker.log_event("vault_health_snapshot_compare", "report", "ok")
         except Exception as exc:

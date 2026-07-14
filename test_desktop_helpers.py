@@ -94,6 +94,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(wrong_key["key_match"], "mismatch")
             self.assertEqual(wrong_key["health"], "Healthy")
             self.assertEqual(wrong_key["recovery"], "Matching key needed")
+            self.assertTrue(vault_health_center.row_needs_attention(wrong_key))
+            self.assertFalse(vault_health_center.row_needs_attention(healthy))
 
             damaged_path = root / "damaged.locked"
             damaged_path.write_bytes(b"not-a-vaultlink-lock")
@@ -120,11 +122,36 @@ class DesktopHelperTests(unittest.TestCase):
             ):
                 self.assertNotIn(forbidden, serialized)
 
+            baseline_path = root / "health-baseline.json"
+            report["unexpected_private_path"] = str(root)
+            baseline = vault_health_center.save_health_baseline(report, baseline_path)
+            loaded_baseline = vault_health_center.load_health_baseline(baseline_path)
+            self.assertEqual(loaded_baseline["baseline_type"], "vaultlink-vault-health-aggregate")
+            self.assertEqual(loaded_baseline["locked_file_count"], 3)
+            self.assertEqual(loaded_baseline["loaded_key_count"], 2)
+            self.assertEqual(baseline["health_counts"]["healthy"], 2)
+            baseline_text = baseline_path.read_text(encoding="utf-8").lower()
+            self.assertNotIn("unexpected_private_path", baseline_text)
+            for forbidden in ("private-client-name", str(root).lower(), key["key_id"], "private contents"):
+                self.assertNotIn(forbidden, baseline_text)
+
+            safe_summary = vault_health_center.build_safe_summary_text(report).lower()
+            self.assertIn("locked items: 3", safe_summary)
+            self.assertNotIn("private-client-name", safe_summary)
+            self.assertNotIn(str(root).lower(), safe_summary)
+            self.assertNotIn(key["key_id"], safe_summary)
+
             previous = dict(report)
             previous["health_counts"] = {"healthy": 1, "review": 1, "unreadable": 1}
+            previous["recovery_counts"] = {"review": 2, "unreadable": 1}
             comparison = vault_health_center.compare_health_reports(previous, report)
             self.assertEqual(comparison["comparison_type"], "vaultlink-vault-health-aggregate")
             self.assertEqual(comparison["trend"], "improved")
+            baseline_comparison = vault_health_center.compare_health_reports(
+                vault_health_center.baseline_as_health_report(loaded_baseline),
+                report,
+            )
+            self.assertEqual(baseline_comparison["trend"], "unchanged")
             comparison_text = json.dumps(comparison).lower()
             self.assertNotIn("private-client-name", comparison_text)
             self.assertNotIn(str(root).lower(), comparison_text)
