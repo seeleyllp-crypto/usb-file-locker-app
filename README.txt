@@ -18,12 +18,15 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.13.4 adds a local aggregate health baseline, automatic drift
+  warnings, key-folder coverage, attention-only filtering, and privacy-safe
+  copied summaries to VAULT HEALTH CENTER. Baselines and summaries exclude
+  names, paths, key IDs, secrets, PINs, licenses, and contents. Signed updates
+  preserve the baseline with other LocalAppData.
 - Version 2026.07.13.3 adds VAULT HEALTH CENTER for read-only locked-file
-  structure checks, legacy review, recovery status, key-folder coverage, safe
-  cancellation, attention filtering, snapshot comparison, and a local aggregate
-  baseline with drift warnings. Reports, copied summaries, and the baseline
-  exclude names, paths, key IDs, secrets, and contents. It also adds signed
-  release details and SHA-256 copy,
+  structure checks, legacy review, recovery status, multi-key coverage, safe
+  cancellation, and aggregate snapshot comparison. It also adds signed release
+  details, SHA-256 copy,
   verification receipts, local readiness, verified download-only mode, anonymous
   update activity, rollback-backup access, and app-data backup to UPDATE CENTER.
   The private OWNER UPDATE LAB adds a 15-check preflight, package inspector,
