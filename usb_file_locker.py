@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.13.5"
+DESKTOP_APP_VERSION = "2026.07.14.1"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2666,6 +2666,22 @@ def list_owner_announcements_online(state):
     )
 
 
+def load_customer_workspace_online(state, app_version=None):
+    current = normalize_license_state(state)
+    current["license_key"] = require_valid_api_license_key(current.get("license_key"))
+    payload = license_api_post_json(
+        current.get("server_url"),
+        "/api/v1/licenses/customer-workspace",
+        {
+            "license_key": current.get("license_key"),
+            "app_version": str(app_version or DESKTOP_APP_VERSION).strip()[:80],
+        },
+    )
+    if payload.get("workspace_schema_version") != 1 or not isinstance(payload.get("summary"), dict):
+        raise ValueError("The API returned an unsupported customer workspace response.")
+    return payload
+
+
 def shop_url_for_state(state=None):
     current = normalize_license_state(state or {})
     return validated_license_server_url(current.get("server_url") or DEFAULT_LICENSE_SERVER) + "/shop"
@@ -4718,16 +4734,19 @@ class CustomerCenterWindow(tk.Toplevel):
         primary.pack(fill="x", pady=(14, 0))
         self.verify_button = tk.Button(primary, text="VERIFY LICENSE NOW", command=self.verify_now, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.verify_button.pack(side="left", ipadx=12, ipady=8)
+        tk.Button(primary, text="CUSTOMER WORKSPACE", command=self.owner.open_customer_workspace, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
         tk.Button(primary, text="UPDATE CENTER", command=self.owner.open_update_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
-        tk.Button(primary, text="OWNER NEWS", command=self.owner.open_owner_news, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
-        tk.Button(primary, text="BUG CENTER", command=self.owner.open_support_center, bg="#58b7e8", fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
-
         secondary = tk.Frame(outer, bg=BG)
         secondary.pack(fill="x", pady=(8, 0))
         tk.Button(secondary, text="PUBLIC STATUS", command=self.owner.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=10, ipady=8)
+        tk.Button(secondary, text="OWNER NEWS", command=self.owner.open_owner_news, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
+        tk.Button(secondary, text="BUG CENTER", command=self.owner.open_support_center, bg="#58b7e8", fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
         tk.Button(secondary, text="SHOP", command=self.owner.open_shop, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
-        tk.Button(secondary, text="LICENSE CENTER", command=self.owner.open_license_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(8, 0), ipadx=10, ipady=8)
-        tk.Button(secondary, text="CLOSE", command=self.destroy, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=12, ipady=8)
+
+        tertiary = tk.Frame(outer, bg=BG)
+        tertiary.pack(fill="x", pady=(8, 0))
+        tk.Button(tertiary, text="LICENSE CENTER", command=self.owner.open_license_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="left", ipadx=10, ipady=8)
+        tk.Button(tertiary, text="CLOSE", command=self.destroy, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=12, ipady=8)
         tk.Label(outer, textvariable=self.status_var, bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=720, justify="left").pack(anchor="w", pady=(10, 0))
 
     def render_current(self):
@@ -4938,6 +4957,8 @@ class USBFileLocker(tk.Tk):
         tk.Label(customer_row, text="CUSTOMER SELF-SERVICE", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.customer_button = tk.Button(customer_row, text="CUSTOMER CENTER", command=self.open_customer_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.customer_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        self.customer_workspace_button = tk.Button(customer_row, text="CUSTOMER WORKSPACE", command=self.open_customer_workspace, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.customer_workspace_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.customer_status_button = tk.Button(customer_row, text="PUBLIC STATUS", command=self.open_customer_status, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.customer_status_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.readiness_button = tk.Button(customer_row, text="RECOVERY READINESS", command=self.open_recovery_readiness, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
@@ -5673,6 +5694,16 @@ class USBFileLocker(tk.Tk):
         self.customer_window = CustomerCenterWindow(self)
         self.register_secondary_window(self.customer_window)
         self.status.set("Opened Customer Center.")
+
+    def open_customer_workspace(self):
+        try:
+            launch_companion_script("customer_hub.py")
+            self.status.set("Opened the Customer Workspace.")
+            log_event("customer_workspace_open", "api", "ok")
+        except Exception as exc:
+            self.status.set("Could not open the Customer Workspace.")
+            log_event("customer_workspace_open", "api", "failed")
+            messagebox.showerror("Could not open Customer Workspace", str(exc), parent=self)
 
     def open_owner_news(self):
         if self.news_window is not None and self.news_window.winfo_exists():

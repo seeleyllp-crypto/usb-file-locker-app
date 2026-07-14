@@ -16,6 +16,8 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.14.1` is the Customer Workspace update. The Windows app can load one composite privacy-safe workspace from the saved license, showing account health, anonymous device-seat totals, signed release status, a nine-item prioritized action plan, all unlocked rank tools, milestones, upgrade options, and customer routes. The online `/workspace` app provides the same overview with session-only checklist progress and safe JSON/clipboard exports. The owner gets a separate `/owner/customers` aggregate console for release adoption, rank coverage, support workload, service status, public customer surfaces, announcements, shop readiness, and storage health. Neither side returns customer identity, license proof, machine identity, receipts, paths, PINs, USB secrets, or file contents.
+
 Release `2026.07.13.5` lets the private Owner Update Lab extract and run the exact verified candidate in a visibly marked OWNER LAB runtime without publishing or replacing the stable app. Each launch re-verifies the signed manifest and package hash, uses a fresh private runtime folder, and keeps only a bounded set of old runtimes. Update installation and file-association changes are disabled in OWNER LAB mode. The runtime uses the normal Windows user data so the real license, USB key, lock, unlock, and companion-app workflows can be tested.
 
 Release `2026.07.13.4` expands Vault Health Center with an update-preserved local aggregate baseline, automatic drift warnings, key-folder coverage, attention-only filtering, and one-click privacy-safe summaries. Baselines and copied summaries contain no filenames, paths, key IDs, secrets, PINs, license data, or file contents. The baseline is local to the Windows account and can be replaced or cleared from the app. Signed updates continue to preserve keys, licenses, settings, vault data, audit logs, locked files, and the health baseline.
@@ -29,7 +31,7 @@ The Owner Update Lab also includes a 15-check read-only preflight, signed-packag
 ## Main desktop apps
 
 - `usb_file_locker.py` - main locker window
-- `customer_hub.py` - privacy-safe self-service status and all-seven-rank customer app
+- `customer_hub.py` - privacy-safe customer workspace with account health, action plan, rank tools, and safe export
 - `privacy_safety_hub.py` - dashboard and safety controls
 - `personal_vault_pad.py` - simpler personal vault window
 - `audit_log_viewer.py` - signed audit trail viewer

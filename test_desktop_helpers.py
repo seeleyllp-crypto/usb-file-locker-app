@@ -50,6 +50,41 @@ class DesktopHelperTests(unittest.TestCase):
     def test_first_account_and_announcement_sync_starts_early(self):
         self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
 
+    def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "PRIVATE-RECEIPT-MUST-NOT-BE-SENT",
+                "server_url": "https://api.example.test",
+            }
+        )
+        response = {
+            "ok": True,
+            "workspace_schema_version": 1,
+            "summary": {"status": "active", "plan": {"rank": 3, "name": "Personal Plus"}},
+            "action_center": {"count": 9, "items": []},
+        }
+        with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
+            result = locker.load_customer_workspace_online(state, "2026.07.14.1")
+        self.assertIs(result, response)
+        server_url, path, payload = post.call_args.args
+        self.assertEqual(server_url, "https://api.example.test")
+        self.assertEqual(path, "/api/v1/licenses/customer-workspace")
+        self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
+        self.assertEqual(payload["app_version"], "2026.07.14.1")
+        serialized_payload = json.dumps(payload)
+        self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
+        self.assertNotIn("machine_id", payload)
+        self.assertNotIn("machine_name", payload)
+
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={"workspace_schema_version": 2, "summary": {}},
+        ):
+            with self.assertRaisesRegex(ValueError, "unsupported customer workspace"):
+                locker.load_customer_workspace_online(state)
+
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))

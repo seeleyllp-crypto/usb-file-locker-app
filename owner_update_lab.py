@@ -46,9 +46,10 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Update Lab can extract and run the exact verified candidate privately without publishing or replacing the stable app.",
-    "OWNER LAB mode is visibly marked and disables update installation and file-association changes.",
-    "Private owner tools remain excluded from customer update packages.",
+    "Customer Workspace combines account health, anonymous seats, signed releases, a prioritized action plan, rank tools, milestones, upgrades, and customer routes.",
+    "The Windows Customer Workspace loads the composite response from the saved license and supports a privacy-safe JSON export.",
+    "Owner Customer Experience Console reports aggregate rank coverage, support, service, release adoption, customer surfaces, shop readiness, and storage health.",
+    "Workspace APIs exclude customer identity, license proof, machine identity, receipts, paths, PINs, USB secrets, and file contents.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

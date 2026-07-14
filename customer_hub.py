@@ -1,8 +1,9 @@
+import json
 import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import usb_file_locker as locker
 
@@ -22,9 +23,9 @@ class CustomerHub(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("VaultLink Customer Hub")
-        self.geometry("820x760")
-        self.minsize(720, 660)
+        self.title("VaultLink Customer Workspace")
+        self.geometry("900x840")
+        self.minsize(760, 700)
         self.configure(bg=locker.BG)
         self.settings = locker.load_settings()
         self.state = locker.load_license_state(self.settings)
@@ -33,8 +34,12 @@ class CustomerHub(tk.Tk):
         self.status_var = tk.StringVar(value="Loading public rank and signed-release information...")
         self.value_vars = {key: tk.StringVar(value="-") for _label, key in self.DETAIL_FIELDS}
         self.verify_button = None
+        self.workspace_button = None
+        self.export_button = None
         self.refresh_button = None
         self.rank_box = None
+        self.workspace_box = None
+        self.workspace = None
         self.build_ui()
         self.render_details()
         self.after(150, self.refresh_public_info)
@@ -42,7 +47,7 @@ class CustomerHub(tk.Tk):
     def build_ui(self):
         outer = tk.Frame(self, bg=locker.BG)
         outer.pack(fill="both", expand=True, padx=24, pady=20)
-        tk.Label(outer, text="VaultLink Customer Hub", bg=locker.BG, fg=locker.TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w")
+        tk.Label(outer, text="VaultLink Customer Workspace", bg=locker.BG, fg=locker.TEXT, font=("Segoe UI", 24, "bold")).pack(anchor="w")
         tk.Label(
             outer,
             text="AVAILABLE TO EVERY RANK | LICENSE PROOF, MACHINE ID, FILES, PATHS, PINS, AND USB SECRETS STAY HIDDEN",
@@ -75,6 +80,8 @@ class CustomerHub(tk.Tk):
         controls.pack(fill="x", pady=(12, 0))
         self.verify_button = tk.Button(controls, text="VERIFY LICENSE NOW", command=self.verify_now, bg=locker.GREEN, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.verify_button.pack(side="left", ipadx=10, ipady=7)
+        self.workspace_button = tk.Button(controls, text="LOAD FULL WORKSPACE", command=self.load_workspace, bg=locker.BLUE, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.workspace_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=7)
         self.refresh_button = tk.Button(controls, text="REFRESH PUBLIC INFO", command=self.refresh_public_info, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.refresh_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=7)
         tk.Button(controls, text="MAIN LOCKER", command=self.open_main_locker, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=10, ipady=7)
@@ -82,6 +89,7 @@ class CustomerHub(tk.Tk):
         links = tk.Frame(outer, bg=locker.BG)
         links.pack(fill="x", pady=(8, 0))
         for label, path in (
+            ("ONLINE WORKSPACE", "/workspace"),
             ("STATUS", "/status"),
             ("DRAFT TERMS", "/terms"),
             ("PRIVACY", "/privacy"),
@@ -95,11 +103,19 @@ class CustomerHub(tk.Tk):
                 fg=locker.TEXT,
                 relief="flat",
                 font=("Segoe UI", 8, "bold"),
-            ).pack(side="left", padx=(0 if path == "/status" else 8, 0), ipadx=10, ipady=6)
+            ).pack(side="left", padx=(0 if path == "/workspace" else 8, 0), ipadx=10, ipady=6)
 
         tk.Label(outer, text="ALL SEVEN RANKS", bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(14, 6))
-        self.rank_box = tk.Text(outer, height=10, bg=locker.FIELD, fg=locker.TEXT, relief="flat", wrap="word", font=("Segoe UI", 9), padx=12, pady=10, state="disabled")
-        self.rank_box.pack(fill="both", expand=True)
+        self.rank_box = tk.Text(outer, height=7, bg=locker.FIELD, fg=locker.TEXT, relief="flat", wrap="word", font=("Segoe UI", 9), padx=12, pady=10, state="disabled")
+        self.rank_box.pack(fill="x")
+
+        workspace_head = tk.Frame(outer, bg=locker.BG)
+        workspace_head.pack(fill="x", pady=(14, 6))
+        tk.Label(workspace_head, text="CUSTOMER ACTION PLAN", bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+        self.export_button = tk.Button(workspace_head, text="EXPORT SAFE JSON", command=self.export_workspace, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.export_button.pack(side="right", ipadx=10, ipady=5)
+        self.workspace_box = tk.Text(outer, height=12, bg=locker.FIELD, fg=locker.TEXT, relief="flat", wrap="word", font=("Segoe UI", 9), padx=12, pady=10, state="disabled")
+        self.workspace_box.pack(fill="both", expand=True)
         tk.Label(outer, textvariable=self.status_var, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9), wraplength=760, justify="left").pack(anchor="w", pady=(10, 0))
 
     def server_url(self):
@@ -112,6 +128,10 @@ class CustomerHub(tk.Tk):
         has_proof = bool(self.state.get("license_key") and self.state.get("receipt"))
         if self.verify_button is not None:
             self.verify_button.configure(state="normal" if has_proof and not self.busy else "disabled")
+        if self.workspace_button is not None:
+            self.workspace_button.configure(state="normal" if self.state.get("license_key") and not self.busy else "disabled")
+        if self.export_button is not None:
+            self.export_button.configure(state="normal" if self.workspace and not self.busy else "disabled")
 
     def render_ranks(self, items):
         lines = []
@@ -130,6 +150,82 @@ class CustomerHub(tk.Tk):
         self.busy = bool(value)
         self.refresh_button.configure(state="disabled" if value else "normal")
         self.render_details()
+
+    def render_workspace(self, payload):
+        self.workspace = payload if isinstance(payload, dict) else None
+        lines = []
+        if self.workspace:
+            summary = self.workspace.get("summary") or {}
+            plan = summary.get("plan") or {}
+            checkup = self.workspace.get("checkup") or {}
+            action_center = self.workspace.get("action_center") or {}
+            rank_tools = self.workspace.get("rank_tools") or {}
+            lines.extend(
+                [
+                    f"STATUS | {str(summary.get('status', 'unknown')).upper()}",
+                    f"RANK | {plan.get('rank', '?')} - {plan.get('name', 'Unknown')}",
+                    f"ATTENTION | {checkup.get('attention_count', 0)} item(s)",
+                    f"RANK TOOLS | {rank_tools.get('unlocked_count', 0)} unlocked",
+                    "",
+                ]
+            )
+            for index, item in enumerate(action_center.get("items") or [], 1):
+                lines.append(
+                    f"{index}. {str(item.get('when', 'maintain')).upper()} | {item.get('title', 'Review item')}\n"
+                    f"   {item.get('detail', '')}"
+                )
+        text = "\n\n".join(lines) if lines else "Load the full workspace to build a privacy-safe customer action plan."
+        self.workspace_box.configure(state="normal")
+        self.workspace_box.delete("1.0", "end")
+        self.workspace_box.insert("1.0", text)
+        self.workspace_box.configure(state="disabled")
+        self.render_details()
+
+    def load_workspace(self):
+        if self.busy:
+            return
+        self.settings = locker.load_settings()
+        self.state = locker.load_license_state(self.settings)
+        if not self.state.get("license_key"):
+            self.status_var.set("Activate a license in the main locker's License Center first.")
+            self.render_details()
+            return
+        self.set_busy(True)
+        self.status_var.set("Building the full privacy-safe customer workspace...")
+        state = locker.normalize_license_state(self.state)
+
+        def worker():
+            try:
+                workspace = locker.load_customer_workspace_online(state)
+                error = ""
+            except Exception as exc:
+                workspace = None
+                error = str(exc)
+            self.results.put(("workspace", workspace, None, error))
+
+        threading.Thread(target=worker, name="CustomerWorkspaceLoad", daemon=True).start()
+        self.after(75, self.poll_results)
+
+    def export_workspace(self):
+        if not self.workspace:
+            self.status_var.set("Load the full customer workspace before exporting.")
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export privacy-safe customer workspace",
+            defaultextension=".json",
+            initialfile="vaultlink-customer-workspace.json",
+            filetypes=[("JSON report", "*.json")],
+        )
+        if not destination:
+            return
+        try:
+            locker.write_text_atomic(destination, json.dumps(self.workspace, indent=2))
+            self.status_var.set("Privacy-safe customer workspace exported.")
+            locker.log_event("customer_workspace_export", "local", "ok")
+        except Exception as exc:
+            locker.log_event("customer_workspace_export", "local", "failed")
+            messagebox.showerror("Could not export workspace", str(exc), parent=self)
 
     def refresh_public_info(self):
         if self.busy:
@@ -194,6 +290,11 @@ class CustomerHub(tk.Tk):
             self.render_details()
             self.status_var.set("License and customer status refreshed.")
             locker.log_event("customer_hub_verify", "api", "ok")
+            return
+        if mode == "workspace":
+            self.render_workspace(first)
+            self.status_var.set("Full customer workspace loaded from the API.")
+            locker.log_event("customer_workspace_load", "api", "ok")
             return
         manifest = second or {}
         self.state["api_version"] = manifest.get("api_version", self.state.get("api_version", ""))

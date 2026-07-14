@@ -18,6 +18,14 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.1 is the CUSTOMER WORKSPACE update. It combines license
+  health, anonymous seats, signed release status, a nine-item action plan,
+  unlocked rank tools, milestones, upgrade options, customer links, and a
+  privacy-safe JSON export. The owner gets an aggregate CUSTOMER EXPERIENCE
+  console for rank coverage, support, service, release adoption, public pages,
+  shop readiness, and storage health. It does not return customer identity,
+  license proof, machine identity, receipts, paths, PINs, USB secrets, or file
+  contents.
 - Version 2026.07.13.5 lets OWNER UPDATE LAB run the exact verified candidate
   privately without publishing or replacing the stable app. OWNER LAB mode is
   visibly marked and cannot install updates or change file associations. It uses
