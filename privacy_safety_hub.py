@@ -13,8 +13,8 @@ class PrivacySafetyHub(tk.Tk):
             self.after(0, self.destroy)
             return
         self.title("Privacy Safety Hub")
-        self.geometry("1180x940")
-        self.minsize(1040, 820)
+        self.geometry("1180x980")
+        self.minsize(1040, 840)
         self.configure(bg=locker.BG)
         self.status = tk.StringVar(value="Loading...")
         self.summary = tk.StringVar(value="")
@@ -77,10 +77,14 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Service Status", "Review public API mode and signed desktop availability without a license key.", self.open_service_status, 4, 1, "#252936", locker.TEXT)
         self.app_card(apps, "Privacy Center", "Read the public data boundaries, retention notes, and remaining limitations.", self.open_privacy_center, 4, 2, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Rank Shop", "Compare all seven ranks and open only configured provider-hosted checkout links.", self.open_rank_shop, 4, 3, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Backup Verification Center", "Verify recognized app-data backups, compare checkpoints, and follow the local restore order.", self.open_backup_verification_center, 5, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Public Backup Planner", "Build a fixed current-tab-only backup plan without sending files, paths, or progress.", self.open_backup_planner, 5, 1, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Signed Update Center", "Review the published signature, package hash, compatibility, and release notes.", self.open_signed_update, 5, 2, "#252936", locker.TEXT)
+        self.app_card(apps, "Customer License Center", "Review license status, anonymous seats, rank tools, and upgrades without activating a device.", self.open_customer_license, 5, 3, locker.YELLOW, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(5):
+        for row in range(6):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -338,6 +342,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Recovery Drill Center.")
             messagebox.showerror("Could not open Recovery Drill Center", str(exc))
 
+    def open_backup_verification_center(self):
+        try:
+            locker.launch_companion_script("backup_verification_center.py")
+            self.status.set("Opened Backup Verification Center.")
+        except Exception as exc:
+            self.status.set("Could not open Backup Verification Center.")
+            messagebox.showerror("Could not open Backup Verification Center", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -380,6 +392,15 @@ class PrivacySafetyHub(tk.Tk):
 
     def open_rank_shop(self):
         self.open_public_page("/shop", "Rank Shop")
+
+    def open_backup_planner(self):
+        self.open_public_page("/backup-verification", "Public Backup Planner")
+
+    def open_signed_update(self):
+        self.open_public_page("/update", "Signed Update Center")
+
+    def open_customer_license(self):
+        self.open_public_page("/customer", "Customer License Center")
 
 
 if __name__ == "__main__":

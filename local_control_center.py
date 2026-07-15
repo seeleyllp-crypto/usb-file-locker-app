@@ -64,6 +64,12 @@ CONTROL_ACTIONS = {
         "category": "Core",
         "summary": "Practice fixed recovery exercises, score local readiness, schedule reviews, and keep safe hash-chained results.",
     },
+    "backup_verification": {
+        "label": "Backup Verification Center",
+        "script": "backup_verification_center.py",
+        "category": "Recovery",
+        "summary": "Verify recognized app-data backups, compare coarse checkpoints, and follow a fixed restore order.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

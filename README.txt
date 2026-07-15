@@ -18,6 +18,19 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.15.1 adds BACKUP VERIFICATION CENTER with 12 fixed plans,
+  60 restore-order steps, 9 categories, and 12 coarse local checks totaling
+  100 readiness points. It can create an app-data backup and verify a selected
+  recognized backup folder without retaining its path.
+- Customers can choose 5 fixed restore-time objectives, a 1-5 copy target, and
+  7, 14, 30, 60, or 90-day reviews. Hash-chained checkpoints compare score
+  changes plus gained or lost fixed check IDs without storing private details.
+- API 0.31.0 adds public BACKUP VERIFICATION pages with current-tab-only
+  progress, fixed restore-order copy, print, and safe JSON export. It receives
+  no customer backup, path, file, progress, checkpoint, or account data.
+- APPS HUB now has 24 tools, LOCAL CONTROL has 17 approved apps, and owner
+  readiness covers 12 public surfaces. The signed customer package has 44
+  transparent files and still excludes keys, settings, logs, and locked data.
 - Version 2026.07.14.7 adds RECOVERY DRILL CENTER with 16 fixed drills and 80
   unique steps across backup, continuity, evidence, recovery, and security.
   Ten coarse local checks total 100 readiness points. Customers can use a

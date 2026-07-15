@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Recovery Drill Center provides sixteen fixed drills and eighty unique steps across backup, continuity, evidence, recovery, and security.",
-    "Ten coarse local Defender, audit, USB, key, signed-release, backup, storage, and recovery checks produce an explainable 100-point readiness score.",
-    "Customers can schedule five local review intervals, see the next due date, practice random drills, open trusted tools, and export reviewed safe summaries.",
-    "Complete or partial drill results use a local tamper-evident hash chain containing no paths, filenames, keys, PINs, file contents, identities, receipts, or free-form notes.",
-    "API 0.30.0 adds a responsive public recovery-drill workspace with fixed-step copy, reviewed JSON export, print layout, current-tab-only progress, and no files or free-form text.",
-    "Apps Hub now presents twenty compact tools, and same-PC Local Control launches sixteen approved apps through its USB, PIN, CSRF, and rate-limit boundary.",
-    "Owner customer experience shows only aggregate readiness for eleven public surfaces; no drill choice, checklist progress, customer record, or report is collected.",
-    "Ransomware exercises are tabletop guidance only and never run malware, suspicious code, destructive scripts, or file-encryption simulations.",
+    "New Backup Verification Center provides twelve fixed plans and sixty restore-order steps across nine backup and continuity categories.",
+    "Twelve coarse local Defender, audit, USB, key, signed-release, backup, storage, settings, and encryption checks produce an explainable 100-point readiness score.",
+    "Customers can create app-data backups and verify a selected recognized backup folder without retaining its path or reading customer document contents.",
+    "Five fixed restore objectives, one-to-five copy targets, and five local review intervals create a clear backup schedule without free-form data.",
+    "Tamper-evident local checkpoints compare score changes plus gained or lost fixed check IDs and contain no paths, filenames, keys, PINs, file contents, identities, receipts, or notes.",
+    "API 0.31.0 adds a responsive public backup workspace with restore-order copy, reviewed JSON export, print layout, current-tab-only progress, and no files or free-form text.",
+    "Apps Hub now presents twenty-four tools, and same-PC Local Control launches seventeen approved apps through its USB, PIN, CSRF, and rate-limit boundary.",
+    "Owner customer experience shows only aggregate readiness for twelve public surfaces; no backup choice, path, progress, checkpoint, customer record, or report is collected.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

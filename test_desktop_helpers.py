@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import audit_log_viewer
+import backup_verification_center
 import build_signed_update
 import customer_hub
 import diagnostics_center
@@ -97,14 +98,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 19)
+        self.assertEqual(len(launchers), 20)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 42)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 42)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 44)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 44)
+        self.assertIn("backup_verification_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Backup Verification Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("diagnostics_center.py", build_signed_update.PACKAGE_FILES)
@@ -122,12 +125,15 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
+        self.assertTrue(issubclass(backup_verification_center.BackupVerificationCenter, backup_verification_center.tk.Tk))
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
         self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
         self.assertTrue(issubclass(recovery_drill_center.RecoveryDrillCenter, recovery_drill_center.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
+        hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 24)
 
     def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
         pin = "Safe-Control-4291"
@@ -151,6 +157,7 @@ class DesktopHelperTests(unittest.TestCase):
             "diagnostics_center.py",
             "incident_response_center.py",
             "recovery_drill_center.py",
+            "backup_verification_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -163,7 +170,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 16)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 17)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -210,14 +217,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 16)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 17)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 16)
+        self.assertEqual(safe_report["session"]["apps_total"], 17)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -354,7 +361,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Diagnostics Center", unlocked_page)
             self.assertIn("Incident Response Center", unlocked_page)
             self.assertIn("Recovery Drill Center", unlocked_page)
-            self.assertIn("16 / 16", unlocked_page)
+            self.assertIn("Backup Verification Center", unlocked_page)
+            self.assertIn("17 / 17", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -415,7 +423,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 16)
+            self.assertEqual(report["session"]["apps_total"], 17)
         finally:
             connection.close()
             server.shutdown()
@@ -885,6 +893,146 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertFalse(damaged_integrity["valid"])
             with self.assertRaisesRegex(ValueError, "integrity failed"):
                 recovery_drill_center.append_drill_history("key-recovery", 1, 5, 10, path=history_path)
+
+    def test_backup_verification_is_fixed_hash_chained_comparable_and_private(self):
+        self.assertEqual(len(backup_verification_center.LOCAL_PLANS), 12)
+        self.assertEqual(sum(len(item["steps"]) for item in backup_verification_center.LOCAL_PLANS), 60)
+        self.assertEqual(len({item["category"] for item in backup_verification_center.LOCAL_PLANS}), 9)
+        self.assertEqual(sum(item[3] for item in backup_verification_center.READINESS_CHECKS), 100)
+        self.assertEqual(len(backup_verification_center.RESTORE_OBJECTIVES), 5)
+        fallback = backup_verification_center.safe_backup_guide({})
+        self.assertEqual(len(fallback["plans"]), 12)
+        self.assertEqual(sum(len(item["steps"]) for item in fallback["plans"]), 60)
+
+        diagnostic_checks = []
+        for identifier, _category, title, _weight in backup_verification_center.READINESS_CHECKS:
+            diagnostic_checks.append(
+                {
+                    "id": identifier,
+                    "title": title,
+                    "passed": True,
+                    "detail": "C:/PRIVATE-BACKUP/customer-name.txt",
+                    "action": "Open D:/PRIVATE-BACKUP/master.key",
+                }
+            )
+        guide = {
+            "ok": True,
+            "backup_verification_schema_version": 1,
+            "api_version": "0.31.0",
+            "service_status": {"mode": "normal", "message": "Normal", "private": "PRIVATE-SERVICE"},
+            "signed_release": {"ready": True, "version": "2026.07.15.1", "minimum_supported_version": "2026.07.12.9"},
+            "restore_objectives": list(backup_verification_center.RESTORE_OBJECTIVES),
+            "plans": [
+                {
+                    "id": "master-key-copies",
+                    "category": "Keys",
+                    "title": "Master-key copy verification",
+                    "summary": "Fixed backup plan",
+                    "steps": [
+                        {
+                            "id": "master-key-copies-inventory",
+                            "title": "Inventory the pieces",
+                            "action": "C:/PRIVATE-BACKUP/customer-name.txt",
+                            "expected": "The scope is known.",
+                            "private": "PRIVATE-STEP",
+                        }
+                    ],
+                    "success": "A safe result exists.",
+                    "private": "PRIVATE-CUSTOMER",
+                }
+            ],
+            "privacy_boundaries": ["No secrets"],
+            "limitations": ["Not a guarantee"],
+            "customer_records": ["PRIVATE-RECORD"],
+        }
+        with tempfile.TemporaryDirectory(prefix="vaultlink_backup_verification_") as folder:
+            history_path = Path(folder) / "history.jsonl"
+            settings_path = Path(folder) / "settings.json"
+            first = backup_verification_center.append_checkpoint(
+                "master-key-copies", 1, 5, 70, ["audit-chain"], "4-hours", 2,
+                path=history_path, time_utc="2026-07-15T03:00:00Z",
+            )
+            second = backup_verification_center.append_checkpoint(
+                "master-key-copies", 5, 5, 90, ["audit-chain", "selected-key"], "1-day", 3,
+                path=history_path, time_utc="2026-07-15T03:01:00Z",
+            )
+            history, integrity = backup_verification_center.load_checkpoint_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual([first["result"], second["result"]], ["partial", "complete"])
+            self.assertEqual(len(history), 2)
+            backup_verification_center.save_center_settings(60, "1-day", 3, settings_path)
+            saved = backup_verification_center.load_center_settings(settings_path)
+            self.assertEqual(saved, {"interval_days": 60, "copy_target": 3, "objective_id": "1-day"})
+
+            report = backup_verification_center.build_backup_report(
+                {"checks": diagnostic_checks, "license_key": VALID_TEST_LICENSE, "private": "PRIVATE-DIAGNOSTIC"},
+                guide,
+                "master-key-copies",
+                {"master-key-copies-inventory", "PRIVATE-INVALID-STEP"},
+                history,
+                integrity,
+                saved,
+                True,
+                4,
+                "2026-07-15T03:02:00Z",
+            )
+            self.assertEqual(report["readiness"]["value"], 100)
+            self.assertEqual(report["readiness"]["total"], 12)
+            self.assertEqual(report["selected_plan"]["completed_step_ids"], ["master-key-copies-inventory"])
+            self.assertEqual(report["selected_plan"]["steps"][0]["action"], "Review this fixed step locally.")
+            self.assertEqual(report["restore_target"]["objective_id"], "1-day")
+            self.assertEqual(report["restore_target"]["copy_target"], 3)
+            self.assertTrue(report["session_backup_verification"]["verified"])
+            self.assertEqual(report["session_backup_verification"]["restorable_file_count"], 4)
+            self.assertEqual(report["history"]["comparison"]["score_delta"], 20)
+            self.assertEqual(report["history"]["comparison"]["gained_check_ids"], ["selected-key"])
+            self.assertEqual(report["online_catalog"]["api_version"], "0.31.0")
+            self.assertTrue(all("PRIVATE-BACKUP" not in item["detail"] for item in report["checks"]))
+
+            report_text = json.dumps(report)
+            rendered_text = backup_verification_center.safe_backup_text(report)
+            summary_text = backup_verification_center.safe_backup_summary(report)
+            for private_value in (
+                "C:/PRIVATE-BACKUP",
+                "D:/PRIVATE-BACKUP",
+                VALID_TEST_LICENSE,
+                "PRIVATE-SERVICE",
+                "PRIVATE-STEP",
+                "PRIVATE-CUSTOMER",
+                "PRIVATE-RECORD",
+                "PRIVATE-DIAGNOSTIC",
+                "PRIVATE-INVALID-STEP",
+            ):
+                self.assertNotIn(private_value, report_text)
+                self.assertNotIn(private_value, rendered_text)
+                self.assertNotIn(private_value, summary_text)
+
+            unexpected_path = Path(folder) / "unexpected-field-history.jsonl"
+            unexpected = dict(first)
+            unexpected["private_path"] = "C:/PRIVATE-BACKUP/customer-name.txt"
+            unexpected["hash"] = hashlib.sha256(
+                backup_verification_center._canonical_record(unexpected)
+            ).hexdigest()
+            unexpected_path.write_text(
+                json.dumps(unexpected, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            unexpected_records, unexpected_integrity = backup_verification_center.load_checkpoint_history(unexpected_path)
+            self.assertEqual(unexpected_records, [])
+            self.assertFalse(unexpected_integrity["valid"])
+            self.assertIn("fixed schema", unexpected_integrity["message"])
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["copy_target"] = 5
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _records, damaged_integrity = backup_verification_center.load_checkpoint_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                backup_verification_center.append_checkpoint(
+                    "master-key-copies", 1, 5, 10, [], "4-hours", 2, path=history_path
+                )
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:

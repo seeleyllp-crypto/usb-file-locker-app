@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.14.7"
+DESKTOP_APP_VERSION = "2026.07.15.1"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -59,6 +59,7 @@ LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
+    "backup-verification-center": "Backup Verification Center",
     "recovery-drill-center": "Recovery Drill Center",
     "incident-response-center": "Incident Response Center",
     "diagnostics-center": "Diagnostics Center",
@@ -82,6 +83,7 @@ PLAN_FEATURE_TITLES = {
     "pro-baseline-pack": "Pro Baseline review pack",
 }
 PLAN_FEATURE_REQUIREMENTS = {
+    "backup-verification-center": "$5 Starter",
     "recovery-drill-center": "$5 Starter",
     "incident-response-center": "$5 Starter",
     "diagnostics-center": "$5 Starter",
@@ -114,6 +116,7 @@ LICENSE_PLAN_IDS = {
     "pro-baseline",
 }
 SCRIPT_LICENSE_FEATURES = {
+    "backup_verification_center.py": "backup-verification-center",
     "recovery_drill_center.py": "recovery-drill-center",
     "incident_response_center.py": "incident-response-center",
     "diagnostics_center.py": "diagnostics-center",
@@ -4987,6 +4990,8 @@ class USBFileLocker(tk.Tk):
         self.diagnostics_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.incident_button = tk.Button(local_control_row, text="INCIDENT RESPONSE", command=self.open_incident_response_center, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.incident_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.backup_verification_button = tk.Button(local_control_row, text="BACKUP VERIFY", command=self.open_backup_verification_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.backup_verification_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.recovery_drill_button = tk.Button(local_control_row, text="RECOVERY DRILLS", command=self.open_recovery_drill_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.recovery_drill_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         tk.Label(
@@ -5159,6 +5164,7 @@ class USBFileLocker(tk.Tk):
             self.personal_vault_button,
         ]
         self.license_gated_buttons = {
+            self.backup_verification_button: "backup-verification-center",
             self.recovery_drill_button: "recovery-drill-center",
             self.incident_button: "incident-response-center",
             self.diagnostics_button: "diagnostics-center",
@@ -5782,6 +5788,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open Recovery Drill Center.")
             log_event("recovery_drill_center_open", "local_center", "failed")
             messagebox.showerror("Could not open Recovery Drill Center", str(exc), parent=self)
+
+    def open_backup_verification_center(self):
+        try:
+            launch_companion_script("backup_verification_center.py")
+            self.status.set("Opened Backup Verification Center.")
+            log_event("backup_verification_center_open", "local_center", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Backup Verification Center.")
+            log_event("backup_verification_center_open", "local_center", "failed")
+            messagebox.showerror("Could not open Backup Verification Center", str(exc), parent=self)
 
     def open_local_control_center(self):
         try:
