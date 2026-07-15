@@ -13,8 +13,8 @@ class PrivacySafetyHub(tk.Tk):
             self.after(0, self.destroy)
             return
         self.title("Privacy Safety Hub")
-        self.geometry("1180x980")
-        self.minsize(1040, 840)
+        self.geometry("1180x1000")
+        self.minsize(1040, 860)
         self.configure(bg=locker.BG)
         self.status = tk.StringVar(value="Loading...")
         self.summary = tk.StringVar(value="")
@@ -81,10 +81,12 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Public Backup Planner", "Build a fixed current-tab-only backup plan without sending files, paths, or progress.", self.open_backup_planner, 5, 1, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Signed Update Center", "Review the published signature, package hash, compatibility, and release notes.", self.open_signed_update, 5, 2, "#252936", locker.TEXT)
         self.app_card(apps, "Customer License Center", "Review license status, anonymous seats, rank tools, and upgrades without activating a device.", self.open_customer_license, 5, 3, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Recovery Kit Builder", "Build a fixed emergency card, local readiness score, first-hour runbook, review reminder, and safe snapshots.", self.open_recovery_kit_builder, 6, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Public Recovery Kit", "Use five fixed profiles and fifty kit items with current-tab-only progress and safe local exports.", self.open_public_recovery_kit, 6, 1, locker.BLUE, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(6):
+        for row in range(7):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -350,6 +352,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Backup Verification Center.")
             messagebox.showerror("Could not open Backup Verification Center", str(exc))
 
+    def open_recovery_kit_builder(self):
+        try:
+            locker.launch_companion_script("recovery_kit_builder.py")
+            self.status.set("Opened Recovery Kit Builder.")
+        except Exception as exc:
+            self.status.set("Could not open Recovery Kit Builder.")
+            messagebox.showerror("Could not open Recovery Kit Builder", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -395,6 +405,9 @@ class PrivacySafetyHub(tk.Tk):
 
     def open_backup_planner(self):
         self.open_public_page("/backup-verification", "Public Backup Planner")
+
+    def open_public_recovery_kit(self):
+        self.open_public_page("/recovery-kit", "Public Recovery Kit")
 
     def open_signed_update(self):
         self.open_public_page("/update", "Signed Update Center")

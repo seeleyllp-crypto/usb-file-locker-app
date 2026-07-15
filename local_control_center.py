@@ -70,6 +70,12 @@ CONTROL_ACTIONS = {
         "category": "Recovery",
         "summary": "Verify recognized app-data backups, compare coarse checkpoints, and follow a fixed restore order.",
     },
+    "recovery_kit": {
+        "label": "Recovery Kit Builder",
+        "script": "recovery_kit_builder.py",
+        "category": "Recovery",
+        "summary": "Build a fixed emergency card, first-hour runbook, review reminder, and coarse local snapshots.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

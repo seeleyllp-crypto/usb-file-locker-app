@@ -24,6 +24,7 @@ import license_issuer
 import local_control_center
 import owner_update_lab
 import recovery_drill_center
+import recovery_kit_builder
 import trust_recovery_center
 import usb_file_locker as locker
 import vault_health_center
@@ -98,14 +99,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 20)
+        self.assertEqual(len(launchers), 21)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 44)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 44)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 46)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 46)
+        self.assertIn("recovery_kit_builder.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Recovery Kit Builder.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("backup_verification_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Backup Verification Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
@@ -129,11 +132,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
         self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
         self.assertTrue(issubclass(recovery_drill_center.RecoveryDrillCenter, recovery_drill_center.tk.Tk))
+        self.assertTrue(issubclass(recovery_kit_builder.RecoveryKitBuilder, recovery_kit_builder.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 24)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 26)
 
     def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
         pin = "Safe-Control-4291"
@@ -158,6 +162,7 @@ class DesktopHelperTests(unittest.TestCase):
             "incident_response_center.py",
             "recovery_drill_center.py",
             "backup_verification_center.py",
+            "recovery_kit_builder.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -170,7 +175,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 17)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 18)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -217,14 +222,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 17)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 18)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 17)
+        self.assertEqual(safe_report["session"]["apps_total"], 18)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -362,7 +367,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Incident Response Center", unlocked_page)
             self.assertIn("Recovery Drill Center", unlocked_page)
             self.assertIn("Backup Verification Center", unlocked_page)
-            self.assertIn("17 / 17", unlocked_page)
+            self.assertIn("Recovery Kit Builder", unlocked_page)
+            self.assertIn("18 / 18", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -423,7 +429,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 17)
+            self.assertEqual(report["session"]["apps_total"], 18)
         finally:
             connection.close()
             server.shutdown()
@@ -920,7 +926,7 @@ class DesktopHelperTests(unittest.TestCase):
             "backup_verification_schema_version": 1,
             "api_version": "0.31.0",
             "service_status": {"mode": "normal", "message": "Normal", "private": "PRIVATE-SERVICE"},
-            "signed_release": {"ready": True, "version": "2026.07.15.1", "minimum_supported_version": "2026.07.12.9"},
+            "signed_release": {"ready": True, "version": "2026.07.15.2", "minimum_supported_version": "2026.07.12.9"},
             "restore_objectives": list(backup_verification_center.RESTORE_OBJECTIVES),
             "plans": [
                 {
@@ -1032,6 +1038,185 @@ class DesktopHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integrity failed"):
                 backup_verification_center.append_checkpoint(
                     "master-key-copies", 1, 5, 10, [], "4-hours", 2, path=history_path
+                )
+
+    def test_recovery_kit_is_fixed_hash_chained_exportable_and_private(self):
+        self.assertEqual(len(recovery_kit_builder.LOCAL_PROFILES), 5)
+        self.assertEqual(len(recovery_kit_builder.LOCAL_SECTIONS), 10)
+        self.assertEqual(sum(len(item["items"]) for item in recovery_kit_builder.LOCAL_SECTIONS), 50)
+        self.assertEqual(len({item["category"] for item in recovery_kit_builder.LOCAL_SECTIONS}), 8)
+        self.assertEqual(len(recovery_kit_builder.LOCAL_RUNBOOKS), 5)
+        self.assertEqual(sum(len(item["steps"]) for item in recovery_kit_builder.LOCAL_RUNBOOKS), 30)
+        self.assertEqual(sum(item[3] for item in recovery_kit_builder.KIT_READINESS_CHECKS), 100)
+        fallback = recovery_kit_builder.safe_recovery_kit_guide({})
+        self.assertEqual(len(fallback["profiles"]), 5)
+        self.assertEqual(len(fallback["sections"]), 10)
+        self.assertEqual(sum(len(item["items"]) for item in fallback["sections"]), 50)
+
+        diagnostic_checks = [
+            {
+                "id": identifier,
+                "title": title,
+                "passed": True,
+                "detail": "C:/PRIVATE-KIT/customer-name.txt",
+                "action": "Open D:/PRIVATE-KIT/master.key",
+            }
+            for identifier, _category, title, _weight in recovery_kit_builder.KIT_READINESS_CHECKS
+        ]
+        guide = {
+            "ok": True,
+            "recovery_kit_schema_version": 1,
+            "api_version": "0.32.0",
+            "service_status": {"mode": "normal", "message": "Normal", "private": "PRIVATE-SERVICE"},
+            "signed_release": {"ready": True, "version": "2026.07.15.2", "minimum_supported_version": "2026.07.12.9"},
+            "profiles": [
+                {
+                    "id": "personal-pc",
+                    "label": "C:/PRIVATE-KIT/profile.txt",
+                    "summary": "C:/PRIVATE-KIT/profile-summary.txt",
+                    "section_ids": ["PRIVATE-SECTION"],
+                    "private": "PRIVATE-PROFILE-FIELD",
+                }
+            ],
+            "sections": [
+                {
+                    "id": "signed-software",
+                    "category": "PRIVATE-CATEGORY",
+                    "title": "Signed software kit",
+                    "summary": "Fixed kit section",
+                    "items": [
+                        {
+                            "id": "software-official-source",
+                            "title": "Official source",
+                            "action": "C:/PRIVATE-KIT/customer-name.txt",
+                            "expected": "Fixed expected state",
+                            "private": "PRIVATE-ITEM",
+                        }
+                    ],
+                    "private": "PRIVATE-SECTION-FIELD",
+                }
+            ],
+            "runbooks": [
+                {
+                    "id": "replacement-pc",
+                    "label": "Replacement PC",
+                    "summary": "Fixed emergency order",
+                    "steps": ["C:/PRIVATE-KIT/step.txt"] * 6,
+                    "private": "PRIVATE-RUNBOOK",
+                }
+            ],
+            "privacy_boundaries": ["C:/PRIVATE-KIT/boundary.txt"],
+            "limitations": ["Not a guarantee"],
+            "customer_records": ["PRIVATE-RECORD"],
+        }
+        with tempfile.TemporaryDirectory(prefix="vaultlink_recovery_kit_") as folder:
+            history_path = Path(folder) / "history.jsonl"
+            settings_path = Path(folder) / "settings.json"
+            personal_items = sorted(recovery_kit_builder._profile_item_ids("personal-pc"))
+            first = recovery_kit_builder.append_snapshot(
+                "personal-pc",
+                "replacement-pc",
+                personal_items[:2],
+                70,
+                30,
+                path=history_path,
+                time_utc="2026-07-15T12:00:00Z",
+            )
+            second = recovery_kit_builder.append_snapshot(
+                "personal-pc",
+                "replacement-pc",
+                personal_items[:3],
+                90,
+                60,
+                path=history_path,
+                time_utc="2026-07-15T12:01:00Z",
+            )
+            history, integrity = recovery_kit_builder.load_snapshot_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual(len(history), 2)
+            self.assertEqual(first["total_items"], 45)
+            self.assertEqual(second["completed_count"], 3)
+            recovery_kit_builder.save_settings("personal-pc", "replacement-pc", 60, settings_path)
+            saved = recovery_kit_builder.load_settings(settings_path)
+            self.assertEqual(saved, {"profile_id": "personal-pc", "runbook_id": "replacement-pc", "interval_days": 60})
+
+            report = recovery_kit_builder.build_recovery_kit_report(
+                {"checks": diagnostic_checks, "license_key": VALID_TEST_LICENSE, "private": "PRIVATE-DIAGNOSTIC"},
+                guide,
+                "personal-pc",
+                "replacement-pc",
+                set(personal_items[:3]) | {"PRIVATE-INVALID-ITEM"},
+                60,
+                history,
+                integrity,
+                "2026-07-15T12:02:00Z",
+            )
+            self.assertEqual(report["readiness"]["value"], 100)
+            self.assertEqual(report["readiness"]["total"], 10)
+            self.assertEqual(report["profile"]["item_count"], 45)
+            self.assertEqual(report["profile"]["completed_item_ids"], personal_items[:3])
+            self.assertEqual(report["history"]["comparison"]["coverage_delta"], 1)
+            self.assertEqual(report["history"]["comparison"]["readiness_delta"], 20)
+            self.assertEqual(report["history"]["comparison"]["gained_item_ids"], [personal_items[2]])
+            self.assertEqual(report["online_catalog"]["api_version"], "0.32.0")
+            self.assertEqual(len(report["runbook"]["steps"]), 6)
+            self.assertTrue(all("PRIVATE-KIT" not in item["detail"] for item in report["checks"]))
+
+            calendar = recovery_kit_builder.build_calendar_text(
+                30,
+                datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+                "0123456789abcdef",
+            )
+            self.assertIn("DTSTART:20260814T120000Z", calendar)
+            self.assertIn("UID:0123456789abcdef@vaultlink.local", calendar)
+            self.assertIn("VaultLink Recovery Kit Review", calendar)
+
+            report_text = json.dumps(report)
+            rendered_text = recovery_kit_builder.safe_report_text(report)
+            summary_text = recovery_kit_builder.safe_summary(report)
+            for private_value in (
+                "C:/PRIVATE-KIT",
+                "D:/PRIVATE-KIT",
+                VALID_TEST_LICENSE,
+                "PRIVATE-SERVICE",
+                "PRIVATE-PROFILE-FIELD",
+                "PRIVATE-ITEM",
+                "PRIVATE-SECTION-FIELD",
+                "PRIVATE-RUNBOOK",
+                "PRIVATE-RECORD",
+                "PRIVATE-DIAGNOSTIC",
+                "PRIVATE-INVALID-ITEM",
+            ):
+                self.assertNotIn(private_value, report_text)
+                self.assertNotIn(private_value, rendered_text)
+                self.assertNotIn(private_value, summary_text)
+                self.assertNotIn(private_value, calendar)
+
+            unexpected_path = Path(folder) / "unexpected-field-history.jsonl"
+            unexpected = dict(first)
+            unexpected["private_contact"] = "PRIVATE-CONTACT"
+            unexpected["hash"] = hashlib.sha256(
+                recovery_kit_builder._canonical_record(unexpected)
+            ).hexdigest()
+            unexpected_path.write_text(
+                json.dumps(unexpected, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            unexpected_records, unexpected_integrity = recovery_kit_builder.load_snapshot_history(unexpected_path)
+            self.assertEqual(unexpected_records, [])
+            self.assertFalse(unexpected_integrity["valid"])
+            self.assertIn("fixed schema", unexpected_integrity["message"])
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["interval_days"] = 90
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _records, damaged_integrity = recovery_kit_builder.load_snapshot_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                recovery_kit_builder.append_snapshot(
+                    "personal-pc", "replacement-pc", [], 10, 30, path=history_path
                 )
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):

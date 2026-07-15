@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Backup Verification Center provides twelve fixed plans and sixty restore-order steps across nine backup and continuity categories.",
-    "Twelve coarse local Defender, audit, USB, key, signed-release, backup, storage, settings, and encryption checks produce an explainable 100-point readiness score.",
-    "Customers can create app-data backups and verify a selected recognized backup folder without retaining its path or reading customer document contents.",
-    "Five fixed restore objectives, one-to-five copy targets, and five local review intervals create a clear backup schedule without free-form data.",
-    "Tamper-evident local checkpoints compare score changes plus gained or lost fixed check IDs and contain no paths, filenames, keys, PINs, file contents, identities, receipts, or notes.",
-    "API 0.31.0 adds a responsive public backup workspace with restore-order copy, reviewed JSON export, print layout, current-tab-only progress, and no files or free-form text.",
-    "Apps Hub now presents twenty-four tools, and same-PC Local Control launches seventeen approved apps through its USB, PIN, CSRF, and rate-limit boundary.",
-    "Owner customer experience shows only aggregate readiness for twelve public surfaces; no backup choice, path, progress, checkpoint, customer record, or report is collected.",
+    "New Recovery Kit Builder provides five customer profiles, ten fixed sections, fifty kit items, and five six-step first-hour emergency runbooks.",
+    "Ten coarse local Defender, audit, USB, key, backup, signed-release, storage, and encryption checks produce an explainable 100-point readiness score.",
+    "Customers can export reviewed JSON or printable text, copy a fixed runbook, and create a privacy-safe 7, 14, 30, 60, or 90-day calendar reminder.",
+    "Exact-schema tamper-evident snapshots compare fixed item coverage and readiness changes without names, contacts, license proof, keys, PINs, paths, files, receipts, or notes.",
+    "API 0.32.0 adds a responsive public Recovery Kit workspace with current-tab-only progress, random sections, clipboard, print, safe JSON, and calendar export.",
+    "The API accepts no customer recovery progress, contacts, files, paths, calendar data, local results, or snapshot history.",
+    "Apps Hub now presents twenty-six tools, same-PC Local Control launches eighteen approved apps, and owner experience covers thirteen public surfaces.",
+    "Direct Backup Verification launches now enforce the same Starter entitlement gate as the main app and Local Control.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

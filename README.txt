@@ -18,6 +18,22 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.15.2 adds RECOVERY KIT BUILDER with 5 fixed profiles,
+  10 sections, 50 preparation items across 8 categories, and 5 emergency
+  runbooks containing 30 ordered steps. Ten coarse local checks total 100
+  readiness points.
+- Customers can save fixed-ID snapshots, compare progress, choose a 7, 14,
+  30, 60, or 90-day review interval, export reviewed safe JSON or text, make
+  an ICS calendar reminder, and copy a fixed runbook or summary.
+- Snapshot history is hash-chained and contains no names, contacts, license
+  proof, receipts, keys, PINs, paths, filenames, file contents, screenshots,
+  process lists, or free-form notes.
+- API 0.32.0 adds public RECOVERY KIT pages with current-tab-only progress,
+  random section selection, fixed runbook and summary copy, print, safe JSON,
+  and calendar export. The API receives no customer progress or local result.
+- APPS HUB now has 26 tools, LOCAL CONTROL has 18 approved apps, owner
+  readiness covers 13 aggregate public surfaces, and the signed customer
+  package has 46 transparent files.
 - Version 2026.07.15.1 adds BACKUP VERIFICATION CENTER with 12 fixed plans,
   60 restore-order steps, 9 categories, and 12 coarse local checks totaling
   100 readiness points. It can create an app-data backup and verify a selected

@@ -606,6 +606,9 @@ def safe_backup_summary(report):
 class BackupVerificationCenter(tk.Tk):
     def __init__(self):
         super().__init__()
+        if not locker.ensure_license_feature("backup-verification-center", parent=self):
+            self.after(0, self.destroy)
+            return
         self.title("VaultLink Backup Verification Center")
         self.geometry("1180x900")
         self.minsize(1040, 790)
