@@ -18,6 +18,21 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.7 adds RECOVERY DRILL CENTER with 16 fixed drills and 80
+  unique steps across backup, continuity, evidence, recovery, and security.
+  Ten coarse local checks total 100 readiness points. Customers can use a
+  random drill, mark progress, schedule a 7, 14, 30, 60, or 90-day local
+  review, see the next due date, open trusted tools, and export reviewed safe
+  reports. Coarse complete or partial history uses a local hash chain.
+- API 0.30.0 adds public RECOVERY DRILLS pages with current-tab-only progress,
+  fixed-step copy, print, and safe JSON export. It accepts no files or free
+  text and collects no customer drill history. APPS HUB now has 20 tools,
+  LOCAL CONTROL has 16 approved apps, and owner readiness covers 11 public
+  surfaces using aggregate status only.
+- Recovery drill reports and history exclude paths, filenames, keys, PINs,
+  file contents, identities, machine details, receipts, and free-form notes.
+  Ransomware practice is tabletop guidance only and never runs malware or
+  destructive file-encryption simulations.
 - Version 2026.07.14.6 adds INCIDENT RESPONSE CENTER with 8 coarse local checks
   totaling 100 readiness points and 12 fixed playbooks containing 72 safe steps.
   It covers Defender alerts, account theft, a lost master USB, unlock failure,

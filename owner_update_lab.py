@@ -46,12 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Incident Response Center provides twelve fixed customer playbooks and seventy-two concrete steps, adding phishing, ransomware, exposed-secret, browser-change, and backup-failure response.",
-    "Eight coarse local Defender, audit, USB, signed-update, backup, and recovery checks produce an explainable 100-point readiness score.",
-    "Customers can open trusted local tools, mark session-only progress, copy a safe summary, and export reviewed JSON without automatic quarantine, deletion, upload, or remote control.",
-    "API 0.29.0 adds a responsive public incident workspace with copy-next-step, reviewed JSON export, print layout, current-tab-only progress, and no files or free-form incident text.",
-    "Apps Hub now presents sixteen compact tools, and same-PC Local Control launches fifteen approved apps through its USB, PIN, CSRF, and rate-limit boundary.",
-    "Owner customer experience shows only aggregate readiness for ten public surfaces; no incident choice, checklist progress, customer record, or report is collected.",
+    "New Recovery Drill Center provides sixteen fixed drills and eighty unique steps across backup, continuity, evidence, recovery, and security.",
+    "Ten coarse local Defender, audit, USB, key, signed-release, backup, storage, and recovery checks produce an explainable 100-point readiness score.",
+    "Customers can schedule five local review intervals, see the next due date, practice random drills, open trusted tools, and export reviewed safe summaries.",
+    "Complete or partial drill results use a local tamper-evident hash chain containing no paths, filenames, keys, PINs, file contents, identities, receipts, or free-form notes.",
+    "API 0.30.0 adds a responsive public recovery-drill workspace with fixed-step copy, reviewed JSON export, print layout, current-tab-only progress, and no files or free-form text.",
+    "Apps Hub now presents twenty compact tools, and same-PC Local Control launches sixteen approved apps through its USB, PIN, CSRF, and rate-limit boundary.",
+    "Owner customer experience shows only aggregate readiness for eleven public surfaces; no drill choice, checklist progress, customer record, or report is collected.",
+    "Ransomware exercises are tabletop guidance only and never run malware, suspicious code, destructive scripts, or file-encryption simulations.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

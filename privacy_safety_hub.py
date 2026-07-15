@@ -13,8 +13,8 @@ class PrivacySafetyHub(tk.Tk):
             self.after(0, self.destroy)
             return
         self.title("Privacy Safety Hub")
-        self.geometry("1180x900")
-        self.minsize(1040, 780)
+        self.geometry("1180x940")
+        self.minsize(1040, 820)
         self.configure(bg=locker.BG)
         self.status = tk.StringVar(value="Loading...")
         self.summary = tk.StringVar(value="")
@@ -73,10 +73,14 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Incident Response", "Use fixed incident playbooks, local readiness, and reviewed safe exports.", self.open_incident_response_center, 3, 1, locker.YELLOW, locker.BLACK)
         self.app_card(apps, "Local Control Center", "Launch approved apps from a USB and PIN protected same-PC website.", self.open_local_control_center, 3, 2, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Recovery Readiness", "Open the public fixed-field recovery planner without uploading secrets.", self.open_recovery_readiness, 3, 3, locker.YELLOW, locker.BLACK)
+        self.app_card(apps, "Recovery Drill Center", "Practice 16 fixed drills, 80 steps, local readiness, schedules, and hash-chained results.", self.open_recovery_drill_center, 4, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Service Status", "Review public API mode and signed desktop availability without a license key.", self.open_service_status, 4, 1, "#252936", locker.TEXT)
+        self.app_card(apps, "Privacy Center", "Read the public data boundaries, retention notes, and remaining limitations.", self.open_privacy_center, 4, 2, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Rank Shop", "Compare all seven ranks and open only configured provider-hosted checkout links.", self.open_rank_shop, 4, 3, locker.YELLOW, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(4):
+        for row in range(5):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -326,6 +330,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Incident Response Center.")
             messagebox.showerror("Could not open Incident Response Center", str(exc))
 
+    def open_recovery_drill_center(self):
+        try:
+            locker.launch_companion_script("recovery_drill_center.py")
+            self.status.set("Opened Recovery Drill Center.")
+        except Exception as exc:
+            self.status.set("Could not open Recovery Drill Center.")
+            messagebox.showerror("Could not open Recovery Drill Center", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -346,6 +358,28 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Recovery Readiness.")
             messagebox.showerror("Could not open Recovery Readiness", str(exc))
+
+    def open_public_page(self, path, label):
+        try:
+            import webbrowser
+
+            settings = locker.load_settings()
+            state = locker.load_license_state(settings)
+            server = locker.validated_license_server_url(state.get("server_url"))
+            webbrowser.open(server + path, new=2)
+            self.status.set(f"Opened {label}.")
+        except Exception as exc:
+            self.status.set(f"Could not open {label}.")
+            messagebox.showerror(f"Could not open {label}", str(exc))
+
+    def open_service_status(self):
+        self.open_public_page("/status", "Service Status")
+
+    def open_privacy_center(self):
+        self.open_public_page("/privacy", "Privacy Center")
+
+    def open_rank_shop(self):
+        self.open_public_page("/shop", "Rank Shop")
 
 
 if __name__ == "__main__":

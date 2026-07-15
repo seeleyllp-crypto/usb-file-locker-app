@@ -22,6 +22,7 @@ import incident_response_center
 import license_issuer
 import local_control_center
 import owner_update_lab
+import recovery_drill_center
 import trust_recovery_center
 import usb_file_locker as locker
 import vault_health_center
@@ -96,20 +97,22 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 18)
+        self.assertEqual(len(launchers), 19)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 40)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 40)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 42)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 42)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("diagnostics_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Diagnostics Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("incident_response_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Incident Response Center.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("recovery_drill_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Recovery Drill Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("vault_health_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_control_center.py", build_signed_update.PACKAGE_FILES)
@@ -121,6 +124,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
         self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
+        self.assertTrue(issubclass(recovery_drill_center.RecoveryDrillCenter, recovery_drill_center.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
@@ -146,6 +150,7 @@ class DesktopHelperTests(unittest.TestCase):
             "customer_hub.py",
             "diagnostics_center.py",
             "incident_response_center.py",
+            "recovery_drill_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -158,7 +163,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 15)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 16)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -205,14 +210,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 15)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 16)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 15)
+        self.assertEqual(safe_report["session"]["apps_total"], 16)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -348,7 +353,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Trust &amp; Recovery Center", unlocked_page)
             self.assertIn("Diagnostics Center", unlocked_page)
             self.assertIn("Incident Response Center", unlocked_page)
-            self.assertIn("15 / 15", unlocked_page)
+            self.assertIn("Recovery Drill Center", unlocked_page)
+            self.assertIn("16 / 16", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -409,7 +415,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 15)
+            self.assertEqual(report["session"]["apps_total"], 16)
         finally:
             connection.close()
             server.shutdown()
@@ -767,6 +773,118 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn(private_value, report_text)
             self.assertNotIn(private_value, rendered_text)
             self.assertNotIn(private_value, summary_text)
+
+    def test_recovery_drills_are_fixed_hash_chained_and_privacy_safe(self):
+        self.assertEqual(len(recovery_drill_center.LOCAL_DRILLS), 16)
+        self.assertEqual(sum(len(item["steps"]) for item in recovery_drill_center.LOCAL_DRILLS), 80)
+        self.assertEqual(sum(item[3] for item in recovery_drill_center.READINESS_CHECKS), 100)
+        fallback = recovery_drill_center.safe_recovery_guide({})
+        self.assertEqual(len(fallback["drills"]), 16)
+        self.assertEqual(sum(len(item["steps"]) for item in fallback["drills"]), 80)
+
+        diagnostic_checks = []
+        for identifier, _category, title, _weight in recovery_drill_center.READINESS_CHECKS:
+            diagnostic_checks.append(
+                {
+                    "id": identifier,
+                    "title": title,
+                    "passed": True,
+                    "detail": "C:/PRIVATE-RECOVERY/customer-name.txt",
+                    "action": "Open D:/PRIVATE-RECOVERY/master.key",
+                }
+            )
+        guide = {
+            "ok": True,
+            "recovery_drill_schema_version": 1,
+            "api_version": "0.30.0",
+            "service_status": {"mode": "normal", "message": "Normal", "private": "PRIVATE-SERVICE"},
+            "signed_release": {"ready": True, "version": "2026.07.14.7", "minimum_supported_version": "2026.07.12.9"},
+            "drills": [
+                {
+                    "id": "key-recovery",
+                    "category": "Recovery",
+                    "title": "Recover with a backup key",
+                    "summary": "Fixed safe drill",
+                    "steps": [
+                        {
+                            "id": "key-preserve",
+                            "title": "Preserve the original",
+                            "action": "C:/PRIVATE-RECOVERY/customer-name.txt",
+                            "expected": "The original stays unchanged.",
+                            "private": "PRIVATE-STEP",
+                        }
+                    ],
+                    "success": "A safe result exists.",
+                    "private": "PRIVATE-CUSTOMER",
+                }
+            ],
+            "privacy_boundaries": ["No secrets"],
+            "limitations": ["Not a guarantee"],
+            "customer_records": ["PRIVATE-RECORD"],
+        }
+        with tempfile.TemporaryDirectory(prefix="vaultlink_recovery_drill_") as folder:
+            history_path = Path(folder) / "history.jsonl"
+            settings_path = Path(folder) / "settings.json"
+            first = recovery_drill_center.append_drill_history(
+                "key-recovery", 5, 5, 100, path=history_path, time_utc="2026-07-15T02:00:00Z"
+            )
+            second = recovery_drill_center.append_drill_history(
+                "phishing-response", 2, 5, 80, path=history_path, time_utc="2026-07-15T02:01:00Z"
+            )
+            history, integrity = recovery_drill_center.load_drill_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual([first["result"], second["result"]], ["complete", "partial"])
+            self.assertEqual(len(history), 2)
+            recovery_drill_center.save_drill_settings(60, settings_path)
+            self.assertEqual(recovery_drill_center.load_drill_settings(settings_path)["interval_days"], 60)
+
+            report = recovery_drill_center.build_recovery_report(
+                {"checks": diagnostic_checks, "license_key": VALID_TEST_LICENSE, "private": "PRIVATE-DIAGNOSTIC"},
+                guide,
+                "key-recovery",
+                {"key-preserve", "PRIVATE-INVALID-STEP"},
+                history,
+                integrity,
+                60,
+                "2026-07-15T02:02:00Z",
+            )
+            self.assertEqual(report["readiness"]["value"], 100)
+            self.assertEqual(report["readiness"]["total"], 10)
+            self.assertEqual(report["selected_drill"]["completed_step_ids"], ["key-preserve"])
+            self.assertEqual(report["selected_drill"]["steps"][0]["action"], "Review this fixed step locally.")
+            self.assertEqual(report["history"]["record_count"], 2)
+            self.assertTrue(report["history"]["integrity_valid"])
+            self.assertEqual(report["history"]["interval_days"], 60)
+            self.assertEqual(report["online_catalog"]["api_version"], "0.30.0")
+            self.assertTrue(all(item["detail"] == "This readiness result is unavailable." for item in report["checks"]))
+
+            report_text = json.dumps(report)
+            rendered_text = recovery_drill_center.safe_recovery_text(report)
+            summary_text = recovery_drill_center.safe_recovery_summary(report)
+            for private_value in (
+                "C:/PRIVATE-RECOVERY",
+                "D:/PRIVATE-RECOVERY",
+                VALID_TEST_LICENSE,
+                "PRIVATE-SERVICE",
+                "PRIVATE-STEP",
+                "PRIVATE-CUSTOMER",
+                "PRIVATE-RECORD",
+                "PRIVATE-DIAGNOSTIC",
+                "PRIVATE-INVALID-STEP",
+            ):
+                self.assertNotIn(private_value, report_text)
+                self.assertNotIn(private_value, rendered_text)
+                self.assertNotIn(private_value, summary_text)
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["readiness_score"] = 1
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _records, damaged_integrity = recovery_drill_center.load_drill_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                recovery_drill_center.append_drill_history("key-recovery", 1, 5, 10, path=history_path)
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:

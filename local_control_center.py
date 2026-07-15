@@ -58,6 +58,12 @@ CONTROL_ACTIONS = {
         "category": "Core",
         "summary": "Use fixed response playbooks, local readiness checks, Windows Security, and reviewed safe exports.",
     },
+    "recovery_drills": {
+        "label": "Recovery Drill Center",
+        "script": "recovery_drill_center.py",
+        "category": "Core",
+        "summary": "Practice fixed recovery exercises, score local readiness, schedule reviews, and keep safe hash-chained results.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",
