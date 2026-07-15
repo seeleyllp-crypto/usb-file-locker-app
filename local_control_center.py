@@ -76,6 +76,12 @@ CONTROL_ACTIONS = {
         "category": "Recovery",
         "summary": "Build a fixed emergency card, first-hour runbook, review reminder, and coarse local snapshots.",
     },
+    "data_control": {
+        "label": "Local Data Control Center",
+        "script": "local_data_control_center.py",
+        "category": "Privacy",
+        "summary": "Review fourteen fixed data classes, eleven local controls, retention, and coarse hash-chained privacy receipts.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

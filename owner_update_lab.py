@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Recovery Kit Builder provides five customer profiles, ten fixed sections, fifty kit items, and five six-step first-hour emergency runbooks.",
-    "Ten coarse local Defender, audit, USB, key, backup, signed-release, storage, and encryption checks produce an explainable 100-point readiness score.",
-    "Customers can export reviewed JSON or printable text, copy a fixed runbook, and create a privacy-safe 7, 14, 30, 60, or 90-day calendar reminder.",
-    "Exact-schema tamper-evident snapshots compare fixed item coverage and readiness changes without names, contacts, license proof, keys, PINs, paths, files, receipts, or notes.",
-    "API 0.32.0 adds a responsive public Recovery Kit workspace with current-tab-only progress, random sections, clipboard, print, safe JSON, and calendar export.",
-    "The API accepts no customer recovery progress, contacts, files, paths, calendar data, local results, or snapshot history.",
-    "Apps Hub now presents twenty-six tools, same-PC Local Control launches eighteen approved apps, and owner experience covers thirteen public surfaces.",
-    "Direct Backup Verification launches now enforce the same Starter entitlement gate as the main app and Local Control.",
+    "New Local Data Control Center maps fourteen fixed VaultLink data classes across five scopes without searching arbitrary customer folders.",
+    "Eleven local checks cover app-data boundaries, protected envelopes, audit integrity, vault format, recovery histories, and temporary retention for an explainable 100-point posture.",
+    "Customers can filter the fixed map, copy a reviewed summary, export safe JSON or text, open the known app-data folder, and save exact-schema hash-chained privacy receipts.",
+    "Receipts and exports exclude names, contacts, license proof, keys, PINs, paths, filenames, file contents, screenshots, process lists, and free-form notes.",
+    "API 0.33.0 adds a responsive public Data Control workspace and fixed data-map endpoint with current-tab-only review progress, print, clipboard, and safe JSON export.",
+    "The public workspace accepts no customer inventory, progress, contacts, files, paths, local results, or browser-stored state.",
+    "Apps Hub now presents twenty-eight tools, same-PC Local Control launches nineteen approved apps, owner experience covers fourteen public surfaces, and the package contains forty-eight transparent files.",
+    "Local Data Control is included in Starter and every cumulative rank.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

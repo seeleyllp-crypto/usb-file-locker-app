@@ -83,6 +83,8 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Customer License Center", "Review license status, anonymous seats, rank tools, and upgrades without activating a device.", self.open_customer_license, 5, 3, locker.YELLOW, locker.BLACK)
         self.app_card(apps, "Recovery Kit Builder", "Build a fixed emergency card, local readiness score, first-hour runbook, review reminder, and safe snapshots.", self.open_recovery_kit_builder, 6, 0, locker.GREEN, locker.BLACK)
         self.app_card(apps, "Public Recovery Kit", "Use five fixed profiles and fifty kit items with current-tab-only progress and safe local exports.", self.open_public_recovery_kit, 6, 1, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Local Data Control", "Review fourteen fixed local data classes, eleven controls, coarse metadata, retention, and hash-chained receipts.", self.open_local_data_control, 6, 2, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Public Data Control", "Review the fixed public data map with current-tab-only progress and a safe browser receipt.", self.open_public_data_control, 6, 3, locker.BLUE, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
@@ -360,6 +362,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Recovery Kit Builder.")
             messagebox.showerror("Could not open Recovery Kit Builder", str(exc))
 
+    def open_local_data_control(self):
+        try:
+            locker.launch_companion_script("local_data_control_center.py")
+            self.status.set("Opened Local Data Control Center.")
+        except Exception as exc:
+            self.status.set("Could not open Local Data Control Center.")
+            messagebox.showerror("Could not open Local Data Control Center", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -408,6 +418,9 @@ class PrivacySafetyHub(tk.Tk):
 
     def open_public_recovery_kit(self):
         self.open_public_page("/recovery-kit", "Public Recovery Kit")
+
+    def open_public_data_control(self):
+        self.open_public_page("/data-control", "Public Data Control")
 
     def open_signed_update(self):
         self.open_public_page("/update", "Signed Update Center")

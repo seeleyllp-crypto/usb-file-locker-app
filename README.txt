@@ -18,6 +18,20 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.15.3 adds LOCAL DATA CONTROL CENTER with 14 fixed data
+  classes across 5 scopes and 11 explainable controls totaling 100 points.
+- It reads coarse metadata only from exact known VaultLink app-data sources.
+  It never searches Downloads, Documents, USB drives, locked-container
+  locations, arbitrary backup folders, browser data, or process lists.
+- Customers can filter the map, copy a reviewed summary, export safe JSON or
+  text, open the known app-data folder, and save exact-schema hash-chained
+  privacy receipts. Exports contain no names, contacts, license proof, keys,
+  PINs, paths, filenames, file contents, screenshots, process lists, or notes.
+- API 0.33.0 adds public DATA CONTROL pages. Browser progress stays only in
+  the current tab, and the API accepts no inventory, progress, contacts,
+  files, paths, or local results.
+- Apps Hub has 28 tools, same-PC Local Control has 19 approved apps, owner
+  experience covers 14 public surfaces, and the signed package has 48 files.
 - Version 2026.07.15.2 adds RECOVERY KIT BUILDER with 5 fixed profiles,
   10 sections, 50 preparation items across 8 categories, and 5 emergency
   runbooks containing 30 ordered steps. Ten coarse local checks total 100

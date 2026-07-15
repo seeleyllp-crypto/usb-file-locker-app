@@ -23,6 +23,7 @@ import diagnostics_center
 import incident_response_center
 import license_issuer
 import local_control_center
+import local_data_control_center
 import owner_update_lab
 import recovery_drill_center
 import recovery_kit_builder
@@ -100,14 +101,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 21)
+        self.assertEqual(len(launchers), 22)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 46)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 46)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 48)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 48)
+        self.assertIn("local_data_control_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Local Data Control Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("recovery_kit_builder.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Recovery Kit Builder.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("backup_verification_center.py", build_signed_update.PACKAGE_FILES)
@@ -136,9 +139,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(recovery_kit_builder.RecoveryKitBuilder, recovery_kit_builder.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
+        self.assertTrue(issubclass(local_data_control_center.LocalDataControlCenter, local_data_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 26)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 28)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 19)
+        self.assertIn("data_control", local_control_center.CONTROL_ACTIONS)
 
     def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
         pin = "Safe-Control-4291"
@@ -164,6 +170,7 @@ class DesktopHelperTests(unittest.TestCase):
             "recovery_drill_center.py",
             "backup_verification_center.py",
             "recovery_kit_builder.py",
+            "local_data_control_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -176,7 +183,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 18)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 19)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -223,14 +230,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 18)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 19)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 18)
+        self.assertEqual(safe_report["session"]["apps_total"], 19)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -369,7 +376,7 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Recovery Drill Center", unlocked_page)
             self.assertIn("Backup Verification Center", unlocked_page)
             self.assertIn("Recovery Kit Builder", unlocked_page)
-            self.assertIn("18 / 18", unlocked_page)
+            self.assertIn("19 / 19", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -430,7 +437,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 18)
+            self.assertEqual(report["session"]["apps_total"], 19)
         finally:
             connection.close()
             server.shutdown()
@@ -1228,6 +1235,161 @@ class DesktopHelperTests(unittest.TestCase):
                 recovery_kit_builder.append_snapshot(
                     "personal-pc", "replacement-pc", [], 10, 30, path=history_path
                 )
+
+    def test_local_data_control_is_fixed_hash_chained_bounded_and_private(self):
+        tree = ast.parse(Path(local_data_control_center.__file__).read_text(encoding="utf-8"))
+        locker_attributes = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "locker"
+        }
+        self.assertEqual(sorted(name for name in locker_attributes if not hasattr(locker, name)), [])
+        self.assertEqual(len(local_data_control_center.SCOPE_SPECS), 5)
+        self.assertEqual(len(local_data_control_center.DATA_CLASS_SPECS), 14)
+        self.assertEqual(len({item["id"] for item in local_data_control_center.DATA_CLASS_SPECS}), 14)
+        self.assertEqual(len(local_data_control_center.CONTROL_CHECKS), 11)
+        self.assertEqual(sum(item[3] for item in local_data_control_center.CONTROL_CHECKS), 100)
+        self.assertEqual(local_data_control_center.MAX_INVENTORY_FILES, 5000)
+
+        source_map = local_data_control_center._class_sources()
+        source_text = "\n".join(str(path) for paths in source_map.values() for path in paths)
+        self.assertNotIn("Downloads", source_text)
+        self.assertNotIn("Documents", source_text)
+        for paths in source_map.values():
+            for path in paths:
+                self.assertTrue(local_data_control_center._inside_app_dir(path))
+
+        rows = []
+        for index, spec in enumerate(local_data_control_center.DATA_CLASS_SPECS):
+            rows.append(
+                {
+                    "id": spec["id"],
+                    "state": "present" if index < 4 else "not-configured",
+                    "count_band": "2-10" if index < 4 else "none",
+                    "size_band": "under-64-kib" if index < 4 else "none",
+                    "age_band": "today" if index < 4 else "none",
+                    "private_path": "C:/PRIVATE-DATA/customer-name.txt",
+                }
+            )
+        checks = [
+            {
+                "id": identifier,
+                "passed": True,
+                "detail": "C:/PRIVATE-DATA/customer-name.txt",
+                "action": "Open D:/PRIVATE-DATA/master.key",
+            }
+            for identifier, _category, _title, _weight in local_data_control_center.CONTROL_CHECKS
+        ]
+        report = local_data_control_center.build_data_control_report(
+            rows,
+            checks,
+            {
+                "ok": True,
+                "api_version": "0.33.0",
+                "service_status": {"mode": "normal", "message": "C:/PRIVATE-DATA/customer-name.txt"},
+                "signed_release": {"version": "2026.07.15.3", "private": "PRIVATE-RELEASE"},
+                "customer_records": ["PRIVATE-CUSTOMER"],
+            },
+            history=[{"private": "PRIVATE-HISTORY"}],
+            integrity={"valid": True, "message": "C:/PRIVATE-DATA/receipt.txt"},
+            generated_at_utc="2026-07-15T15:00:00Z",
+        )
+        self.assertEqual(report["class_count"], 14)
+        self.assertEqual(report["scope_count"], 5)
+        self.assertEqual(report["summary"]["present_class_count"], 4)
+        self.assertEqual(report["posture"], {"score": 100, "maximum": 100, "label": "ready", "passed": 11, "total": 11})
+        self.assertEqual(report["online"]["api_version"], "0.33.0")
+        self.assertEqual(report["online"]["signed_desktop_version"], "2026.07.15.3")
+        self.assertEqual(report["online"]["service_mode"], "normal")
+        self.assertEqual(report["receipts"]["record_count"], 1)
+        self.assertTrue(all("PRIVATE-DATA" not in item["detail"] for item in report["checks"]))
+
+        report_text = json.dumps(report)
+        safe_text = local_data_control_center.safe_report_text(report)
+        safe_summary = local_data_control_center.safe_summary(report)
+        for private_value in (
+            "C:/PRIVATE-DATA",
+            "D:/PRIVATE-DATA",
+            "PRIVATE-RELEASE",
+            "PRIVATE-CUSTOMER",
+            "PRIVATE-HISTORY",
+        ):
+            self.assertNotIn(private_value, report_text)
+            self.assertNotIn(private_value, safe_text)
+            self.assertNotIn(private_value, safe_summary)
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_data_control_") as folder:
+            history_path = Path(folder) / "data-control.jsonl"
+            first = local_data_control_center.append_receipt(
+                report, path=history_path, time_utc="2026-07-15T15:01:00Z"
+            )
+            second = local_data_control_center.append_receipt(
+                report, path=history_path, time_utc="2026-07-15T15:02:00Z"
+            )
+            history, integrity = local_data_control_center.load_receipt_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual(len(history), 2)
+            self.assertEqual(first["sequence"], 1)
+            self.assertEqual(second["previous_hash"], first["hash"])
+            self.assertEqual(first["posture_score"], 100)
+            self.assertEqual(first["present_class_count"], 4)
+            receipt_text = history_path.read_text(encoding="utf-8")
+            for private_value in ("PRIVATE-DATA", "PRIVATE-CUSTOMER", "master.key"):
+                self.assertNotIn(private_value, receipt_text)
+
+            concurrent_path = Path(folder) / "concurrent-data-control.jsonl"
+            concurrent_errors = []
+            threads = [
+                threading.Thread(
+                    target=lambda: local_data_control_center.append_receipt(report, path=concurrent_path),
+                    daemon=True,
+                )
+                for _index in range(10)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    concurrent_errors.append("thread did not finish")
+            concurrent_history, concurrent_integrity = local_data_control_center.load_receipt_history(concurrent_path)
+            self.assertEqual(concurrent_errors, [])
+            self.assertTrue(concurrent_integrity["valid"])
+            self.assertEqual(len(concurrent_history), 10)
+
+            with mock.patch.object(local_data_control_center, "_linklike", return_value=True):
+                _linked_history, linked_integrity = local_data_control_center.load_receipt_history(history_path)
+                self.assertFalse(linked_integrity["valid"])
+                with self.assertRaisesRegex(ValueError, "link or junction"):
+                    local_data_control_center.append_receipt(report, path=history_path)
+
+            invalid_report = json.loads(json.dumps(report))
+            invalid_report["data_classes"][0]["state"] = "C:/PRIVATE-DATA/customer-name.txt"
+            with self.assertRaisesRegex(ValueError, "invalid fixed class value"):
+                local_data_control_center.append_receipt(
+                    invalid_report,
+                    path=Path(folder) / "invalid.jsonl",
+                    time_utc="2026-07-15T15:03:00Z",
+                )
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["posture_score"] = 1
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _records, damaged_integrity = local_data_control_center.load_receipt_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                local_data_control_center.append_receipt(report, path=history_path)
+
+        with self.assertRaisesRegex(ValueError, "valid UTC"):
+            local_data_control_center.build_data_control_report(
+                rows,
+                checks,
+                generated_at_utc="C:/PRIVATE-DATA/customer-name.txt",
+            )
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:
