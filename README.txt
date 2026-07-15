@@ -18,6 +18,18 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.5 adds DIAGNOSTICS CENTER with 18 explainable read-only
+  checks totaling 100 points. It covers runtime, encryption dependencies, app
+  files, storage, settings, audit integrity, Defender and signatures, USB/key
+  readiness, Local Control PIN, license, API, clock, signed update, recovery
+  test, and app-data backup. It has category and attention filters plus reviewed
+  safe JSON and copied-summary exports.
+- API 0.28.0 adds a public DIAGNOSTICS browser app with 8 fixed problem
+  categories and 40 concrete steps. Progress stays only in the current tab and
+  is never uploaded or saved in browser storage. It accepts no free text or
+  files. APPS HUB now has 15 tools and LOCAL CONTROL has 14 approved apps.
+- Diagnostic exports exclude keys, receipts, identities, paths, PINs, USB
+  secrets, filenames, vault data, file contents, and raw exception details.
 - Version 2026.07.14.4 adds TRUST & RECOVERY CENTER, an explainable local
   100-point report for Defender, audit integrity, USB/key readiness, the separate
   Local Control PIN, license state, signed updates, public API trust, recovery

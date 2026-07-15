@@ -9,6 +9,7 @@ import threading
 import unittest
 import urllib.parse
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -16,6 +17,7 @@ from unittest import mock
 import audit_log_viewer
 import build_signed_update
 import customer_hub
+import diagnostics_center
 import license_issuer
 import local_control_center
 import owner_update_lab
@@ -70,13 +72,13 @@ class DesktopHelperTests(unittest.TestCase):
             "action_center": {"count": 9, "items": []},
         }
         with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
-            result = locker.load_customer_workspace_online(state, "2026.07.14.4")
+            result = locker.load_customer_workspace_online(state, "2026.07.14.5")
         self.assertIs(result, response)
         server_url, path, payload = post.call_args.args
         self.assertEqual(server_url, "https://api.example.test")
         self.assertEqual(path, "/api/v1/licenses/customer-workspace")
         self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
-        self.assertEqual(payload["app_version"], "2026.07.14.4")
+        self.assertEqual(payload["app_version"], "2026.07.14.5")
         serialized_payload = json.dumps(payload)
         self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
         self.assertNotIn("machine_id", payload)
@@ -93,7 +95,7 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 16)
+        self.assertEqual(len(launchers), 17)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
@@ -101,6 +103,8 @@ class DesktopHelperTests(unittest.TestCase):
                 self.assertIn("%PYTHON_CMD%", content)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("diagnostics_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Diagnostics Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("vault_health_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_control_center.py", build_signed_update.PACKAGE_FILES)
@@ -110,6 +114,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("owner_update_lab.py", build_signed_update.PACKAGE_FILES)
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
+        self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
@@ -133,6 +138,7 @@ class DesktopHelperTests(unittest.TestCase):
         expected_scripts = {
             None,
             "customer_hub.py",
+            "diagnostics_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -145,7 +151,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 13)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 14)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -192,14 +198,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 13)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 14)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 13)
+        self.assertEqual(safe_report["session"]["apps_total"], 14)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -280,7 +286,7 @@ class DesktopHelperTests(unittest.TestCase):
                         "license": "Active",
                         "plan": "Rank 5",
                         "desktop": locker.DESKTOP_APP_VERSION,
-                        "api": "0.27.0",
+                        "api": "0.28.0",
                         "service": "Normal",
                         "automatic_updates": "On",
                     },
@@ -333,7 +339,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("EXPORT SAFE REPORT", unlocked_page)
             self.assertIn("Global Breach Guard", unlocked_page)
             self.assertIn("Trust &amp; Recovery Center", unlocked_page)
-            self.assertIn("13 / 13", unlocked_page)
+            self.assertIn("Diagnostics Center", unlocked_page)
+            self.assertIn("14 / 14", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -394,7 +401,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 13)
+            self.assertEqual(report["session"]["apps_total"], 14)
         finally:
             connection.close()
             server.shutdown()
@@ -417,8 +424,8 @@ class DesktopHelperTests(unittest.TestCase):
                 "license_id": "PRIVATE-LICENSE-ID-7701",
                 "customer_label": "PRIVATE-CUSTOMER-7701",
                 "machine_name": "PRIVATE-PC-7701",
-                "latest_desktop_version": "2026.07.14.4",
-                "api_version": "0.27.0",
+                "latest_desktop_version": "2026.07.14.5",
+                "api_version": "0.28.0",
                 "service_status": {"mode": "normal", "message": "Service normal"},
             }
         )
@@ -451,7 +458,7 @@ class DesktopHelperTests(unittest.TestCase):
         online = {
             "ok": True,
             "trust_schema_version": 1,
-            "api_version": "0.27.0",
+            "api_version": "0.28.0",
             "score": {"value": 100, "maximum": 100, "label": "ready", "attention_count": 0},
             "checks": [
                 {
@@ -468,10 +475,10 @@ class DesktopHelperTests(unittest.TestCase):
             "service_status": {"mode": "normal", "message": "Service normal"},
             "signed_release": {
                 "ready": True,
-                "version": "2026.07.14.4",
+                "version": "2026.07.14.5",
                 "minimum_supported_version": "2026.07.12.9",
                 "published_at_utc": "2026-07-14T20:30:00Z",
-                "package_filename": "VaultLink-Windows-2026.07.14.4.zip",
+                "package_filename": "VaultLink-Windows-2026.07.14.5.zip",
                 "size_bytes": 123456,
                 "sha256": "a" * 64,
                 "signing_key_id": "safe-key-id",
@@ -539,6 +546,133 @@ class DesktopHelperTests(unittest.TestCase):
         ):
             self.assertNotIn(private_value, report_text)
             self.assertNotIn(private_value, rendered_text)
+
+    def test_diagnostics_report_has_eighteen_checks_and_no_private_values(self):
+        now = datetime(2026, 7, 14, 20, 30, tzinfo=timezone.utc)
+        settings = {
+            "last_key_path": "D:/PRIVATE-DIAGNOSTIC-USB/master_usb_file_locker.key",
+            "owner_usb_policy": "PRIVATE-OWNER-POLICY",
+            "local_control_pin_verifier": "PRIVATE-DIAGNOSTIC-PIN",
+        }
+        state = locker.normalize_license_state(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "PRIVATE-DIAGNOSTIC-RECEIPT",
+                "license_id": "PRIVATE-DIAGNOSTIC-LICENSE-ID",
+                "customer_label": "PRIVATE-DIAGNOSTIC-CUSTOMER",
+                "machine_name": "PRIVATE-DIAGNOSTIC-PC",
+                "status": "active",
+                "plan_id": "starter",
+                "plan_name": "$5 Starter",
+            }
+        )
+        defender = {
+            "available": True,
+            "ProtectedNow": True,
+            "AntivirusEnabled": True,
+            "RealTimeProtectionEnabled": True,
+            "BehaviorMonitorEnabled": True,
+            "IoavProtectionEnabled": True,
+            "AntivirusSignatureLastUpdated": "2026-07-14T20:00:00Z",
+            "unexpected_secret": "PRIVATE-DIAGNOSTIC-DEFENDER",
+        }
+        audit_records = [
+            {"action": "recovery_self_test", "result": "success", "time_utc": "2026-07-14T20:10:00Z", "path": "C:/PRIVATE/recovery.txt"},
+            {"action": "backup_app_data", "result": "success", "time_utc": "2026-07-14T20:20:00Z", "contents": "PRIVATE-DIAGNOSTIC-CONTENTS"},
+        ]
+        guide = {
+            "ok": True,
+            "diagnostics_schema_version": 1,
+            "api_version": "0.28.0",
+            "service_status": {"mode": "normal", "message": "All services normal."},
+            "signed_release": {
+                "ready": True,
+                "version": "2026.07.14.5",
+                "minimum_supported_version": "2026.07.12.9",
+                "published_at_utc": "2026-07-14T20:15:00Z",
+            },
+            "categories": [
+                {
+                    "id": "app-start",
+                    "title": "App will not open",
+                    "summary": "Use fixed safe steps.",
+                    "steps": [
+                        {
+                            "id": "step-one",
+                            "title": "Run diagnostics",
+                            "action": "C:/PRIVATE/customer-file.txt",
+                            "expected": "A privacy-safe result.",
+                            "unexpected": "PRIVATE-DIAGNOSTIC-STEP",
+                        }
+                    ],
+                    "escalation": "Send only reviewed safe fields.",
+                }
+            ],
+            "privacy_boundaries": ["No files or secrets"],
+            "limitations": ["Not certification"],
+            "server_time_utc": "2026-07-14T20:30:00Z",
+            "unexpected_customer": "PRIVATE-DIAGNOSTIC-ONLINE-CUSTOMER",
+        }
+        runtime = {
+            "python_version": "3.14.0",
+            "python_supported": True,
+            "cryptography_version": "49.0.0",
+            "cryptography_ready": True,
+            "required_app_files": 4,
+            "available_app_files": 4,
+            "package_ready": True,
+            "app_data_writable": True,
+            "free_disk_bytes": 2 * 1024 ** 3,
+            "settings_readable": True,
+            "unexpected_path": "C:/PRIVATE/app-data",
+        }
+        with mock.patch.object(locker, "load_owner_policy", return_value={"version": 1}), mock.patch.object(
+            trust_recovery_center, "selected_key_ready", return_value=True
+        ), mock.patch.object(
+            trust_recovery_center, "local_control_pin_ready", return_value=True
+        ), mock.patch.object(locker, "license_is_active", return_value=True):
+            report = diagnostics_center.build_diagnostics_report(
+                settings,
+                state,
+                defender,
+                (True, 2, "Hash chain is valid."),
+                audit_records,
+                guide,
+                runtime,
+                now_utc=now,
+            )
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["score"]["maximum"], 100)
+        self.assertEqual(report["score"]["value"], 100)
+        self.assertEqual(report["score"]["passed"], 18)
+        self.assertEqual(report["score"]["total"], 18)
+        self.assertEqual(sum(item["weight"] for item in report["checks"]), 100)
+        self.assertEqual(report["environment"]["diagnostics_api_version"], "0.28.0")
+        self.assertEqual(report["online_guide"]["categories"][0]["steps"][0]["action"], "Review this check in the desktop app.")
+        self.assertNotIn("unexpected_customer", report["online_guide"])
+        malformed = dict(guide)
+        malformed["diagnostics_schema_version"] = "not-an-integer"
+        self.assertEqual(diagnostics_center.safe_diagnostics_guide(malformed)["diagnostics_schema_version"], 1)
+        report_text = json.dumps(report)
+        rendered_text = diagnostics_center.safe_diagnostics_text(report)
+        summary_text = diagnostics_center.safe_summary_text(report)
+        for private_value in (
+            "D:/PRIVATE-DIAGNOSTIC-USB",
+            "C:/PRIVATE",
+            VALID_TEST_LICENSE,
+            "PRIVATE-DIAGNOSTIC-RECEIPT",
+            "PRIVATE-DIAGNOSTIC-LICENSE-ID",
+            "PRIVATE-DIAGNOSTIC-CUSTOMER",
+            "PRIVATE-DIAGNOSTIC-PC",
+            "PRIVATE-DIAGNOSTIC-PIN",
+            "PRIVATE-DIAGNOSTIC-DEFENDER",
+            "PRIVATE-DIAGNOSTIC-CONTENTS",
+            "PRIVATE-DIAGNOSTIC-STEP",
+            "PRIVATE-DIAGNOSTIC-ONLINE-CUSTOMER",
+        ):
+            self.assertNotIn(private_value, report_text)
+            self.assertNotIn(private_value, rendered_text)
+            self.assertNotIn(private_value, summary_text)
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_health_") as folder:

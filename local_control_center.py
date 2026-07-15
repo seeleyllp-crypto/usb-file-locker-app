@@ -46,6 +46,12 @@ CONTROL_ACTIONS = {
         "category": "Core",
         "summary": "Review Defender, audit, USB, signed-update, and public trust posture locally.",
     },
+    "diagnostics": {
+        "label": "Diagnostics Center",
+        "script": "diagnostics_center.py",
+        "category": "Core",
+        "summary": "Run read-only runtime, storage, Defender, USB, service, update, and recovery checks.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

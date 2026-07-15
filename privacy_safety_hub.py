@@ -69,10 +69,13 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Vault Health Center", "Check locked-file structure, compatibility, legacy formats, and safe health totals.", self.open_vault_health_center, 3, 0, "#252936", locker.TEXT)
         self.app_card(apps, "Trust & Recovery Center", "Combine Defender, audit, USB, license, signed-update, and public trust posture.", self.open_trust_recovery_center, 3, 1, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Customer Workspace", "Review account health, actions, rank tools, releases, and safe exports.", self.open_customer_workspace, 3, 2, "#252936", locker.TEXT)
+        self.app_card(apps, "Diagnostics Center", "Run 18 read-only checks and export a privacy-safe troubleshooting report.", self.open_diagnostics_center, 4, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Local Control Center", "Launch approved VaultLink apps from a USB and PIN protected same-PC website.", self.open_local_control_center, 4, 1, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Recovery Readiness", "Open the public fixed-field recovery planner without uploading files or secrets.", self.open_recovery_readiness, 4, 2, locker.YELLOW, locker.BLACK)
 
         for col in range(3):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(4):
+        for row in range(5):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -80,9 +83,9 @@ class PrivacySafetyHub(tk.Tk):
     def app_card(self, parent, title, body, command, row, column, bg, fg):
         card = tk.Frame(parent, bg=locker.PANEL)
         card.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 10, 10 if column == 0 else 0), pady=(0 if row == 0 else 10, 10 if row == 0 else 0))
-        tk.Label(card, text=title, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=18, pady=(18, 8))
-        tk.Label(card, text=body, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 10), justify="left", wraplength=380).pack(anchor="w", padx=18)
-        tk.Button(card, text=f"OPEN {title.upper()}", command=command, bg=bg, fg=fg, relief="flat", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=18, pady=(18, 18), ipadx=16, ipady=9)
+        tk.Label(card, text=title, bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=14, pady=(12, 5))
+        tk.Label(card, text=body, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 9), justify="left", wraplength=340).pack(anchor="w", padx=14)
+        tk.Button(card, text=f"OPEN {title.upper()}", command=command, bg=bg, fg=fg, relief="flat", font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(10, 12), ipadx=12, ipady=6)
 
     def refresh_status(self):
         settings = locker.load_settings()
@@ -305,6 +308,35 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Customer Workspace.")
             messagebox.showerror("Could not open Customer Workspace", str(exc))
+
+    def open_diagnostics_center(self):
+        try:
+            locker.launch_companion_script("diagnostics_center.py")
+            self.status.set("Opened Diagnostics Center.")
+        except Exception as exc:
+            self.status.set("Could not open Diagnostics Center.")
+            messagebox.showerror("Could not open Diagnostics Center", str(exc))
+
+    def open_local_control_center(self):
+        try:
+            locker.launch_companion_script("local_control_center.py")
+            self.status.set("Opened Local Control Center.")
+        except Exception as exc:
+            self.status.set("Could not open Local Control Center.")
+            messagebox.showerror("Could not open Local Control Center", str(exc))
+
+    def open_recovery_readiness(self):
+        try:
+            import webbrowser
+
+            settings = locker.load_settings()
+            state = locker.load_license_state(settings)
+            server = locker.validated_license_server_url(state.get("server_url"))
+            webbrowser.open(server + "/readiness", new=2)
+            self.status.set("Opened Recovery Readiness.")
+        except Exception as exc:
+            self.status.set("Could not open Recovery Readiness.")
+            messagebox.showerror("Could not open Recovery Readiness", str(exc))
 
 
 if __name__ == "__main__":

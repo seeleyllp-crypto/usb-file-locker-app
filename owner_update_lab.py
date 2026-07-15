@@ -46,12 +46,12 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Trust & Recovery Center combines Defender, audit-chain, USB, license, signed-update, API trust, backup, and recovery readiness into an explainable 100-point local report.",
-    "Public Trust Center and owner Trust Operations add scored release, service, storage, audit, encryption, recovery, and privacy-boundary checks through API 0.27.0.",
-    "Local Control now offers thirteen approved apps, task-category filters, uptime and session metrics, per-app success and failure totals, and a CSRF-protected safe JSON report.",
-    "Local Control adds stricter browser isolation and permissions headers while remaining bound only to 127.0.0.1 with USB presence, a separate scrypt control PIN, and rate limits.",
-    "Apps Hub is reorganized into a compact twelve-app grid with direct access to Trust & Recovery Center and Customer Workspace.",
-    "Trust reports whitelist remote fields and exclude license keys, receipts, identities, paths, PINs, USB secrets, filenames, and file contents.",
+    "New Diagnostics Center runs eighteen explainable read-only checks across runtime, storage, Defender, audit, USB, licensing, service, signed updates, and recovery.",
+    "The desktop diagnostic score totals 100 points and supports category and attention filters, a reviewed safe JSON export, and a privacy-safe copied summary.",
+    "Public Diagnostics provides eight fixed problem categories and forty concrete steps; checklist progress stays only in the current browser tab and is never uploaded.",
+    "Apps Hub now presents fifteen compact tools, while same-PC Local Control can launch fourteen approved apps through its existing USB, PIN, CSRF, and rate-limit boundary.",
+    "API 0.28.0 adds the public diagnostics guide and exposes only aggregate surface readiness to the owner Customer Experience Console.",
+    "Diagnostic reports exclude keys, receipts, identities, paths, PINs, USB secrets, filenames, vault data, file contents, and unreviewed exception details.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

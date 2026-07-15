@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.14.4"
+DESKTOP_APP_VERSION = "2026.07.14.5"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -59,6 +59,7 @@ LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
+    "diagnostics-center": "Diagnostics Center",
     "trust-recovery-center": "Trust and Recovery Center",
     "portable-locking": "Portable locking tools",
     "quick-lock-note": "Quick lock notes",
@@ -79,6 +80,7 @@ PLAN_FEATURE_TITLES = {
     "pro-baseline-pack": "Pro Baseline review pack",
 }
 PLAN_FEATURE_REQUIREMENTS = {
+    "diagnostics-center": "$5 Starter",
     "trust-recovery-center": "$5 Starter",
     "portable-locking": "$5 Starter",
     "quick-lock-note": "$5 Starter",
@@ -108,6 +110,7 @@ LICENSE_PLAN_IDS = {
     "pro-baseline",
 }
 SCRIPT_LICENSE_FEATURES = {
+    "diagnostics_center.py": "diagnostics-center",
     "trust_recovery_center.py": "trust-recovery-center",
     "privacy_safety_hub.py": "privacy-safety-hub",
     "personal_vault_pad.py": "personal-vault",
@@ -4971,15 +4974,19 @@ class USBFileLocker(tk.Tk):
 
         local_control_row = tk.Frame(panel, bg=PANEL)
         local_control_row.pack(fill="x", padx=18, pady=(0, 10))
-        tk.Label(local_control_row, text="SAME-PC WEBSITE", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+        tk.Label(local_control_row, text="LOCAL CUSTOMER TOOLS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.local_control_button = tk.Button(local_control_row, text="LOCAL CONTROL CENTER", command=self.open_local_control_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.local_control_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        self.diagnostics_button = tk.Button(local_control_row, text="DIAGNOSTICS CENTER", command=self.open_diagnostics_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.diagnostics_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         tk.Label(
             local_control_row,
-            text="Requires the USB key and a separate control PIN. It listens only on 127.0.0.1.",
+            text="Diagnostics is read-only. Local Control needs USB + a separate PIN and listens only on 127.0.0.1.",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 9),
+            wraplength=420,
+            justify="left",
         ).pack(side="left", padx=(12, 0))
 
         storage_row = tk.Frame(panel, bg=PANEL)
@@ -5142,6 +5149,7 @@ class USBFileLocker(tk.Tk):
             self.personal_vault_button,
         ]
         self.license_gated_buttons = {
+            self.diagnostics_button: "diagnostics-center",
             self.apps_hub_button: "privacy-safety-hub",
             self.breach_button: "global-breach-guard",
             self.global_guard_button: "global-breach-guard",
@@ -5732,6 +5740,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open the Trust & Recovery Center.")
             log_event("trust_center_open", "local", "failed")
             messagebox.showerror("Could not open Trust & Recovery Center", str(exc), parent=self)
+
+    def open_diagnostics_center(self):
+        try:
+            launch_companion_script("diagnostics_center.py")
+            self.status.set("Opened Diagnostics Center.")
+            log_event("diagnostics_center_open", "local", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Diagnostics Center.")
+            log_event("diagnostics_center_open", "local", "failed")
+            messagebox.showerror("Could not open Diagnostics Center", str(exc), parent=self)
 
     def open_local_control_center(self):
         try:
