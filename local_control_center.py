@@ -52,6 +52,12 @@ CONTROL_ACTIONS = {
         "category": "Core",
         "summary": "Run read-only runtime, storage, Defender, USB, service, update, and recovery checks.",
     },
+    "incident_response": {
+        "label": "Incident Response Center",
+        "script": "incident_response_center.py",
+        "category": "Core",
+        "summary": "Use fixed response playbooks, local readiness checks, Windows Security, and reviewed safe exports.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

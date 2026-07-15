@@ -18,6 +18,7 @@ import audit_log_viewer
 import build_signed_update
 import customer_hub
 import diagnostics_center
+import incident_response_center
 import license_issuer
 import local_control_center
 import owner_update_lab
@@ -72,13 +73,13 @@ class DesktopHelperTests(unittest.TestCase):
             "action_center": {"count": 9, "items": []},
         }
         with mock.patch.object(locker, "license_api_post_json", return_value=response) as post:
-            result = locker.load_customer_workspace_online(state, "2026.07.14.5")
+            result = locker.load_customer_workspace_online(state, "2026.07.14.6")
         self.assertIs(result, response)
         server_url, path, payload = post.call_args.args
         self.assertEqual(server_url, "https://api.example.test")
         self.assertEqual(path, "/api/v1/licenses/customer-workspace")
         self.assertEqual(payload["license_key"], VALID_TEST_LICENSE)
-        self.assertEqual(payload["app_version"], "2026.07.14.5")
+        self.assertEqual(payload["app_version"], "2026.07.14.6")
         serialized_payload = json.dumps(payload)
         self.assertNotIn("PRIVATE-RECEIPT-MUST-NOT-BE-SENT", serialized_payload)
         self.assertNotIn("machine_id", payload)
@@ -95,16 +96,20 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 17)
+        self.assertEqual(len(launchers), 18)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 40)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 40)
         self.assertIn("customer_hub.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("diagnostics_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Diagnostics Center.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("incident_response_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Incident Response Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("vault_health_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Vault Health Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_control_center.py", build_signed_update.PACKAGE_FILES)
@@ -115,6 +120,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("Run Owner Update Lab.bat", build_signed_update.PACKAGE_FILES)
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
+        self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
@@ -139,6 +145,7 @@ class DesktopHelperTests(unittest.TestCase):
             None,
             "customer_hub.py",
             "diagnostics_center.py",
+            "incident_response_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
             "locked_file_browser.py",
@@ -151,7 +158,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 14)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 15)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -198,14 +205,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 14)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 15)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 14)
+        self.assertEqual(safe_report["session"]["apps_total"], 15)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -340,7 +347,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Global Breach Guard", unlocked_page)
             self.assertIn("Trust &amp; Recovery Center", unlocked_page)
             self.assertIn("Diagnostics Center", unlocked_page)
-            self.assertIn("14 / 14", unlocked_page)
+            self.assertIn("Incident Response Center", unlocked_page)
+            self.assertIn("15 / 15", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -401,7 +409,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 14)
+            self.assertEqual(report["session"]["apps_total"], 15)
         finally:
             connection.close()
             server.shutdown()
@@ -669,6 +677,92 @@ class DesktopHelperTests(unittest.TestCase):
             "PRIVATE-DIAGNOSTIC-CONTENTS",
             "PRIVATE-DIAGNOSTIC-STEP",
             "PRIVATE-DIAGNOSTIC-ONLINE-CUSTOMER",
+        ):
+            self.assertNotIn(private_value, report_text)
+            self.assertNotIn(private_value, rendered_text)
+            self.assertNotIn(private_value, summary_text)
+
+    def test_incident_report_has_fixed_playbook_and_no_private_values(self):
+        diagnostic_checks = []
+        for identifier, _category, title, _weight in incident_response_center.READINESS_CHECKS:
+            diagnostic_checks.append(
+                {
+                    "id": identifier,
+                    "title": title,
+                    "passed": True,
+                    "detail": "Coarse readiness result is available.",
+                    "action": "Use the trusted local recovery tool.",
+                    "private_path": "C:/PRIVATE-INCIDENT/customer.txt",
+                }
+            )
+        diagnostic_report = {
+            "checks": diagnostic_checks,
+            "license_key": VALID_TEST_LICENSE,
+            "machine_name": "PRIVATE-INCIDENT-PC",
+            "contents": "PRIVATE-INCIDENT-CONTENTS",
+        }
+        guide = {
+            "ok": True,
+            "incident_schema_version": 1,
+            "api_version": "0.29.0",
+            "service_status": {"mode": "normal", "message": "All services normal.", "secret": "PRIVATE-SERVICE"},
+            "signed_release": {"ready": True, "version": "2026.07.14.6", "minimum_supported_version": "2026.07.12.9"},
+            "playbooks": [
+                {
+                    "id": "defender-alert",
+                    "title": "Microsoft Defender alert",
+                    "summary": "Use fixed safe response steps.",
+                    "steps": [
+                        {
+                            "id": "alert-safe-step",
+                            "title": "Review the alert",
+                            "action": "C:/PRIVATE-INCIDENT/customer.txt",
+                            "expected": "A reviewed safe result.",
+                            "unexpected_secret": "PRIVATE-STEP-SECRET",
+                        }
+                    ],
+                    "escalation": "Seek qualified help when unresolved.",
+                    "private_customer": "PRIVATE-INCIDENT-CUSTOMER",
+                }
+            ],
+            "privacy_boundaries": ["No files or secrets"],
+            "limitations": ["Not malware removal or certification"],
+            "customer_records": ["PRIVATE-CUSTOMER-RECORD"],
+            "server_time_utc": "2026-07-14T21:00:00Z",
+        }
+        report = incident_response_center.build_incident_report(
+            diagnostic_report,
+            guide,
+            "defender-alert",
+            {"alert-safe-step", "PRIVATE-INVALID-STEP"},
+            "2026-07-14T21:01:00Z",
+        )
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["readiness"]["value"], 100)
+        self.assertEqual(report["readiness"]["maximum"], 100)
+        self.assertEqual(report["readiness"]["passed"], 8)
+        self.assertEqual(report["readiness"]["total"], 8)
+        self.assertEqual(sum(item["weight"] for item in report["checks"]), 100)
+        self.assertEqual(report["selected_playbook"]["completed_step_ids"], ["alert-safe-step"])
+        self.assertEqual(report["selected_playbook"]["steps"][0]["action"], "Review this step locally.")
+        self.assertEqual(report["online_guide"]["api_version"], "0.29.0")
+        self.assertEqual(report["online_guide"]["playbook_count"], 1)
+        fallback = incident_response_center.safe_incident_guide({})
+        self.assertEqual(len(fallback["playbooks"]), 12)
+        self.assertEqual(sum(len(item["steps"]) for item in fallback["playbooks"]), 72)
+        report_text = json.dumps(report)
+        rendered_text = incident_response_center.safe_incident_text(report)
+        summary_text = incident_response_center.safe_incident_summary(report)
+        for private_value in (
+            "C:/PRIVATE-INCIDENT",
+            VALID_TEST_LICENSE,
+            "PRIVATE-INCIDENT-PC",
+            "PRIVATE-INCIDENT-CONTENTS",
+            "PRIVATE-SERVICE",
+            "PRIVATE-STEP-SECRET",
+            "PRIVATE-INCIDENT-CUSTOMER",
+            "PRIVATE-CUSTOMER-RECORD",
+            "PRIVATE-INVALID-STEP",
         ):
             self.assertNotIn(private_value, report_text)
             self.assertNotIn(private_value, rendered_text)

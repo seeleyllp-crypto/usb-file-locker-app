@@ -18,6 +18,20 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.14.6 adds INCIDENT RESPONSE CENTER with 8 coarse local checks
+  totaling 100 readiness points and 12 fixed playbooks containing 72 safe steps.
+  It covers Defender alerts, account theft, a lost master USB, unlock failure,
+  unknown PC behavior, update integrity, device loss, phishing, ransomware
+  warnings, exposed secrets, browser changes, and backup failures. It can open
+  Windows Security and trusted VaultLink tools, but never quarantines, deletes,
+  uploads, scans, or remotely controls the PC.
+- API 0.29.0 adds public INCIDENT RESPONSE pages with current-tab-only progress,
+  copy-next-step, print, safe JSON export, no free text or file uploads, and no
+  customer records. APPS HUB now has 16
+  tools, LOCAL CONTROL has 15 approved apps, and owner readiness covers 10 public
+  surfaces using aggregate status only.
+- Incident exports exclude license proof, identities, passwords, PINs, USB
+  secrets, paths, filenames, screenshots, process lists, and file contents.
 - Version 2026.07.14.5 adds DIAGNOSTICS CENTER with 18 explainable read-only
   checks totaling 100 points. It covers runtime, encryption dependencies, app
   files, storage, settings, audit integrity, Defender and signatures, USB/key
