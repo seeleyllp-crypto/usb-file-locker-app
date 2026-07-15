@@ -4,6 +4,7 @@ import os
 import queue
 import secrets
 import threading
+import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -680,7 +681,7 @@ class RecoveryKitBuilder(tk.Tk):
         metrics.pack(fill="x", pady=(0, 10))
         for column, (name, label) in enumerate((("coverage", "KIT COVERAGE"), ("readiness", "LOCAL READINESS"), ("catalog", "SECTIONS / ITEMS"), ("runbook", "RUNBOOK"), ("history", "SNAPSHOTS"), ("due", "NEXT REVIEW"))):
             metrics.grid_columnconfigure(column, weight=1)
-            cell = tk.Frame(metrics, bg=locker.PANEL, highlightthickness=1, highlightbackground=locker.BORDER)
+            cell = tk.Frame(metrics, bg=locker.PANEL, highlightthickness=1, highlightbackground="#343b49")
             cell.grid(row=0, column=column, sticky="nsew")
             tk.Label(cell, text=label, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 7, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
             tk.Label(cell, textvariable=self.metric_vars[name], bg=locker.PANEL, fg=locker.TEXT, font=("Segoe UI", 10, "bold"), wraplength=175, justify="left").pack(anchor="w", padx=10, pady=(0, 8))
@@ -931,7 +932,7 @@ class RecoveryKitBuilder(tk.Tk):
             settings = locker.load_settings()
             state = locker.load_license_state(settings)
             server = locker.validated_license_server_url(state.get("server_url"))
-            locker.open_trusted_http_url(server.rstrip("/") + "/recovery-kit")
+            webbrowser.open(server.rstrip("/") + "/recovery-kit", new=2)
             locker.log_event("recovery_kit_online_open", "public_workspace", "ok")
             self.status_var.set("Opened the public current-tab-only Recovery Kit workspace.")
         except Exception as exc:

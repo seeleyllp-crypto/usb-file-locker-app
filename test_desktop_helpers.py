@@ -1,3 +1,4 @@
+import ast
 import base64
 import hashlib
 import http.client
@@ -1041,6 +1042,15 @@ class DesktopHelperTests(unittest.TestCase):
                 )
 
     def test_recovery_kit_is_fixed_hash_chained_exportable_and_private(self):
+        tree = ast.parse(Path(recovery_kit_builder.__file__).read_text(encoding="utf-8"))
+        locker_attributes = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "locker"
+        }
+        self.assertEqual(sorted(name for name in locker_attributes if not hasattr(locker, name)), [])
         self.assertEqual(len(recovery_kit_builder.LOCAL_PROFILES), 5)
         self.assertEqual(len(recovery_kit_builder.LOCAL_SECTIONS), 10)
         self.assertEqual(sum(len(item["items"]) for item in recovery_kit_builder.LOCAL_SECTIONS), 50)
