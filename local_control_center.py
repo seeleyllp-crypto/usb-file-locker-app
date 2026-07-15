@@ -82,6 +82,12 @@ CONTROL_ACTIONS = {
         "category": "Privacy",
         "summary": "Review fourteen fixed data classes, eleven local controls, retention, and coarse hash-chained privacy receipts.",
     },
+    "storage_retention": {
+        "label": "Storage & Retention Center",
+        "script": "storage_retention_center.py",
+        "category": "Privacy",
+        "summary": "Review fixed storage boundaries and clean only expired VaultLink temporary copies after a bounded preview and typed confirmation.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

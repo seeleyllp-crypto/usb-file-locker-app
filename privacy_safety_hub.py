@@ -54,8 +54,18 @@ class PrivacySafetyHub(tk.Tk):
         tk.Label(status_panel, textvariable=self.stats, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 9), justify="left", wraplength=900).pack(anchor="w", padx=18, pady=(8, 16))
         tk.Label(status_panel, textvariable=self.audit_text, bg=locker.PANEL, fg=locker.MUTED, font=("Segoe UI", 9, "bold"), justify="left", wraplength=900).pack(anchor="w", padx=18, pady=(0, 16))
 
-        apps = tk.Frame(outer, bg=locker.BG)
-        apps.pack(fill="both", expand=True)
+        apps_shell = tk.Frame(outer, bg=locker.BG)
+        apps_shell.pack(fill="both", expand=True)
+        apps_canvas = tk.Canvas(apps_shell, bg=locker.BG, highlightthickness=0)
+        apps_scroll = tk.Scrollbar(apps_shell, orient="vertical", command=apps_canvas.yview)
+        apps_canvas.configure(yscrollcommand=apps_scroll.set)
+        apps_scroll.pack(side="right", fill="y")
+        apps_canvas.pack(side="left", fill="both", expand=True)
+        apps = tk.Frame(apps_canvas, bg=locker.BG)
+        apps_window = apps_canvas.create_window((0, 0), window=apps, anchor="nw")
+        apps.bind("<Configure>", lambda _event: apps_canvas.configure(scrollregion=apps_canvas.bbox("all")))
+        apps_canvas.bind("<Configure>", lambda event: apps_canvas.itemconfigure(apps_window, width=event.width))
+        apps_canvas.bind("<MouseWheel>", lambda event: apps_canvas.yview_scroll(int(-event.delta / 120), "units"))
 
         self.app_card(apps, "Main Locker", "Full lock, unlock, vault, audit log, and owner USB controls.", self.open_main, 0, 0, locker.WHITE, locker.BLACK)
         self.app_card(apps, "Locked File Browser", "Find .locked files fast, inspect them, and jump into unlock mode.", self.open_browser, 0, 1, "#252936", locker.TEXT)
@@ -85,10 +95,12 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Public Recovery Kit", "Use five fixed profiles and fifty kit items with current-tab-only progress and safe local exports.", self.open_public_recovery_kit, 6, 1, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Local Data Control", "Review fourteen fixed local data classes, eleven controls, coarse metadata, retention, and hash-chained receipts.", self.open_local_data_control, 6, 2, locker.GREEN, locker.BLACK)
         self.app_card(apps, "Public Data Control", "Review the fixed public data map with current-tab-only progress and a safe browser receipt.", self.open_public_data_control, 6, 3, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Storage & Retention", "Review eight fixed storage areas, ten controls, and clean only expired VaultLink temporary copies after typed confirmation.", self.open_storage_retention, 7, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Public Retention Guide", "Review fixed retention policy and cleanup boundaries with current-tab-only progress and no remote cleanup.", self.open_public_retention, 7, 1, locker.BLUE, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(7):
+        for row in range(8):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -370,6 +382,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Local Data Control Center.")
             messagebox.showerror("Could not open Local Data Control Center", str(exc))
 
+    def open_storage_retention(self):
+        try:
+            locker.launch_companion_script("storage_retention_center.py")
+            self.status.set("Opened Storage & Retention Center.")
+        except Exception as exc:
+            self.status.set("Could not open Storage & Retention Center.")
+            messagebox.showerror("Could not open Storage & Retention Center", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -421,6 +441,9 @@ class PrivacySafetyHub(tk.Tk):
 
     def open_public_data_control(self):
         self.open_public_page("/data-control", "Public Data Control")
+
+    def open_public_retention(self):
+        self.open_public_page("/retention", "Public Retention Guide")
 
     def open_signed_update(self):
         self.open_public_page("/update", "Signed Update Center")

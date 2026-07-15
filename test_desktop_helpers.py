@@ -27,6 +27,7 @@ import local_data_control_center
 import owner_update_lab
 import recovery_drill_center
 import recovery_kit_builder
+import storage_retention_center
 import trust_recovery_center
 import usb_file_locker as locker
 import vault_health_center
@@ -101,14 +102,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 22)
+        self.assertEqual(len(launchers), 23)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 48)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 48)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 50)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 50)
+        self.assertIn("storage_retention_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Storage & Retention Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_data_control_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Local Data Control Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("recovery_kit_builder.py", build_signed_update.PACKAGE_FILES)
@@ -140,10 +143,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(local_data_control_center.LocalDataControlCenter, local_data_control_center.tk.Tk))
+        self.assertTrue(issubclass(storage_retention_center.StorageRetentionCenter, storage_retention_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 28)
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 19)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 30)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 20)
+        self.assertIn("storage_retention", local_control_center.CONTROL_ACTIONS)
         self.assertIn("data_control", local_control_center.CONTROL_ACTIONS)
 
     def test_local_control_pin_verifier_is_salted_and_never_contains_the_pin(self):
@@ -170,6 +175,7 @@ class DesktopHelperTests(unittest.TestCase):
             "recovery_drill_center.py",
             "backup_verification_center.py",
             "recovery_kit_builder.py",
+            "storage_retention_center.py",
             "local_data_control_center.py",
             "trust_recovery_center.py",
             "vault_health_center.py",
@@ -183,7 +189,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 19)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 20)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -230,14 +236,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 19)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 20)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 19)
+        self.assertEqual(safe_report["session"]["apps_total"], 20)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -376,7 +382,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Recovery Drill Center", unlocked_page)
             self.assertIn("Backup Verification Center", unlocked_page)
             self.assertIn("Recovery Kit Builder", unlocked_page)
-            self.assertIn("19 / 19", unlocked_page)
+            self.assertIn("Storage &amp; Retention Center", unlocked_page)
+            self.assertIn("20 / 20", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -437,7 +444,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 19)
+            self.assertEqual(report["session"]["apps_total"], 20)
         finally:
             connection.close()
             server.shutdown()
@@ -1389,6 +1396,235 @@ class DesktopHelperTests(unittest.TestCase):
                 rows,
                 checks,
                 generated_at_utc="C:/PRIVATE-DATA/customer-name.txt",
+            )
+
+    def test_storage_retention_is_exact_bounded_hash_chained_and_private(self):
+        tree = ast.parse(Path(storage_retention_center.__file__).read_text(encoding="utf-8"))
+        locker_attributes = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "locker"
+        }
+        self.assertEqual(sorted(name for name in locker_attributes if not hasattr(locker, name)), [])
+        self.assertEqual(len(storage_retention_center.AREA_SPECS), 8)
+        self.assertEqual(len({item["id"] for item in storage_retention_center.AREA_SPECS}), 8)
+        self.assertEqual(len(storage_retention_center.CONTROL_CHECKS), 10)
+        self.assertEqual(sum(item[3] for item in storage_retention_center.CONTROL_CHECKS), 100)
+        self.assertEqual(storage_retention_center.MAX_TEMP_ENTRIES, 5000)
+        self.assertEqual(storage_retention_center.MAX_METADATA_ENTRIES, 5000)
+        self.assertEqual(len(storage_retention_center.RECEIPT_FIELDS), 13)
+
+        rows = [
+            {
+                "id": item["id"],
+                "state": "not-inventoried" if item["id"] == "external-customer-data" else "present",
+                "count_band": "2-10",
+                "size_band": "under-64-kib",
+                "age_band": "today",
+                "metadata_attention": False,
+                "private_path": "C:/PRIVATE-RETENTION/customer-name.txt",
+            }
+            for item in storage_retention_center.AREA_SPECS
+        ]
+        checks = [
+            {
+                "id": identifier,
+                "passed": True,
+                "detail": "C:/PRIVATE-RETENTION/customer-name.txt",
+                "action": "Open D:/PRIVATE-RETENTION/master.key",
+            }
+            for identifier, _category, _title, _weight in storage_retention_center.CONTROL_CHECKS
+        ]
+        temp_scan = {
+            "boundary_valid": True,
+            "blocked": False,
+            "capped": False,
+            "errors": False,
+            "total_entries": 4,
+            "eligible_entries": 3,
+            "eligible_candidates": 2,
+            "total_bytes": 8192,
+            "eligible_bytes": 4096,
+            "newest": 0,
+            "candidate_paths": [Path("C:/PRIVATE-RETENTION/customer-name.txt")],
+        }
+        report = storage_retention_center.build_retention_report(
+            rows,
+            checks,
+            temp_scan,
+            {
+                "ok": True,
+                "api_version": "0.34.0",
+                "service_status": {"mode": "normal", "message": "PRIVATE-SERVICE"},
+                "signed_release": {"version": "2026.07.15.4", "private": "PRIVATE-RELEASE"},
+                "customer_records": ["PRIVATE-CUSTOMER"],
+            },
+            history=[{"private": "PRIVATE-HISTORY"}],
+            integrity={"valid": True, "message": "C:/PRIVATE-RETENTION/receipt.txt"},
+            generated_at_utc="2026-07-15T17:00:00Z",
+        )
+        self.assertEqual(report["area_count"], 8)
+        self.assertEqual(report["summary"]["cleanup_area_count"], 1)
+        self.assertEqual(report["summary"]["external_boundary_count"], 1)
+        self.assertEqual(report["posture"], {"score": 100, "maximum": 100, "label": "ready", "passed": 10, "total": 10})
+        self.assertEqual(report["temporary_workspace"]["eligible_band"], "2-10")
+        self.assertEqual(report["online"]["api_version"], "0.34.0")
+        self.assertEqual(report["online"]["signed_desktop_version"], "2026.07.15.4")
+        self.assertEqual(report["online"]["service_mode"], "normal")
+        self.assertEqual(report["receipts"]["record_count"], 1)
+
+        report_text = json.dumps(report)
+        safe_text = storage_retention_center.safe_report_text(report)
+        safe_summary = storage_retention_center.safe_summary(report)
+        for private_value in (
+            "C:/PRIVATE-RETENTION",
+            "D:/PRIVATE-RETENTION",
+            "PRIVATE-SERVICE",
+            "PRIVATE-RELEASE",
+            "PRIVATE-CUSTOMER",
+            "PRIVATE-HISTORY",
+            "customer-name.txt",
+            "master.key",
+        ):
+            self.assertNotIn(private_value, report_text)
+            self.assertNotIn(private_value, safe_text)
+            self.assertNotIn(private_value, safe_summary)
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_retention_receipts_") as folder:
+            history_path = Path(folder) / "retention.jsonl"
+            first = storage_retention_center.append_receipt(
+                report, "review", "attention", path=history_path, time_utc="2026-07-15T17:01:00Z"
+            )
+            second = storage_retention_center.append_receipt(
+                report, "cleanup", "ok", 3, 4096, path=history_path, time_utc="2026-07-15T17:02:00Z"
+            )
+            history, integrity = storage_retention_center.load_receipt_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual(len(history), 2)
+            self.assertEqual(first["sequence"], 1)
+            self.assertEqual(second["previous_hash"], first["hash"])
+            self.assertEqual(second["removed_band"], "2-10")
+            self.assertEqual(second["bytes_band"], "under-64-kib")
+            receipt_text = history_path.read_text(encoding="utf-8")
+            self.assertNotIn("PRIVATE-RETENTION", receipt_text)
+            self.assertNotIn("customer-name.txt", receipt_text)
+
+            concurrent_path = Path(folder) / "concurrent-retention.jsonl"
+            threads = [
+                threading.Thread(
+                    target=lambda: storage_retention_center.append_receipt(report, path=concurrent_path),
+                    daemon=True,
+                )
+                for _index in range(10)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+            concurrent_history, concurrent_integrity = storage_retention_center.load_receipt_history(concurrent_path)
+            self.assertTrue(concurrent_integrity["valid"])
+            self.assertEqual(len(concurrent_history), 10)
+
+            with mock.patch.object(storage_retention_center, "_linklike", return_value=True):
+                _linked_history, linked_integrity = storage_retention_center.load_receipt_history(history_path)
+                self.assertFalse(linked_integrity["valid"])
+                with self.assertRaisesRegex(ValueError, "link or junction"):
+                    storage_retention_center.append_receipt(report, path=history_path)
+
+            invalid_path = Path(folder) / "unexpected-field.jsonl"
+            unexpected = dict(first)
+            unexpected["private_contact"] = "PRIVATE-CONTACT"
+            unexpected["hash"] = hashlib.sha256(
+                storage_retention_center._canonical_receipt(unexpected)
+            ).hexdigest()
+            invalid_path.write_text(
+                json.dumps(unexpected, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            unexpected_records, unexpected_integrity = storage_retention_center.load_receipt_history(invalid_path)
+            self.assertEqual(unexpected_records, [])
+            self.assertFalse(unexpected_integrity["valid"])
+            self.assertIn("fixed schema", unexpected_integrity["message"])
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["posture_score"] = 1
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _records, damaged_integrity = storage_retention_center.load_receipt_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                storage_retention_center.append_receipt(report, path=history_path)
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_retention_cleanup_") as folder:
+            root = Path(folder)
+            app_dir = root / "USBFileLocker"
+            temp_dir = app_dir / "temp"
+            temp_dir.mkdir(parents=True)
+            old_file = temp_dir / "old-copy.bin"
+            recent_file = temp_dir / "recent-copy.bin"
+            old_folder = temp_dir / "old-folder"
+            nested = old_folder / "nested.bin"
+            old_folder.mkdir()
+            old_file.write_bytes(b"old")
+            recent_file.write_bytes(b"recent")
+            nested.write_bytes(b"nested")
+            outside = root / "outside-private.txt"
+            outside.write_text("must remain", encoding="utf-8")
+            now_value = 2_000_000_000.0
+            old_time = now_value - storage_retention_center.EXPIRED_SECONDS - 60
+            recent_time = now_value - 30
+            for path in (old_file, nested, old_folder):
+                os.utime(path, (old_time, old_time))
+            os.utime(recent_file, (recent_time, recent_time))
+
+            with mock.patch.object(locker, "APP_DIR", app_dir), mock.patch.object(
+                locker, "TEMP_DIR", temp_dir
+            ), mock.patch.object(locker, "log_event") as log_event:
+                preview = storage_retention_center.scan_temp_workspace(now_value)
+                self.assertTrue(preview["boundary_valid"])
+                self.assertFalse(preview["blocked"])
+                self.assertEqual(preview["eligible_candidates"], 2)
+                self.assertEqual(preview["eligible_entries"], 3)
+                with self.assertRaisesRegex(ValueError, "CLEAN TEMP"):
+                    storage_retention_center.cleanup_expired_temp("clean temp", now_value)
+
+                original_linklike = storage_retention_center._linklike
+                with mock.patch.object(
+                    storage_retention_center,
+                    "_linklike",
+                    side_effect=lambda path: Path(path).name == old_file.name or original_linklike(path),
+                ):
+                    linked_preview = storage_retention_center.scan_temp_workspace(now_value)
+                self.assertTrue(linked_preview["blocked"])
+                self.assertTrue(old_file.exists())
+
+                result = storage_retention_center.cleanup_expired_temp("CLEAN TEMP", now_value)
+                self.assertEqual(result["removed_candidates"], 2)
+                self.assertEqual(result["removed_entries"], 3)
+                self.assertFalse(old_file.exists())
+                self.assertFalse(old_folder.exists())
+                self.assertTrue(recent_file.exists())
+                self.assertTrue(outside.exists())
+                self.assertEqual(outside.read_text(encoding="utf-8"), "must remain")
+                log_event.assert_called_once()
+
+                with mock.patch.object(locker, "TEMP_DIR", root / "wrong-temp"):
+                    blocked = storage_retention_center.scan_temp_workspace(now_value)
+                    self.assertFalse(blocked["boundary_valid"])
+                    self.assertTrue(blocked["blocked"])
+                    with self.assertRaisesRegex(ValueError, "blocked"):
+                        storage_retention_center.cleanup_expired_temp("CLEAN TEMP", now_value)
+
+        with self.assertRaisesRegex(ValueError, "valid UTC"):
+            storage_retention_center.build_retention_report(
+                rows,
+                checks,
+                temp_scan,
+                generated_at_utc="C:/PRIVATE-RETENTION/customer-name.txt",
             )
 
     def test_vault_health_checks_headers_and_exports_aggregate_data_only(self):

@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Local Data Control Center maps fourteen fixed VaultLink data classes across five scopes without searching arbitrary customer folders.",
-    "Eleven local checks cover app-data boundaries, protected envelopes, audit integrity, vault format, recovery histories, and temporary retention for an explainable 100-point posture.",
-    "Customers can filter the fixed map, copy a reviewed summary, export safe JSON or text, open the known app-data folder, and save exact-schema hash-chained privacy receipts.",
-    "Receipts and exports exclude names, contacts, license proof, keys, PINs, paths, filenames, file contents, screenshots, process lists, and free-form notes.",
-    "API 0.33.0 adds a responsive public Data Control workspace and fixed data-map endpoint with current-tab-only review progress, print, clipboard, and safe JSON export.",
-    "The public workspace accepts no customer inventory, progress, contacts, files, paths, local results, or browser-stored state.",
-    "Apps Hub now presents twenty-eight tools, same-PC Local Control launches nineteen approved apps, owner experience covers fourteen public surfaces, and the package contains forty-eight transparent files.",
-    "Local Data Control is included in Starter and every cumulative rank.",
+    "New Storage & Retention Center maps eight fixed VaultLink storage areas and verifies ten explainable controls worth 100 points.",
+    "Temporary cleanup is restricted to the exact VaultLink temp workspace, previews at most 5,000 entries, rejects links and junctions, and revalidates age and boundaries before deletion.",
+    "Cleanup requires a visible warning, explicit approval, and exact CLEAN TEMP confirmation; it never targets keys, vaults, audit evidence, histories, settings, licenses, owner data, locked files, backups, or arbitrary folders.",
+    "Customers can filter the fixed map, copy a reviewed summary, export safe JSON or text, and save exact-schema hash-chained coarse retention receipts.",
+    "API 0.34.0 adds a responsive public Retention workspace and fixed retention-guide endpoint with current-tab-only review progress, print, clipboard, and safe JSON export.",
+    "The public workspace accepts no customer inventory, progress, cleanup commands, local results, files, paths, or browser-stored state.",
+    "Apps Hub now presents thirty tools, same-PC Local Control launches twenty approved apps, owner experience covers fifteen public surfaces, and the package contains fifty transparent files.",
+    "Storage & Retention is included in Starter and every cumulative rank.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

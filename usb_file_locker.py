@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.15.3"
+DESKTOP_APP_VERSION = "2026.07.15.4"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -59,6 +59,7 @@ LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
+    "storage-retention-center": "Storage & Retention Center",
     "data-control-center": "Local Data Control Center",
     "recovery-kit-builder": "Recovery Kit Builder",
     "backup-verification-center": "Backup Verification Center",
@@ -85,6 +86,7 @@ PLAN_FEATURE_TITLES = {
     "pro-baseline-pack": "Pro Baseline review pack",
 }
 PLAN_FEATURE_REQUIREMENTS = {
+    "storage-retention-center": "$5 Starter",
     "data-control-center": "$5 Starter",
     "recovery-kit-builder": "$5 Starter",
     "backup-verification-center": "$5 Starter",
@@ -120,6 +122,7 @@ LICENSE_PLAN_IDS = {
     "pro-baseline",
 }
 SCRIPT_LICENSE_FEATURES = {
+    "storage_retention_center.py": "storage-retention-center",
     "local_data_control_center.py": "data-control-center",
     "recovery_kit_builder.py": "recovery-kit-builder",
     "backup_verification_center.py": "backup-verification-center",
@@ -5023,6 +5026,8 @@ class USBFileLocker(tk.Tk):
         self.backup_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.data_control_button = tk.Button(storage_row, text="DATA CONTROL", command=self.open_data_control_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.data_control_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
+        self.retention_button = tk.Button(storage_row, text="RETENTION", command=self.open_storage_retention_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.retention_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.restore_data_button = tk.Button(storage_row, text="RESTORE APP DATA", command=self.restore_app_data, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
         self.restore_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.update_button = tk.Button(storage_row, text="UPDATE CENTER", command=self.open_update_center, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
@@ -5829,6 +5834,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open Local Data Control Center.")
             log_event("data_control_center_open", "local_center", "failed")
             messagebox.showerror("Could not open Local Data Control Center", str(exc), parent=self)
+
+    def open_storage_retention_center(self):
+        try:
+            launch_companion_script("storage_retention_center.py")
+            self.status.set("Opened Storage & Retention Center.")
+            log_event("retention_center_open", "local_center", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Storage & Retention Center.")
+            log_event("retention_center_open", "local_center", "failed")
+            messagebox.showerror("Could not open Storage & Retention Center", str(exc), parent=self)
 
     def open_local_control_center(self):
         try:

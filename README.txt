@@ -18,6 +18,18 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.15.4 adds STORAGE & RETENTION CENTER with 8 fixed storage
+  areas and 10 explainable controls totaling 100 points.
+- Cleanup can target only the exact VaultLink temporary workspace, previews at
+  most 5,000 entries, rejects links and junctions, and rechecks age and scope
+  before deletion. It requires a visible warning and exact CLEAN TEMP text.
+- It never cleans keys, vault data, audit evidence, histories, settings,
+  licenses, owner controls, rollback data, .locked files, backups, Downloads,
+  Documents, USB drives, or arbitrary folders. Cleanup is not secure erasure.
+- API 0.34.0 adds public RETENTION pages with current-tab-only review. The API
+  accepts no storage inventory, progress, cleanup command, local result, file,
+  or path. Apps Hub has 30 tools, Local Control has 20 approved apps, owner
+  experience covers 15 public surfaces, and the package has 50 files.
 - Version 2026.07.15.3 adds LOCAL DATA CONTROL CENTER with 14 fixed data
   classes across 5 scopes and 11 explainable controls totaling 100 points.
 - It reads coarse metadata only from exact known VaultLink app-data sources.
@@ -311,6 +323,9 @@ Log:
 Companion apps:
 - Run Privacy Safety Hub.bat
   Opens the launcher dashboard for the toolkit.
+- Run Storage & Retention Center.bat
+  Reviews fixed storage boundaries and cleans only expired VaultLink temporary
+  copies after a fresh bounded preview and typed confirmation.
 - Run Locked File Browser.bat
   Finds .locked files fast and opens the unlock prompt for them.
 - Run Quick Lock Note.bat
