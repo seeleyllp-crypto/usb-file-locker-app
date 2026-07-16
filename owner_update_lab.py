@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Maintenance Operations now opens with a daily briefing, customer-impact state, next-review timing, and a five-level severity summary.",
-    "Eight scored domain cards show five checks each and link directly to the relevant owner surface.",
-    "A ten-metric Change Watch compares live aggregate results with a baseline kept only in the current browser tab.",
-    "Four fixed fifteen, thirty, sixty, and one-hundred-twenty-minute owner review plans support local copy and calendar export.",
-    "Eight owner shortcuts and check-specific deep links reduce navigation time without exposing customer records or secrets.",
-    "The cockpit adds local text export, print, and a browser-generated SHA-256 evidence receipt alongside safe JSON and CSV.",
-    "Auto refresh is a visible sixty-second current-tab option; baselines, planner choices, searches, and filters are never uploaded.",
-    "The protected cockpit still runs exactly forty fixed readiness checks across eight owner categories and prioritizes failed checks in a runbook.",
-    "API 0.38.0 provides the schema-two admin-only operations contract while remaining read-only toward customer PCs.",
+    "Six approval gates divide all forty fixed owner checks exactly once and show clear, review, or blocked outcomes.",
+    "The owner decision queue contains failed fixed checks only, ordered by priority with fixed suggested review timing.",
+    "Five review lanes focus all actions, urgent work, release and service, customers and support, or evidence and governance.",
+    "A current-tab review session can focus the next action, mark a visible lane reviewed, and clear every local review mark.",
+    "The privacy-safe handoff export contains fixed gate results and action IDs without customer records, secrets, paths, or free-form notes.",
+    "The browser SHA-256 receipt now supports schema two with fixed approval-gate results and current-tab reviewed action IDs.",
+    "Review marks never resolve an owner action, change API state, prove remediation, or control a customer PC.",
+    "Daily briefing, severity, domain scores, ten-metric Change Watch, four review windows, shortcuts, print, and safe exports remain available.",
+    "API 0.39.0 provides the schema-three admin-only operations contract while preserving the exact forty-check and eight-category contract.",
     "Reports exclude customer identity, license proof, notes, device identifiers, files, paths, PINs, USB secrets, and customer maintenance history.",
-    "Owner Operations cannot lock, unlock, scan, execute, delete, quarantine, or otherwise control a customer PC.",
+    "Owner Operations remains aggregate and read-only toward every customer PC.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

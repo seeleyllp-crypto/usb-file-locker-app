@@ -18,12 +18,14 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.16.4 expands OWNER MAINTENANCE OPERATIONS with a daily
-  briefing, severity summary, 8 scored domains, and 10 watch metrics.
-- Four fixed review windows, 8 owner shortcuts, and check-specific deep links
-  make owner follow-up faster while preserving the exact 40-check contract.
+- Version 2026.07.16.5 adds 6 non-overlapping approval gates, a failed-check
+  decision queue, 5 review lanes, and a current-tab owner review session.
+- FOCUS NEXT, MARK LANE REVIEWED, CLEAR SESSION, and EXPORT HANDOFF improve
+  owner follow-up without changing server state or controlling customer PCs.
+- Review marks are temporary notes only. They do not resolve an action or
+  prove that the underlying issue was fixed.
 - OWNER OPERATIONS in License Issuer and Owner Update Lab opens it directly.
-- API 0.38.0 protects the schema-2 report with the admin header and returns no
+- API 0.39.0 protects the schema-3 report with the admin header and returns no
   license proof, customer identity, notes, device identity, files, paths, PINs,
   USB secrets, report contents, or customer maintenance history.
 - The page can auto-refresh every 60 seconds, keep a current-tab comparison
