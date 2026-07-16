@@ -1419,7 +1419,13 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(len(security_maintenance_center.LOCAL_TASKS), 32)
         self.assertEqual(len(security_maintenance_center.LOCAL_ROUTINES), 6)
         self.assertEqual(len(security_maintenance_center.HISTORY_FIELDS), 10)
+        self.assertEqual(len(security_maintenance_center.SNAPSHOT_FIELDS), 13)
+        self.assertEqual(len(security_maintenance_center.PLANNING_WINDOWS), 5)
         self.assertEqual(set(security_maintenance_center.ALLOWED_CADENCE_DAYS), {7, 14, 30, 60, 90})
+        self.assertEqual(
+            set(security_maintenance_center.SCHEDULE_SCORE_WEIGHTS),
+            {"current", "due-soon", "overdue", "not-started"},
+        )
         self.assertEqual(set(security_maintenance_center.TRUSTED_TOOL_TARGETS), set(security_maintenance_center.TASK_BY_ID))
         for category in security_maintenance_center.LOCAL_CATEGORIES:
             self.assertEqual(
@@ -1440,9 +1446,9 @@ class DesktopHelperTests(unittest.TestCase):
         guide = security_maintenance_center.safe_maintenance_guide(
             {
                 "ok": True,
-                "api_version": "0.35.0",
+                "api_version": "0.36.0",
                 "service_status": {"mode": "normal", "message": private_values[0]},
-                "signed_release": {"ready": True, "version": "2026.07.16.1"},
+                "signed_release": {"ready": True, "version": "2026.07.16.2"},
                 "categories": [{"id": private_values[1], "title": private_values[0]}],
                 "tasks": [{"id": private_values[2], "title": private_values[3]}],
                 "routines": [{"id": private_values[0], "task_ids": [private_values[1]]}],
@@ -1481,15 +1487,52 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(report["catalog"]["routine_count"], 6)
             self.assertEqual(report["summary"]["overdue"], 1)
             self.assertEqual(report["summary"]["not_started"], 31)
-            self.assertEqual(report["summary"]["completed_tasks"], 1)
+            self.assertEqual(report["summary"]["scheduled_tasks"], 1)
+            self.assertEqual(report["summary"]["ever_completed_tasks"], 1)
+            self.assertGreaterEqual(report["summary"]["schedule_score"], 0)
+            self.assertLessEqual(report["summary"]["schedule_score"], 100)
+            self.assertEqual(report["planning"]["next_7_days"], 3)
+            self.assertEqual(report["planning"]["next_90_days"], 32)
+            self.assertEqual(len(report["category_coverage"]), 8)
+            self.assertEqual(len(report["routine_coverage"]), 6)
+            self.assertEqual(len(report["priority_task_ids"]), 8)
+            self.assertEqual(report["priority_task_ids"][0], "defender-protection")
+            self.assertEqual(report["history"]["activity"]["completed_events"], 1)
+            self.assertEqual(report["history"]["activity"]["reopened_events"], 0)
             self.assertTrue(report["history"]["integrity_valid"])
-            self.assertEqual(report["online"]["api_version"], "0.35.0")
-            self.assertEqual(report["online"]["signed_desktop_version"], "2026.07.16.1")
+            self.assertEqual(report["online"]["api_version"], "0.36.0")
+            self.assertEqual(report["online"]["signed_desktop_version"], "2026.07.16.2")
             serialized_report = json.dumps(report)
+            dashboard = security_maintenance_center.dashboard_text(report)
+            safe_summary = security_maintenance_center.safe_summary(report)
+            safe_report = security_maintenance_center.safe_report_text(report)
             for private_value in private_values:
                 self.assertNotIn(private_value, serialized_report)
+                self.assertNotIn(private_value, dashboard)
+                self.assertNotIn(private_value, safe_summary)
+                self.assertNotIn(private_value, safe_report)
             self.assertNotIn("service_message", report["online"])
             self.assertNotIn("<textarea", Path(security_maintenance_center.__file__).read_text(encoding="utf-8").lower())
+
+            snapshot_path = Path(folder) / "maintenance-snapshots.jsonl"
+            first_snapshot = security_maintenance_center.append_maintenance_snapshot(
+                report,
+                path=snapshot_path,
+                time_utc="2026-07-16T12:00:30Z",
+            )
+            invalid_snapshot_report = json.loads(json.dumps(report))
+            invalid_snapshot_report["history"]["record_count"] = True
+            with self.assertRaisesRegex(ValueError, "invalid history count"):
+                security_maintenance_center.append_maintenance_snapshot(
+                    invalid_snapshot_report,
+                    path=Path(folder) / "invalid-snapshot.jsonl",
+                )
+            snapshots, snapshot_integrity = security_maintenance_center.load_snapshot_history(snapshot_path)
+            self.assertTrue(snapshot_integrity["valid"])
+            self.assertEqual(len(snapshots), 1)
+            self.assertEqual(first_snapshot["sequence"], 1)
+            self.assertEqual(first_snapshot["previous_hash"], "0" * 64)
+            self.assertEqual(first_snapshot["scheduled_task_count"], 1)
 
             reopened = security_maintenance_center.append_maintenance_event(
                 "defender-protection",
@@ -1506,6 +1549,44 @@ class DesktopHelperTests(unittest.TestCase):
             )
             self.assertEqual(state["state"], "not-started")
             self.assertEqual(state["next_due_utc"], "")
+            reopened_report = security_maintenance_center.build_maintenance_report(
+                guide,
+                history,
+                integrity,
+                "all",
+                "all",
+                "2026-07-16T12:02:00Z",
+            )
+            second_snapshot = security_maintenance_center.append_maintenance_snapshot(
+                reopened_report,
+                path=snapshot_path,
+                time_utc="2026-07-16T12:02:30Z",
+            )
+            snapshots, snapshot_integrity = security_maintenance_center.load_snapshot_history(snapshot_path)
+            self.assertTrue(snapshot_integrity["valid"])
+            self.assertEqual(len(snapshots), 2)
+            self.assertEqual(second_snapshot["previous_hash"], first_snapshot["hash"])
+            comparison = security_maintenance_center.compare_maintenance_snapshots(
+                snapshots[0],
+                snapshots[1],
+            )
+            self.assertEqual(comparison["scheduled_task_count_change"], -1)
+            self.assertEqual(comparison["history_record_count_change"], 1)
+            self.assertFalse(comparison["customer_records_included"])
+            comparison_text = security_maintenance_center.snapshot_comparison_text(comparison)
+            self.assertIn("REMINDER COVERAGE", comparison_text.upper())
+            archive = security_maintenance_center.build_maintenance_archive(
+                history,
+                integrity,
+                snapshots,
+                snapshot_integrity,
+                "2026-07-16T12:03:00Z",
+            )
+            self.assertEqual(archive["event_record_count"], 2)
+            self.assertEqual(archive["snapshot_record_count"], 2)
+            self.assertFalse(archive["customer_records_included"])
+            for private_value in private_values:
+                self.assertNotIn(private_value, json.dumps(archive))
 
             calendar_text = security_maintenance_center.build_calendar_text(
                 ["defender-protection", "windows-update"],
@@ -1543,6 +1624,32 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertTrue(concurrent_integrity["valid"])
             self.assertEqual(len(concurrent_history), 12)
 
+            concurrent_snapshot_path = Path(folder) / "concurrent-maintenance-snapshots.jsonl"
+            snapshot_errors = []
+
+            def snapshot_concurrently():
+                try:
+                    security_maintenance_center.append_maintenance_snapshot(
+                        reopened_report,
+                        path=concurrent_snapshot_path,
+                    )
+                except Exception as exc:
+                    snapshot_errors.append(str(exc))
+
+            snapshot_threads = [threading.Thread(target=snapshot_concurrently, daemon=True) for _index in range(10)]
+            for thread in snapshot_threads:
+                thread.start()
+            for thread in snapshot_threads:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    snapshot_errors.append("thread did not finish")
+            concurrent_snapshots, concurrent_snapshot_integrity = security_maintenance_center.load_snapshot_history(
+                concurrent_snapshot_path
+            )
+            self.assertEqual(snapshot_errors, [])
+            self.assertTrue(concurrent_snapshot_integrity["valid"])
+            self.assertEqual(len(concurrent_snapshots), 10)
+
             with mock.patch.object(security_maintenance_center, "_linklike", return_value=True):
                 _linked_history, linked_integrity = security_maintenance_center.load_maintenance_history(history_path)
                 self.assertFalse(linked_integrity["valid"])
@@ -1552,6 +1659,30 @@ class DesktopHelperTests(unittest.TestCase):
                         "completed",
                         path=history_path,
                     )
+                _linked_snapshots, linked_snapshot_integrity = security_maintenance_center.load_snapshot_history(
+                    snapshot_path
+                )
+                self.assertFalse(linked_snapshot_integrity["valid"])
+                with self.assertRaisesRegex(ValueError, "link or junction"):
+                    security_maintenance_center.append_maintenance_snapshot(
+                        reopened_report,
+                        path=snapshot_path,
+                    )
+
+            directory_history = Path(folder) / "maintenance-history-directory"
+            directory_history.mkdir()
+            _directory_records, directory_integrity = security_maintenance_center.load_maintenance_history(
+                directory_history
+            )
+            self.assertFalse(directory_integrity["valid"])
+            self.assertIn("regular file", directory_integrity["message"])
+            directory_snapshots = Path(folder) / "maintenance-snapshot-directory"
+            directory_snapshots.mkdir()
+            _directory_snapshot_records, directory_snapshot_integrity = security_maintenance_center.load_snapshot_history(
+                directory_snapshots
+            )
+            self.assertFalse(directory_snapshot_integrity["valid"])
+            self.assertIn("regular file", directory_snapshot_integrity["message"])
 
             lines = history_path.read_text(encoding="utf-8").splitlines()
             damaged = json.loads(lines[0])
@@ -1565,6 +1696,26 @@ class DesktopHelperTests(unittest.TestCase):
                     "windows-update",
                     "completed",
                     path=history_path,
+                )
+
+            snapshot_lines = snapshot_path.read_text(encoding="utf-8").splitlines()
+            damaged_snapshot = json.loads(snapshot_lines[0])
+            damaged_snapshot["schedule_score"] = 99
+            snapshot_lines[0] = json.dumps(damaged_snapshot, sort_keys=True, separators=(",", ":"))
+            snapshot_path.write_text("\n".join(snapshot_lines) + "\n", encoding="utf-8")
+            _damaged_snapshots, damaged_snapshot_integrity = security_maintenance_center.load_snapshot_history(
+                snapshot_path
+            )
+            self.assertFalse(damaged_snapshot_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "snapshot integrity failed"):
+                security_maintenance_center.append_maintenance_snapshot(
+                    reopened_report,
+                    path=snapshot_path,
+                )
+            with self.assertRaisesRegex(ValueError, "verified snapshots"):
+                security_maintenance_center.compare_maintenance_snapshots(
+                    damaged_snapshot,
+                    second_snapshot,
                 )
 
         with self.assertRaisesRegex(ValueError, "fixed maintenance tasks"):

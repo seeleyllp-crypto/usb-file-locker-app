@@ -92,7 +92,7 @@ CONTROL_ACTIONS = {
         "label": "Security Maintenance Center",
         "script": "security_maintenance_center.py",
         "category": "Core",
-        "summary": "Track thirty-two fixed defensive tasks, six routines, due dates, and privacy-safe hash-chained local history.",
+        "summary": "Track fixed defensive tasks, planning windows, schedule coverage, priority queues, snapshots, and privacy-safe hash-chained local history.",
     },
     "vault_health": {
         "label": "Vault Health Center",

@@ -18,6 +18,19 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.16.2 expands SECURITY MAINTENANCE with a readiness
+  dashboard, priority queue, and attention, 7-day, 30-day, and 90-day plans.
+- Eight category and six routine summaries use a reminder-coverage score.
+  This is not an antivirus, backup, key, recovery, compliance, or security
+  health score.
+- Privacy-safe snapshots use an exact 13-field SHA-256 hash chain capped at
+  200 records and 1 MiB. They contain coarse counts, UTC time, anonymous IDs,
+  and integrity hashes only.
+- EXPORT ARCHIVE makes a verified non-destructive copy of event and snapshot
+  chains without resetting or deleting active history.
+- API 0.36.0 adds four cadence horizons, coverage bars, priority review, and
+  a 16-field current-tab receipt. It receives no progress, snapshots, scores,
+  history, files, paths, or local results.
 - Version 2026.07.16.1 adds SECURITY MAINTENANCE CENTER with 32 fixed tasks
   across 8 categories, 6 routines, and 7, 14, 30, 60, or 90-day cadence.
 - Customers can filter by category, routine, and state; record complete or

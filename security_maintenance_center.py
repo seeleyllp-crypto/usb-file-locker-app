@@ -14,16 +14,33 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 import usb_file_locker as locker
 
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 GUIDE_ENDPOINT = "/api/v1/maintenance-guide"
 HISTORY_PATH = locker.APP_DIR / "security_maintenance_history.jsonl"
+SNAPSHOT_PATH = locker.APP_DIR / "security_maintenance_snapshots.jsonl"
 MAX_HISTORY_RECORDS = 500
 MAX_HISTORY_BYTES = 2 * 1024 * 1024
+MAX_SNAPSHOT_RECORDS = 200
+MAX_SNAPSHOT_BYTES = 1024 * 1024
 ALLOWED_CADENCE_DAYS = (7, 14, 30, 60, 90)
 VALID_STATES = frozenset({"completed", "reopened"})
 VALID_SOURCES = frozenset({"manual", "routine"})
 DISPLAY_STATES = ("all", "current", "due-soon", "overdue", "not-started")
+PLANNING_WINDOWS = (
+    ("all", "All scheduled", None),
+    ("attention", "Attention now", 0),
+    ("next-7", "Next 7 days", 7),
+    ("next-30", "Next 30 days", 30),
+    ("next-90", "Next 90 days", 90),
+)
+SCHEDULE_SCORE_WEIGHTS = {
+    "current": 100,
+    "due-soon": 65,
+    "overdue": 15,
+    "not-started": 0,
+}
 HISTORY_LOCK = threading.RLock()
+SNAPSHOT_LOCK = threading.RLock()
 HISTORY_FIELDS = frozenset(
     {
         "schema_version",
@@ -34,6 +51,23 @@ HISTORY_FIELDS = frozenset(
         "cadence_days",
         "state",
         "source",
+        "previous_hash",
+        "hash",
+    }
+)
+SNAPSHOT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "sequence",
+        "time_utc",
+        "event_id",
+        "schedule_score",
+        "current_count",
+        "due_soon_count",
+        "overdue_count",
+        "not_started_count",
+        "scheduled_task_count",
+        "history_record_count",
         "previous_hash",
         "hash",
     }
@@ -191,6 +225,7 @@ PRIVACY_BOUNDARIES = [
 
 LIMITATIONS = [
     "A completed task is a customer-recorded reminder, not proof that Windows, a backup, a key, a scan, or recovery is healthy.",
+    "Schedule scores and snapshot comparisons measure reminder coverage only; they are not security-health, compliance, antivirus, backup, or recovery scores.",
     "VaultLink does not replace Microsoft Defender, Windows Update, independent backups, professional incident response, legal advice, or compliance review.",
     "Calendar files are ordinary local reminders. The app does not install a background service or create Windows scheduled tasks.",
 ]
@@ -208,7 +243,7 @@ def _clean_text(value, default="", limit=360):
 def _fallback_guide(message="Online maintenance catalog unavailable."):
     return {
         "ok": False,
-        "maintenance_schema_version": 1,
+        "maintenance_schema_version": 2,
         "api_version": "Unavailable",
         "service_status": {"mode": "unknown", "message": message},
         "signed_release": {"ready": False, "version": "", "minimum_supported_version": ""},
@@ -225,6 +260,9 @@ def _fallback_guide(message="Online maintenance catalog unavailable."):
         "accepts_local_results": False,
         "accepts_completion_history": False,
         "accepts_reminders": False,
+        "accepts_snapshots": False,
+        "accepts_schedule_scores": False,
+        "accepts_maintenance_commands": False,
         "customer_records_included": False,
     }
 
@@ -237,10 +275,10 @@ def safe_maintenance_guide(payload):
     boundaries = source.get("privacy_boundaries") if isinstance(source.get("privacy_boundaries"), list) else []
     limitations = source.get("limitations") if isinstance(source.get("limitations"), list) else []
     cleaned_boundaries = [_clean_text(item, "", 420) for item in boundaries[:4]]
-    cleaned_limitations = [_clean_text(item, "", 420) for item in limitations[:3]]
+    cleaned_limitations = [_clean_text(item, "", 420) for item in limitations[:4]]
     return {
         "ok": bool(source.get("ok")),
-        "maintenance_schema_version": 1,
+        "maintenance_schema_version": 2,
         "api_version": _clean_text(source.get("api_version"), "Unavailable", 80),
         "service_status": {
             "mode": _clean_text(service.get("mode"), "unknown", 40),
@@ -264,6 +302,9 @@ def safe_maintenance_guide(payload):
         "accepts_local_results": False,
         "accepts_completion_history": False,
         "accepts_reminders": False,
+        "accepts_snapshots": False,
+        "accepts_schedule_scores": False,
+        "accepts_maintenance_commands": False,
         "customer_records_included": False,
     }
 
@@ -331,11 +372,13 @@ def _validate_history_record(record, sequence, previous_hash):
 
 def load_maintenance_history(path=HISTORY_PATH):
     path = Path(path)
-    if not path.is_file():
-        return [], {"valid": True, "message": "No Security Maintenance events have been saved yet."}
     try:
         if _linklike(path):
             raise ValueError("Maintenance history cannot be a link or junction.")
+        if path.exists() and not path.is_file():
+            raise ValueError("Maintenance history must be a regular file.")
+        if not path.is_file():
+            return [], {"valid": True, "message": "No Security Maintenance events have been saved yet."}
         if path.stat().st_size > MAX_HISTORY_BYTES:
             raise ValueError("Maintenance history is larger than the 2 MiB safety limit.")
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -404,6 +447,179 @@ def append_maintenance_event(task_id, state, source="manual", path=HISTORY_PATH,
     return append_maintenance_events([task_id], state, source, path, time_utc)[0]
 
 
+def _validate_snapshot_record(record, sequence, previous_hash):
+    if not isinstance(record, dict) or set(record) != SNAPSHOT_FIELDS or record.get("schema_version") != 1:
+        raise ValueError(f"Maintenance snapshot {sequence} has an invalid fixed schema.")
+    if type(record.get("sequence")) is not int or record["sequence"] != sequence:
+        raise ValueError(f"Maintenance snapshot {sequence} has an invalid sequence.")
+    if record.get("previous_hash") != previous_hash or not _is_lower_hex(record.get("previous_hash"), 64):
+        raise ValueError(f"Maintenance snapshot {sequence} broke the hash chain.")
+    if not _is_lower_hex(record.get("hash"), 64) or not _is_lower_hex(record.get("event_id"), 16):
+        raise ValueError(f"Maintenance snapshot {sequence} has an invalid identifier.")
+    if _parse_utc(record.get("time_utc")) is None or len(str(record.get("time_utc"))) > 40:
+        raise ValueError(f"Maintenance snapshot {sequence} has an invalid timestamp.")
+    bounded_fields = {
+        "schedule_score": (0, 100),
+        "current_count": (0, len(LOCAL_TASKS)),
+        "due_soon_count": (0, len(LOCAL_TASKS)),
+        "overdue_count": (0, len(LOCAL_TASKS)),
+        "not_started_count": (0, len(LOCAL_TASKS)),
+        "scheduled_task_count": (0, len(LOCAL_TASKS)),
+        "history_record_count": (0, MAX_HISTORY_RECORDS),
+    }
+    for field, (minimum, maximum) in bounded_fields.items():
+        value = record.get(field)
+        if type(value) is not int or value < minimum or value > maximum:
+            raise ValueError(f"Maintenance snapshot {sequence} has an invalid fixed count.")
+    status_total = (
+        record["current_count"]
+        + record["due_soon_count"]
+        + record["overdue_count"]
+        + record["not_started_count"]
+    )
+    if status_total != len(LOCAL_TASKS):
+        raise ValueError(f"Maintenance snapshot {sequence} has inconsistent task counts.")
+    if record["scheduled_task_count"] != len(LOCAL_TASKS) - record["not_started_count"]:
+        raise ValueError(f"Maintenance snapshot {sequence} has an inconsistent scheduled-task count.")
+
+
+def load_snapshot_history(path=SNAPSHOT_PATH):
+    path = Path(path)
+    try:
+        if _linklike(path):
+            raise ValueError("Maintenance snapshot history cannot be a link or junction.")
+        if path.exists() and not path.is_file():
+            raise ValueError("Maintenance snapshot history must be a regular file.")
+        if not path.is_file():
+            return [], {"valid": True, "message": "No Security Maintenance snapshots have been saved yet."}
+        if path.stat().st_size > MAX_SNAPSHOT_BYTES:
+            raise ValueError("Maintenance snapshot history is larger than the 1 MiB safety limit.")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) > MAX_SNAPSHOT_RECORDS:
+            raise ValueError("Maintenance snapshot history exceeds the 200-record safety limit.")
+        records = []
+        previous_hash = "0" * 64
+        for sequence, line in enumerate(lines, 1):
+            record = json.loads(line)
+            _validate_snapshot_record(record, sequence, previous_hash)
+            expected = hashlib.sha256(_canonical_record(record)).hexdigest()
+            if not secrets.compare_digest(str(record.get("hash", "")), expected):
+                raise ValueError(f"Maintenance snapshot {sequence} failed its hash check.")
+            records.append(record)
+            previous_hash = expected
+        return records, {"valid": True, "message": f"Verified {len(records)} hash-chained Security Maintenance snapshot(s)."}
+    except (ValueError, json.JSONDecodeError) as exc:
+        return [], {"valid": False, "message": str(exc)[:300]}
+    except Exception:
+        return [], {"valid": False, "message": "Maintenance snapshot history could not be read safely."}
+
+
+def append_maintenance_snapshot(report, path=SNAPSHOT_PATH, time_utc=""):
+    if not isinstance(report, dict) or not isinstance(report.get("summary"), dict) or not isinstance(report.get("history"), dict):
+        raise ValueError("A current fixed Security Maintenance report is required.")
+    summary = report["summary"]
+    required = ("schedule_score", "current", "due_soon", "overdue", "not_started", "scheduled_tasks")
+    if any(type(summary.get(field)) is not int for field in required):
+        raise ValueError("The Security Maintenance report has invalid fixed summary values.")
+    if not report["history"].get("integrity_valid"):
+        raise ValueError("Maintenance history integrity must be valid before saving a snapshot.")
+    history_record_count = report["history"].get("record_count")
+    if type(history_record_count) is not int:
+        raise ValueError("The Security Maintenance report has an invalid history count.")
+    with SNAPSHOT_LOCK:
+        path = Path(path)
+        if _linklike(path):
+            raise ValueError("Maintenance snapshot history cannot be a link or junction.")
+        records, integrity = load_snapshot_history(path)
+        if not integrity["valid"]:
+            raise ValueError("Maintenance snapshot integrity failed. Preserve the file and review it before adding snapshots.")
+        if len(records) >= MAX_SNAPSHOT_RECORDS:
+            raise ValueError("Maintenance snapshot history reached 200 records. Export an archive before adding more snapshots.")
+        record = {
+            "schema_version": 1,
+            "sequence": len(records) + 1,
+            "time_utc": _safe_utc_text(time_utc),
+            "event_id": secrets.token_hex(8),
+            "schedule_score": summary["schedule_score"],
+            "current_count": summary["current"],
+            "due_soon_count": summary["due_soon"],
+            "overdue_count": summary["overdue"],
+            "not_started_count": summary["not_started"],
+            "scheduled_task_count": summary["scheduled_tasks"],
+            "history_record_count": history_record_count,
+            "previous_hash": records[-1]["hash"] if records else "0" * 64,
+        }
+        _validate_snapshot_record({**record, "hash": "0" * 64}, record["sequence"], record["previous_hash"])
+        record["hash"] = hashlib.sha256(_canonical_record(record)).hexdigest()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        return record
+
+
+def compare_maintenance_snapshots(older, newer):
+    for record in (older, newer):
+        _validate_snapshot_record(record, int(record.get("sequence", 0)), str(record.get("previous_hash", "")))
+        expected = hashlib.sha256(_canonical_record(record)).hexdigest()
+        if not secrets.compare_digest(str(record.get("hash", "")), expected):
+            raise ValueError("Maintenance snapshot comparison requires verified snapshots.")
+    if newer["sequence"] <= older["sequence"]:
+        raise ValueError("Choose snapshots in oldest-to-newest order.")
+    return {
+        "schema_version": 1,
+        "report_type": "VaultLink Privacy-Safe Maintenance Snapshot Comparison",
+        "older_time_utc": older["time_utc"],
+        "newer_time_utc": newer["time_utc"],
+        "schedule_score_change": newer["schedule_score"] - older["schedule_score"],
+        "current_count_change": newer["current_count"] - older["current_count"],
+        "attention_count_change": (
+            newer["due_soon_count"] + newer["overdue_count"]
+            - older["due_soon_count"]
+            - older["overdue_count"]
+        ),
+        "not_started_count_change": newer["not_started_count"] - older["not_started_count"],
+        "scheduled_task_count_change": newer["scheduled_task_count"] - older["scheduled_task_count"],
+        "history_record_count_change": newer["history_record_count"] - older["history_record_count"],
+        "customer_records_included": False,
+    }
+
+
+def build_maintenance_archive(history, history_integrity, snapshots, snapshot_integrity, now_utc=""):
+    if not isinstance(history_integrity, dict) or not history_integrity.get("valid"):
+        raise ValueError("Maintenance event history must verify before an archive can be exported.")
+    if not isinstance(snapshot_integrity, dict) or not snapshot_integrity.get("valid"):
+        raise ValueError("Maintenance snapshot history must verify before an archive can be exported.")
+    event_records = list(history or [])
+    snapshot_records = list(snapshots or [])
+    previous_hash = "0" * 64
+    for sequence, record in enumerate(event_records, 1):
+        _validate_history_record(record, sequence, previous_hash)
+        expected = hashlib.sha256(_canonical_record(record)).hexdigest()
+        if not secrets.compare_digest(record["hash"], expected):
+            raise ValueError("Maintenance event history failed archive verification.")
+        previous_hash = expected
+    previous_hash = "0" * 64
+    for sequence, record in enumerate(snapshot_records, 1):
+        _validate_snapshot_record(record, sequence, previous_hash)
+        expected = hashlib.sha256(_canonical_record(record)).hexdigest()
+        if not secrets.compare_digest(record["hash"], expected):
+            raise ValueError("Maintenance snapshot history failed archive verification.")
+        previous_hash = expected
+    return {
+        "schema_version": 1,
+        "report_type": "VaultLink Privacy-Safe Security Maintenance Archive",
+        "exported_at_utc": _safe_utc_text(now_utc),
+        "event_record_count": len(event_records),
+        "event_final_hash": event_records[-1]["hash"] if event_records else "0" * 64,
+        "snapshot_record_count": len(snapshot_records),
+        "snapshot_final_hash": snapshot_records[-1]["hash"] if snapshot_records else "0" * 64,
+        "event_history": event_records,
+        "snapshot_history": snapshot_records,
+        "privacy_notice": "This non-destructive archive contains only fixed maintenance IDs, fixed cadence, coarse counts, state, UTC time, anonymous event IDs, and integrity hashes.",
+        "customer_records_included": False,
+    }
+
+
 def latest_task_events(history):
     latest = {}
     for record in history or []:
@@ -441,6 +657,62 @@ def maintenance_task_state(task_id, history=None, now_utc=None):
     }
 
 
+def _schedule_label(score):
+    if score >= 90:
+        return "current"
+    if score >= 70:
+        return "review-soon"
+    if score >= 40:
+        return "rebuilding"
+    return "not-established"
+
+
+def _coverage_row(identifier, label, task_ids, task_by_id):
+    tasks = [task_by_id[task_id] for task_id in task_ids]
+    counts = {state: sum(item["state"] == state for item in tasks) for state in SCHEDULE_SCORE_WEIGHTS}
+    score = round(sum(SCHEDULE_SCORE_WEIGHTS[item["state"]] for item in tasks) / len(tasks))
+    planning_dates = [_parse_utc(item["planning_due_utc"]) for item in tasks]
+    planning_dates = [item for item in planning_dates if item is not None]
+    return {
+        "id": identifier,
+        "label": label,
+        "task_count": len(tasks),
+        "schedule_score": score,
+        "schedule_label": _schedule_label(score),
+        "current": counts["current"],
+        "due_soon": counts["due-soon"],
+        "overdue": counts["overdue"],
+        "not_started": counts["not-started"],
+        "attention_count": counts["due-soon"] + counts["overdue"],
+        "next_planning_due_utc": min(planning_dates).strftime("%Y-%m-%dT%H:%M:%SZ") if planning_dates else "",
+    }
+
+
+def _history_activity(history, now):
+    completed = [record for record in history if record.get("state") == "completed"]
+    reopened = [record for record in history if record.get("state") == "reopened"]
+
+    def within(days):
+        cutoff = now - timedelta(days=days)
+        return sum((_parse_utc(record.get("time_utc")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff for record in history)
+
+    active_days_30 = {
+        parsed.date().isoformat()
+        for record in history
+        for parsed in [_parse_utc(record.get("time_utc"))]
+        if parsed is not None and parsed >= now - timedelta(days=30)
+    }
+    return {
+        "completed_events": len(completed),
+        "reopened_events": len(reopened),
+        "events_last_7_days": within(7),
+        "events_last_30_days": within(30),
+        "events_last_90_days": within(90),
+        "active_days_last_30": len(active_days_30),
+        "last_event_utc": history[-1]["time_utc"] if history else "",
+    }
+
+
 def build_maintenance_report(online_guide=None, history=None, integrity=None, selected_category_id="all", selected_routine_id="all", now_utc=""):
     guide = safe_maintenance_guide(online_guide)
     records = list(history or [])
@@ -452,11 +724,16 @@ def build_maintenance_report(online_guide=None, history=None, integrity=None, se
     if routine_id != "all" and routine_id not in ROUTINE_BY_ID:
         routine_id = "all"
     generated = _safe_utc_text(now_utc)
+    generated_time = _parse_utc(generated)
     task_rows = []
     summary = {"current": 0, "due_soon": 0, "overdue": 0, "not_started": 0}
     for task in LOCAL_TASKS:
         status = maintenance_task_state(task["id"], records, generated)
         summary[status["state"].replace("-", "_")] += 1
+        due = _parse_utc(status["next_due_utc"])
+        if due is None:
+            due = generated_time + timedelta(days=task["cadence_days"])
+        planning_days_remaining = int((due - generated_time).total_seconds() // 86400)
         task_rows.append(
             {
                 "id": task["id"],
@@ -470,9 +747,41 @@ def build_maintenance_report(online_guide=None, history=None, integrity=None, se
                 "last_completed_utc": status["last_completed_utc"],
                 "next_due_utc": status["next_due_utc"],
                 "days_remaining": status["days_remaining"],
+                "planning_due_utc": due.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "planning_days_remaining": planning_days_remaining,
             }
         )
-    completed = len(task_rows) - summary["not_started"]
+    scheduled = len(task_rows) - summary["not_started"]
+    ever_completed = len({record["task_id"] for record in records if record.get("state") == "completed"})
+    task_by_id = {item["id"]: item for item in task_rows}
+    schedule_score = round(sum(SCHEDULE_SCORE_WEIGHTS[item["state"]] for item in task_rows) / len(task_rows))
+    planning = {
+        "attention_now": sum(item["state"] in {"due-soon", "overdue"} for item in task_rows),
+        "next_7_days": sum(item["planning_days_remaining"] <= 7 for item in task_rows),
+        "next_30_days": sum(item["planning_days_remaining"] <= 30 for item in task_rows),
+        "next_90_days": sum(item["planning_days_remaining"] <= 90 for item in task_rows),
+    }
+    categories = [
+        _coverage_row(item["id"], item["title"], [task["id"] for task in LOCAL_TASKS if task["category_id"] == item["id"]], task_by_id)
+        for item in LOCAL_CATEGORIES
+    ]
+    routines = [
+        _coverage_row(item["id"], item["label"], item["task_ids"], task_by_id)
+        for item in LOCAL_ROUTINES
+    ]
+    priority_rank = {"overdue": 0, "due-soon": 1, "not-started": 2, "current": 3}
+    priority_task_ids = [
+        item["id"]
+        for item in sorted(
+            task_rows,
+            key=lambda item: (
+                priority_rank[item["state"]],
+                item["planning_due_utc"],
+                item["cadence_days"],
+                item["id"],
+            ),
+        )[:8]
+    ]
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "report_type": "VaultLink Privacy-Safe Security Maintenance Report",
@@ -490,15 +799,23 @@ def build_maintenance_report(online_guide=None, history=None, integrity=None, se
             "due_soon": summary["due_soon"],
             "overdue": summary["overdue"],
             "not_started": summary["not_started"],
-            "completed_tasks": completed,
+            "scheduled_tasks": scheduled,
+            "ever_completed_tasks": ever_completed,
             "attention_tasks": summary["due_soon"] + summary["overdue"],
-            "completion_percent": round((completed / len(task_rows)) * 100),
+            "schedule_percent": round((scheduled / len(task_rows)) * 100),
+            "schedule_score": schedule_score,
+            "schedule_label": _schedule_label(schedule_score),
         },
+        "planning": planning,
+        "priority_task_ids": priority_task_ids,
+        "category_coverage": categories,
+        "routine_coverage": routines,
         "tasks": task_rows,
         "history": {
             "record_count": len(records),
             "integrity_valid": bool(history_integrity.get("valid")),
             "integrity_message": _clean_text(history_integrity.get("message"), "History status unavailable.", 300),
+            "activity": _history_activity(records, generated_time),
         },
         "online": {
             "api_version": guide["api_version"],
@@ -519,8 +836,10 @@ def safe_summary(report):
     return "\n".join(
         [
             "VaultLink Security Maintenance",
+            f"Schedule coverage: {summary['schedule_score']} / 100 | {summary['schedule_label']} | Reminder score only.",
             f"Current: {summary['current']} | Due soon: {summary['due_soon']} | Overdue: {summary['overdue']} | Not started: {summary['not_started']}",
-            f"Completed at least once: {summary['completed_tasks']} / {report['catalog']['task_count']} | History: {history['record_count']} | Integrity: {'VALID' if history['integrity_valid'] else 'CHECK'}",
+            f"Plan: attention now {report['planning']['attention_now']} | next 7 days {report['planning']['next_7_days']} | next 30 days {report['planning']['next_30_days']} | next 90 days {report['planning']['next_90_days']}",
+            f"Active schedule: {summary['scheduled_tasks']} / {report['catalog']['task_count']} | Ever completed: {summary['ever_completed_tasks']} | History: {history['record_count']} | Integrity: {'VALID' if history['integrity_valid'] else 'CHECK'}",
             f"API: {online['api_version']} | Service: {online['service_mode']} | Signed desktop: {online['signed_desktop_version'] or 'not published'}",
             "No names, contacts, keys, PINs, paths, filenames, file contents, scan results, customer records, or free-form notes are included.",
         ]
@@ -537,25 +856,97 @@ def safe_report_text(report):
         f"Generated UTC        {report['generated_at_utc']}",
         f"Desktop version      {report['desktop_version']}",
         f"Catalog              {report['catalog']['category_count']} CATEGORIES | {report['catalog']['task_count']} TASKS | {report['catalog']['routine_count']} ROUTINES",
+        f"Schedule coverage    {summary['schedule_score']} / 100 | {summary['schedule_label'].upper()} | REMINDER SCORE ONLY",
         f"Current              {summary['current']}",
         f"Due soon             {summary['due_soon']}",
         f"Overdue              {summary['overdue']}",
         f"Not started          {summary['not_started']}",
-        f"Completed once       {summary['completed_tasks']} / {report['catalog']['task_count']} | {summary['completion_percent']}%",
+        f"Active schedule      {summary['scheduled_tasks']} / {report['catalog']['task_count']} | {summary['schedule_percent']}%",
+        f"Ever completed       {summary['ever_completed_tasks']} / {report['catalog']['task_count']}",
+        f"Planning windows     NOW {report['planning']['attention_now']} | 7D {report['planning']['next_7_days']} | 30D {report['planning']['next_30_days']} | 90D {report['planning']['next_90_days']}",
         f"Local history        {history['record_count']} RECORDS | {'VALID' if history['integrity_valid'] else 'CHECK'}",
         f"Online               API {online['api_version']} | {online['service_mode']} | SIGNED {online['signed_desktop_version'] or 'NOT PUBLISHED'}",
         "",
-        "FIXED TASK STATUS",
+        "PRIORITY QUEUE",
         "-" * 78,
     ]
+    for task_id in report["priority_task_ids"]:
+        task = next(item for item in report["tasks"] if item["id"] == task_id)
+        lines.append(f"{task['state'].upper():11} {task['title']} | PLAN {task['planning_due_utc']}")
+    lines.extend(["", "ROUTINE COVERAGE", "-" * 78])
+    for routine in report["routine_coverage"]:
+        lines.append(
+            f"{routine['schedule_score']:3} / 100  {routine['label']} | CURRENT {routine['current']} | "
+            f"ATTENTION {routine['attention_count']} | NOT STARTED {routine['not_started']}"
+        )
+    lines.extend(["", "FIXED TASK STATUS", "-" * 78])
     for task in report["tasks"]:
-        due = task["next_due_utc"] or "not scheduled"
+        due = task["next_due_utc"] or f"first plan {task['planning_due_utc']}"
         lines.append(f"{task['state'].upper():11} {task['title']} | {task['category']} | {task['cadence_days']} DAYS | NEXT {due}")
     lines.extend(["", "HISTORY INTEGRITY", "-" * 78, history["integrity_message"], "", "PRIVACY BOUNDARIES", "-" * 78])
     lines.extend(f"- {item}" for item in report["privacy_boundaries"])
     lines.extend(["", "LIMITATIONS", "-" * 78])
     lines.extend(f"- {item}" for item in report["limitations"])
     return "\n".join(lines)
+
+
+def dashboard_text(report, snapshots=None, snapshot_integrity=None):
+    summary = report["summary"]
+    activity = report["history"]["activity"]
+    snapshot_rows = list(snapshots or [])
+    integrity = snapshot_integrity if isinstance(snapshot_integrity, dict) else {"valid": True}
+    lines = [
+        "MAINTENANCE READINESS DASHBOARD",
+        "=" * 70,
+        f"Schedule coverage     {summary['schedule_score']} / 100 | {summary['schedule_label'].upper()}",
+        "Meaning               Reminder coverage only; not proof of antivirus, backup, key, or recovery health.",
+        f"Attention now         {report['planning']['attention_now']}",
+        f"Due in 7 / 30 / 90    {report['planning']['next_7_days']} / {report['planning']['next_30_days']} / {report['planning']['next_90_days']}",
+        f"Events 7 / 30 / 90    {activity['events_last_7_days']} / {activity['events_last_30_days']} / {activity['events_last_90_days']}",
+        f"Active days in 30     {activity['active_days_last_30']}",
+        f"Completed / reopened  {activity['completed_events']} / {activity['reopened_events']}",
+        f"Last event UTC        {activity['last_event_utc'] or 'none'}",
+        f"Snapshots             {len(snapshot_rows)} | {'VALID' if integrity.get('valid') else 'CHECK'}",
+        "",
+        "CATEGORY COVERAGE",
+        "-" * 70,
+    ]
+    for category in report["category_coverage"]:
+        lines.append(
+            f"{category['schedule_score']:3}  {category['label']:<22} "
+            f"CURRENT {category['current']} | ATTENTION {category['attention_count']} | NOT STARTED {category['not_started']}"
+        )
+    lines.extend(["", "ROUTINE COVERAGE", "-" * 70])
+    for routine in report["routine_coverage"]:
+        lines.append(
+            f"{routine['schedule_score']:3}  {routine['label']:<22} "
+            f"CURRENT {routine['current']} | ATTENTION {routine['attention_count']} | NOT STARTED {routine['not_started']}"
+        )
+    lines.extend(["", "PRIORITY TASKS", "-" * 70])
+    for position, task_id in enumerate(report["priority_task_ids"], 1):
+        task = next(item for item in report["tasks"] if item["id"] == task_id)
+        lines.append(f"{position:>2}. {task['state'].upper():11} {task['title']} | {task['planning_due_utc'][:10]}")
+    return "\n".join(lines)
+
+
+def snapshot_comparison_text(comparison):
+    return "\n".join(
+        [
+            "MAINTENANCE SNAPSHOT COMPARISON",
+            "=" * 70,
+            f"Older UTC              {comparison['older_time_utc']}",
+            f"Newer UTC              {comparison['newer_time_utc']}",
+            f"Schedule score change  {comparison['schedule_score_change']:+d}",
+            f"Current task change    {comparison['current_count_change']:+d}",
+            f"Attention task change  {comparison['attention_count_change']:+d}",
+            f"Not-started change     {comparison['not_started_count_change']:+d}",
+            f"Active schedule change {comparison['scheduled_task_count_change']:+d}",
+            f"History event change   {comparison['history_record_count_change']:+d}",
+            "",
+            "A positive score or current-task change reflects reminder coverage only.",
+            "It does not prove that Windows, Defender, a backup, a key, or recovery is healthy.",
+        ]
+    )
 
 
 def _ics_escape(value):
@@ -632,7 +1023,8 @@ def collect_inputs():
     except Exception:
         pass
     history, integrity = load_maintenance_history()
-    return guide, history, integrity
+    snapshots, snapshot_integrity = load_snapshot_history()
+    return guide, history, integrity, snapshots, snapshot_integrity
 
 
 class SecurityMaintenanceCenter(tk.Tk):
@@ -649,12 +1041,18 @@ class SecurityMaintenanceCenter(tk.Tk):
         self.guide = _fallback_guide()
         self.history = []
         self.integrity = {"valid": True, "message": "No history loaded."}
+        self.snapshots = []
+        self.snapshot_integrity = {"valid": True, "message": "No snapshots loaded."}
         self.report = None
         self.status_var = tk.StringVar(value="Ready to review fixed security maintenance tasks.")
         self.category_var = tk.StringVar(value="All categories")
         self.routine_var = tk.StringVar(value="Monthly core")
         self.state_var = tk.StringVar(value="All states")
-        self.metric_vars = {name: tk.StringVar(value="--") for name in ("current", "due", "overdue", "not_started", "history", "online")}
+        self.plan_var = tk.StringVar(value="All scheduled")
+        self.metric_vars = {
+            name: tk.StringVar(value="--")
+            for name in ("score", "current", "due", "overdue", "not_started", "next_7", "history", "online")
+        }
         self._build_ui()
         self.after(100, self.refresh_data)
         self.after(150, self.poll_results)
@@ -686,9 +1084,12 @@ class SecurityMaintenanceCenter(tk.Tk):
             ("EXPORT TEXT", self.export_text, "#252936", locker.TEXT),
             ("CALENDAR", self.export_calendar, "#252936", locker.TEXT),
             ("EXPORT HISTORY", self.export_history, "#252936", locker.TEXT),
+            ("SAVE SNAPSHOT", self.save_snapshot, locker.GREEN, locker.BLACK),
+            ("COMPARE SNAPSHOTS", self.compare_snapshots, "#252936", locker.TEXT),
+            ("EXPORT ARCHIVE", self.export_archive, locker.YELLOW, locker.BLACK),
             ("PUBLIC PLANNER", self.open_public_planner, locker.BLUE, locker.BLACK),
         )
-        for row_specs in (action_specs[:6], action_specs[6:]):
+        for row_specs in (action_specs[:7], action_specs[7:]):
             row = tk.Frame(actions, bg=locker.BG)
             row.pack(fill="x", pady=(0, 6))
             for text, command, color, foreground in row_specs:
@@ -696,18 +1097,30 @@ class SecurityMaintenanceCenter(tk.Tk):
 
         selectors = tk.Frame(outer, bg=locker.PANEL)
         selectors.pack(fill="x", pady=(0, 10))
-        for column in range(3):
+        for column in range(4):
             selectors.grid_columnconfigure(column, weight=1)
         self.category_box = self._selector(selectors, "CATEGORY", self.category_var, 0)
         self.routine_box = self._selector(selectors, "ROUTINE", self.routine_var, 1)
         self.state_box = self._selector(selectors, "STATE", self.state_var, 2)
+        self.plan_box = self._selector(selectors, "PLAN WINDOW", self.plan_var, 3)
         self.category_box["values"] = ["All categories"] + [item["title"] for item in LOCAL_CATEGORIES]
         self.routine_box["values"] = ["All tasks"] + [item["label"] for item in LOCAL_ROUTINES]
         self.state_box["values"] = ["All states", "Current", "Due soon", "Overdue", "Not started"]
+        self.plan_box["values"] = [item[1] for item in PLANNING_WINDOWS]
 
         metrics = tk.Frame(outer, bg=locker.PANEL)
         metrics.pack(fill="x", pady=(0, 10))
-        for column, (name, label) in enumerate((("current", "CURRENT"), ("due", "DUE SOON"), ("overdue", "OVERDUE"), ("not_started", "NOT STARTED"), ("history", "LOCAL HISTORY"), ("online", "ONLINE GUIDE"))):
+        metric_specs = (
+            ("score", "SCHEDULE SCORE"),
+            ("current", "CURRENT"),
+            ("due", "DUE SOON"),
+            ("overdue", "OVERDUE"),
+            ("not_started", "NOT STARTED"),
+            ("next_7", "NEXT 7 DAYS"),
+            ("history", "EVENTS / SNAPSHOTS"),
+            ("online", "ONLINE GUIDE"),
+        )
+        for column, (name, label) in enumerate(metric_specs):
             metrics.grid_columnconfigure(column, weight=1)
             cell = tk.Frame(metrics, bg=locker.PANEL, highlightthickness=1, highlightbackground="#343b49")
             cell.grid(row=0, column=column, sticky="nsew")
@@ -741,10 +1154,31 @@ class SecurityMaintenanceCenter(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self.show_selected_detail)
         self.tree.bind("<Double-1>", lambda _event: self.complete_selected())
 
-        self.output = scrolledtext.ScrolledText(right, bg=locker.FIELD, fg=locker.TEXT, insertbackground=locker.TEXT, relief="flat", wrap="word", font=("Consolas", 9), padx=12, pady=12)
-        self.output.pack(fill="both", expand=True, padx=12, pady=12)
-        self.output.configure(state="disabled")
+        self.notebook = ttk.Notebook(right)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=12)
+        detail_tab = tk.Frame(self.notebook, bg=locker.FIELD)
+        dashboard_tab = tk.Frame(self.notebook, bg=locker.FIELD)
+        snapshot_tab = tk.Frame(self.notebook, bg=locker.FIELD)
+        self.notebook.add(detail_tab, text="TASK DETAIL")
+        self.notebook.add(dashboard_tab, text="DASHBOARD")
+        self.notebook.add(snapshot_tab, text="SNAPSHOTS")
+        self.detail_output = self._output_view(detail_tab)
+        self.dashboard_output = self._output_view(dashboard_tab)
+        self.snapshot_output = self._output_view(snapshot_tab)
         tk.Label(outer, textvariable=self.status_var, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9), wraplength=1180, justify="left").pack(anchor="w", pady=(9, 0))
+
+    def _output_view(self, parent):
+        output = scrolledtext.ScrolledText(parent, bg=locker.FIELD, fg=locker.TEXT, insertbackground=locker.TEXT, relief="flat", wrap="word", font=("Consolas", 9), padx=12, pady=12)
+        output.pack(fill="both", expand=True)
+        output.configure(state="disabled")
+        return output
+
+    @staticmethod
+    def _set_output(output, text):
+        output.configure(state="normal")
+        output.delete("1.0", "end")
+        output.insert("1.0", text)
+        output.configure(state="disabled")
 
     def _selector(self, parent, label, variable, column):
         frame = tk.Frame(parent, bg=locker.PANEL)
@@ -765,20 +1199,39 @@ class SecurityMaintenanceCenter(tk.Tk):
         mapping = {"Current": "current", "Due soon": "due-soon", "Overdue": "overdue", "Not started": "not-started"}
         return mapping.get(self.state_var.get(), "all")
 
+    def selected_plan_id(self):
+        return next((identifier for identifier, label, _days in PLANNING_WINDOWS if label == self.plan_var.get()), "all")
+
     def visible_tasks(self):
         if not self.report:
             return []
         category_id = self.selected_category_id()
         routine_id = self.selected_routine_id()
         state_id = self.selected_state_id()
+        plan_id = self.selected_plan_id()
         allowed = set(ROUTINE_BY_ID[routine_id]["task_ids"]) if routine_id in ROUTINE_BY_ID else set(TASK_BY_ID)
-        return [
+        tasks = [
             item
             for item in self.report["tasks"]
             if (category_id == "all" or item["category_id"] == category_id)
             and item["id"] in allowed
             and (state_id == "all" or item["state"] == state_id)
         ]
+        if plan_id == "attention":
+            tasks = [item for item in tasks if item["state"] in {"due-soon", "overdue"}]
+        elif plan_id != "all":
+            maximum_days = next(days for identifier, _label, days in PLANNING_WINDOWS if identifier == plan_id)
+            tasks = [item for item in tasks if item["planning_days_remaining"] <= maximum_days]
+        priority_rank = {"overdue": 0, "due-soon": 1, "not-started": 2, "current": 3}
+        return sorted(
+            tasks,
+            key=lambda item: (
+                priority_rank[item["state"]],
+                item["planning_due_utc"],
+                item["cadence_days"],
+                item["id"],
+            ),
+        )
 
     def selected_task_id(self):
         selection = self.tree.selection()
@@ -800,7 +1253,7 @@ class SecurityMaintenanceCenter(tk.Tk):
             while True:
                 kind, payload = self.results.get_nowait()
                 if kind == "refresh":
-                    self.guide, self.history, self.integrity = payload
+                    self.guide, self.history, self.integrity, self.snapshots, self.snapshot_integrity = payload
                     self.rebuild_report()
                     locker.log_event("maintenance_center_refresh", "fixed_catalog", "ok")
                     self.status_var.set("Maintenance refreshed. No customer progress, history, path, file, key, PIN, or local result was sent to the API.")
@@ -822,19 +1275,40 @@ class SecurityMaintenanceCenter(tk.Tk):
             self.selected_routine_id(),
         )
         summary = self.report["summary"]
+        self.metric_vars["score"].set(f"{summary['schedule_score']} | {summary['schedule_label'].upper()}")
         self.metric_vars["current"].set(str(summary["current"]))
         self.metric_vars["due"].set(str(summary["due_soon"]))
         self.metric_vars["overdue"].set(str(summary["overdue"]))
         self.metric_vars["not_started"].set(str(summary["not_started"]))
-        self.metric_vars["history"].set(f"{self.report['history']['record_count']} | {'VALID' if self.report['history']['integrity_valid'] else 'CHECK'}")
+        self.metric_vars["next_7"].set(str(self.report["planning"]["next_7_days"]))
+        event_state = "VALID" if self.report["history"]["integrity_valid"] else "CHECK"
+        snapshot_state = "VALID" if self.snapshot_integrity.get("valid") else "CHECK"
+        self.metric_vars["history"].set(
+            f"{self.report['history']['record_count']} / {len(self.snapshots)} | {event_state}/{snapshot_state}"
+        )
         self.metric_vars["online"].set(f"API {self.report['online']['api_version']} | {self.report['online']['service_mode']}")
         previous = self.selected_task_id()
         self.tree.delete(*self.tree.get_children())
         for task in self.visible_tasks():
-            due = task["next_due_utc"][:10] if task["next_due_utc"] else "--"
+            due = task["planning_due_utc"][:10]
             self.tree.insert("", "end", iid=task["id"], values=(task["state"].upper(), due, task["category"], task["title"], f"{task['cadence_days']}d"))
         if previous and self.tree.exists(previous):
             self.tree.selection_set(previous)
+        self._set_output(self.dashboard_output, dashboard_text(self.report, self.snapshots, self.snapshot_integrity))
+        if len(self.snapshots) >= 2:
+            comparison = compare_maintenance_snapshots(self.snapshots[-2], self.snapshots[-1])
+            snapshot_text = snapshot_comparison_text(comparison)
+        elif self.snapshots:
+            snapshot_text = (
+                "MAINTENANCE SNAPSHOTS\n"
+                + "=" * 70
+                + f"\nSaved snapshots: 1\nLatest UTC: {self.snapshots[-1]['time_utc']}\n"
+                + "Save another snapshot to compare coarse schedule coverage."
+            )
+        else:
+            snapshot_text = "MAINTENANCE SNAPSHOTS\n" + "=" * 70 + "\nNo local snapshots have been saved yet."
+        snapshot_text += f"\n\nINTEGRITY\n{'-' * 70}\n{self.snapshot_integrity.get('message', 'Snapshot status unavailable.')}"
+        self._set_output(self.snapshot_output, snapshot_text)
         self.show_selected_detail()
 
     def show_selected_detail(self, _event=None):
@@ -851,6 +1325,7 @@ class SecurityMaintenanceCenter(tk.Tk):
                 f"State: {task['state']} | Cadence: {task['cadence_days']} days",
                 f"Last completed UTC: {task['last_completed_utc'] or 'not recorded'}",
                 f"Next due UTC: {task['next_due_utc'] or 'not scheduled'}",
+                f"Planning date UTC: {task['planning_due_utc']}",
                 "",
                 "ACTION",
                 task["action"],
@@ -863,10 +1338,7 @@ class SecurityMaintenanceCenter(tk.Tk):
                 text,
             ]
             text = "\n".join(detail)
-        self.output.configure(state="normal")
-        self.output.delete("1.0", "end")
-        self.output.insert("1.0", text)
-        self.output.configure(state="disabled")
+        self._set_output(self.detail_output, text)
 
     def _record_selected(self, state):
         task_id = self.selected_task_id()
@@ -986,6 +1458,65 @@ class SecurityMaintenanceCenter(tk.Tk):
         locker.log_event("maintenance_history_export", "hash_chained_history", "ok")
         self.status_var.set("Exported the verified fixed-field maintenance history.")
 
+    def save_snapshot(self):
+        if not self.report:
+            return
+        try:
+            record = append_maintenance_snapshot(self.report)
+            self.snapshots, self.snapshot_integrity = load_snapshot_history()
+            locker.log_event("maintenance_snapshot_save", "coarse_schedule_snapshot", "ok")
+            self.rebuild_report()
+            self.notebook.select(2)
+            self.status_var.set(
+                f"Saved local snapshot {record['sequence']} with schedule score {record['schedule_score']} / 100. "
+                "This is reminder coverage, not a security-health result."
+            )
+        except Exception as exc:
+            locker.log_event("maintenance_snapshot_save", "coarse_schedule_snapshot", "failed")
+            messagebox.showerror("Could not save maintenance snapshot", str(exc), parent=self)
+
+    def compare_snapshots(self):
+        if len(self.snapshots) < 2:
+            messagebox.showinfo("Two snapshots required", "Save at least two local maintenance snapshots first.", parent=self)
+            return
+        try:
+            comparison = compare_maintenance_snapshots(self.snapshots[-2], self.snapshots[-1])
+            self._set_output(self.snapshot_output, snapshot_comparison_text(comparison))
+            self.notebook.select(2)
+            locker.log_event("maintenance_snapshot_compare", "last_two_snapshots", "ok")
+            self.status_var.set("Compared the two newest privacy-safe maintenance snapshots.")
+        except Exception as exc:
+            locker.log_event("maintenance_snapshot_compare", "last_two_snapshots", "failed")
+            messagebox.showerror("Could not compare maintenance snapshots", str(exc), parent=self)
+
+    def export_archive(self):
+        try:
+            payload = build_maintenance_archive(
+                self.history,
+                self.integrity,
+                self.snapshots,
+                self.snapshot_integrity,
+            )
+        except Exception as exc:
+            locker.log_event("maintenance_archive_export", "verified_archive", "failed")
+            messagebox.showerror("Could not build maintenance archive", str(exc), parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export verified maintenance archive",
+            defaultextension=".json",
+            filetypes=[("JSON archive", "*.json")],
+            initialfile="vaultlink-security-maintenance-archive.json",
+        )
+        if not path:
+            return
+        locker.write_text_atomic(Path(path), json.dumps(payload, indent=2))
+        locker.log_event("maintenance_archive_export", "verified_archive", "ok")
+        self.status_var.set(
+            f"Exported a non-destructive verified archive with {payload['event_record_count']} event(s) "
+            f"and {payload['snapshot_record_count']} snapshot(s)."
+        )
+
     def open_public_planner(self):
         try:
             settings = locker.load_settings()
@@ -1013,6 +1544,10 @@ if set(ROUTINE_BY_ID["full-maintenance"]["task_ids"]) != set(TASK_BY_ID):
     raise RuntimeError("The full desktop maintenance routine must contain every fixed task.")
 if set(TRUSTED_TOOL_TARGETS) != set(TASK_BY_ID):
     raise RuntimeError("Every fixed maintenance task must have one trusted-tool target.")
+if len(SNAPSHOT_FIELDS) != 13 or len(PLANNING_WINDOWS) != 5:
+    raise RuntimeError("Maintenance snapshot or planning schemas changed unexpectedly.")
+if set(SCHEDULE_SCORE_WEIGHTS) != set(DISPLAY_STATES) - {"all"}:
+    raise RuntimeError("Maintenance schedule scoring must cover every fixed task state.")
 
 
 if __name__ == "__main__":

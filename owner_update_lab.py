@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Security Maintenance Center provides thirty-two fixed defensive tasks across eight categories with task-specific seven, fourteen, thirty, sixty, or ninety day cadence.",
-    "Six fixed routines cover weekly security, monthly core, key custody, backup and recovery, privacy and evidence, and full maintenance.",
-    "Completion and reopen events use an exact ten-field append-only SHA-256 hash chain capped at five hundred records and two MiB.",
-    "Customers can filter by category, routine, and state, open only hardcoded trusted tools, copy a safe summary, and export reviewed JSON, text, calendar, or verified history.",
-    "API 0.35.0 adds a responsive public Maintenance workspace and fixed maintenance-guide endpoint with current-tab-only review, calendar, print, clipboard, and safe JSON export.",
-    "The public workspace accepts no customer progress, history, reminder, maintenance command, local result, files, paths, identity, or browser-stored state.",
-    "Apps Hub now presents thirty-two tools, same-PC Local Control launches twenty-one approved apps, owner experience covers sixteen public surfaces, and the package contains fifty-two transparent files.",
-    "Security Maintenance is included in Starter and every cumulative rank.",
+    "Security Maintenance now adds a privacy-safe readiness dashboard, priority queue, and fixed attention, seven-day, thirty-day, and ninety-day planning windows.",
+    "Eight category and six routine coverage summaries use a clearly labeled reminder-coverage score that never claims antivirus, backup, key, recovery, compliance, or security health.",
+    "Customers can save and compare exact thirteen-field hash-chained coarse snapshots containing only fixed counts, UTC time, anonymous IDs, and integrity hashes.",
+    "Verified non-destructive archives combine the exact fixed-field event and snapshot chains without resetting or deleting active history.",
+    "API 0.36.0 adds four fixed cadence horizons, category and routine coverage bars, priority review, and a sixteen-field current-tab-only browser receipt.",
+    "The public workspace accepts no customer progress, snapshots, schedule scores, history, reminders, maintenance commands, local results, files, paths, identity, or browser-stored state.",
+    "Security Maintenance still provides thirty-two fixed tasks, six routines, hardcoded trusted tools, calendar planning, reviewed exports, and a ten-field event chain.",
+    "Apps Hub remains at thirty-two tools, same-PC Local Control at twenty-one approved apps, owner experience at sixteen public surfaces, and the package at fifty-two transparent files.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
