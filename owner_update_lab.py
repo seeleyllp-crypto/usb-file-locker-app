@@ -46,14 +46,14 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "New Storage & Retention Center maps eight fixed VaultLink storage areas and verifies ten explainable controls worth 100 points.",
-    "Temporary cleanup is restricted to the exact VaultLink temp workspace, previews at most 5,000 entries, rejects links and junctions, and revalidates age and boundaries before deletion.",
-    "Cleanup requires a visible warning, explicit approval, and exact CLEAN TEMP confirmation; it never targets keys, vaults, audit evidence, histories, settings, licenses, owner data, locked files, backups, or arbitrary folders.",
-    "Customers can filter the fixed map, copy a reviewed summary, export safe JSON or text, and save exact-schema hash-chained coarse retention receipts.",
-    "API 0.34.0 adds a responsive public Retention workspace and fixed retention-guide endpoint with current-tab-only review progress, print, clipboard, and safe JSON export.",
-    "The public workspace accepts no customer inventory, progress, cleanup commands, local results, files, paths, or browser-stored state.",
-    "Apps Hub now presents thirty tools, same-PC Local Control launches twenty approved apps, owner experience covers fifteen public surfaces, and the package contains fifty transparent files.",
-    "Storage & Retention is included in Starter and every cumulative rank.",
+    "New Security Maintenance Center provides thirty-two fixed defensive tasks across eight categories with task-specific seven, fourteen, thirty, sixty, or ninety day cadence.",
+    "Six fixed routines cover weekly security, monthly core, key custody, backup and recovery, privacy and evidence, and full maintenance.",
+    "Completion and reopen events use an exact ten-field append-only SHA-256 hash chain capped at five hundred records and two MiB.",
+    "Customers can filter by category, routine, and state, open only hardcoded trusted tools, copy a safe summary, and export reviewed JSON, text, calendar, or verified history.",
+    "API 0.35.0 adds a responsive public Maintenance workspace and fixed maintenance-guide endpoint with current-tab-only review, calendar, print, clipboard, and safe JSON export.",
+    "The public workspace accepts no customer progress, history, reminder, maintenance command, local result, files, paths, identity, or browser-stored state.",
+    "Apps Hub now presents thirty-two tools, same-PC Local Control launches twenty-one approved apps, owner experience covers sixteen public surfaces, and the package contains fifty-two transparent files.",
+    "Security Maintenance is included in Starter and every cumulative rank.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 

@@ -18,6 +18,21 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.16.1 adds SECURITY MAINTENANCE CENTER with 32 fixed tasks
+  across 8 categories, 6 routines, and 7, 14, 30, 60, or 90-day cadence.
+- Customers can filter by category, routine, and state; record complete or
+  reopen events; open only hardcoded trusted tools; and export reviewed JSON,
+  text, calendar, summary, or verified history.
+- Local history is append-only, capped at 500 records and 2 MiB, and protected
+  by an exact 10-field SHA-256 hash chain. It contains only fixed task IDs,
+  fixed cadence, state, UTC time, anonymous event IDs, and integrity hashes.
+- No names, contacts, keys, PINs, paths, filenames, file contents, scan
+  results, customer records, screenshots, process lists, or notes are stored.
+- API 0.35.0 adds public MAINTENANCE pages with current-tab-only review. The
+  API accepts no progress, result, history, reminder, maintenance command,
+  identity, file, or path. Apps Hub has 32 tools, Local Control has 21
+  approved apps, owner experience covers 16 public surfaces, and the package
+  has 52 transparent files.
 - Version 2026.07.15.4 adds STORAGE & RETENTION CENTER with 8 fixed storage
   areas and 10 explainable controls totaling 100 points.
 - Cleanup can target only the exact VaultLink temporary workspace, previews at

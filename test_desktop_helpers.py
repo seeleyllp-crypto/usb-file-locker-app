@@ -27,6 +27,7 @@ import local_data_control_center
 import owner_update_lab
 import recovery_drill_center
 import recovery_kit_builder
+import security_maintenance_center
 import storage_retention_center
 import trust_recovery_center
 import usb_file_locker as locker
@@ -102,14 +103,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 23)
+        self.assertEqual(len(launchers), 24)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 50)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 50)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 52)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 52)
+        self.assertIn("security_maintenance_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Security Maintenance Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("storage_retention_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Storage & Retention Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("local_data_control_center.py", build_signed_update.PACKAGE_FILES)
@@ -143,11 +146,13 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(vault_health_center.VaultHealthCenter, vault_health_center.tk.Tk))
         self.assertTrue(issubclass(local_control_center.LocalControlCenter, local_control_center.tk.Tk))
         self.assertTrue(issubclass(local_data_control_center.LocalDataControlCenter, local_data_control_center.tk.Tk))
+        self.assertTrue(issubclass(security_maintenance_center.SecurityMaintenanceCenter, security_maintenance_center.tk.Tk))
         self.assertTrue(issubclass(storage_retention_center.StorageRetentionCenter, storage_retention_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 30)
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 20)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 32)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 21)
+        self.assertIn("security_maintenance", local_control_center.CONTROL_ACTIONS)
         self.assertIn("storage_retention", local_control_center.CONTROL_ACTIONS)
         self.assertIn("data_control", local_control_center.CONTROL_ACTIONS)
 
@@ -175,6 +180,7 @@ class DesktopHelperTests(unittest.TestCase):
             "recovery_drill_center.py",
             "backup_verification_center.py",
             "recovery_kit_builder.py",
+            "security_maintenance_center.py",
             "storage_retention_center.py",
             "local_data_control_center.py",
             "trust_recovery_center.py",
@@ -189,7 +195,7 @@ class DesktopHelperTests(unittest.TestCase):
             "text_log_processor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 20)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 21)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -236,14 +242,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 20)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 21)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 20)
+        self.assertEqual(safe_report["session"]["apps_total"], 21)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -383,7 +389,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Backup Verification Center", unlocked_page)
             self.assertIn("Recovery Kit Builder", unlocked_page)
             self.assertIn("Storage &amp; Retention Center", unlocked_page)
-            self.assertIn("20 / 20", unlocked_page)
+            self.assertIn("Security Maintenance Center", unlocked_page)
+            self.assertIn("21 / 21", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -444,7 +451,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 20)
+            self.assertEqual(report["session"]["apps_total"], 21)
         finally:
             connection.close()
             server.shutdown()
@@ -1397,6 +1404,183 @@ class DesktopHelperTests(unittest.TestCase):
                 checks,
                 generated_at_utc="C:/PRIVATE-DATA/customer-name.txt",
             )
+
+    def test_security_maintenance_is_fixed_hash_chained_private_and_allowlisted(self):
+        tree = ast.parse(Path(security_maintenance_center.__file__).read_text(encoding="utf-8"))
+        locker_attributes = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "locker"
+        }
+        self.assertEqual(sorted(name for name in locker_attributes if not hasattr(locker, name)), [])
+        self.assertEqual(len(security_maintenance_center.LOCAL_CATEGORIES), 8)
+        self.assertEqual(len(security_maintenance_center.LOCAL_TASKS), 32)
+        self.assertEqual(len(security_maintenance_center.LOCAL_ROUTINES), 6)
+        self.assertEqual(len(security_maintenance_center.HISTORY_FIELDS), 10)
+        self.assertEqual(set(security_maintenance_center.ALLOWED_CADENCE_DAYS), {7, 14, 30, 60, 90})
+        self.assertEqual(set(security_maintenance_center.TRUSTED_TOOL_TARGETS), set(security_maintenance_center.TASK_BY_ID))
+        for category in security_maintenance_center.LOCAL_CATEGORIES:
+            self.assertEqual(
+                sum(task["category_id"] == category["id"] for task in security_maintenance_center.LOCAL_TASKS),
+                4,
+            )
+        self.assertEqual(
+            set(security_maintenance_center.ROUTINE_BY_ID["full-maintenance"]["task_ids"]),
+            set(security_maintenance_center.TASK_BY_ID),
+        )
+
+        private_values = (
+            "PRIVATE-CUSTOMER-9812",
+            "C:/PRIVATE-DATA/customer-name.txt",
+            "PRIVATE-MASTER-KEY",
+            "PRIVATE-PIN-9812",
+        )
+        guide = security_maintenance_center.safe_maintenance_guide(
+            {
+                "ok": True,
+                "api_version": "0.35.0",
+                "service_status": {"mode": "normal", "message": private_values[0]},
+                "signed_release": {"ready": True, "version": "2026.07.16.1"},
+                "categories": [{"id": private_values[1], "title": private_values[0]}],
+                "tasks": [{"id": private_values[2], "title": private_values[3]}],
+                "routines": [{"id": private_values[0], "task_ids": [private_values[1]]}],
+            }
+        )
+        self.assertEqual(len(guide["categories"]), 8)
+        self.assertEqual(len(guide["tasks"]), 32)
+        self.assertEqual(len(guide["routines"]), 6)
+        self.assertNotIn(private_values[1], json.dumps(guide["tasks"]))
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_maintenance_") as folder:
+            history_path = Path(folder) / "maintenance.jsonl"
+            first = security_maintenance_center.append_maintenance_event(
+                "defender-protection",
+                "completed",
+                path=history_path,
+                time_utc="2026-07-01T12:00:00Z",
+            )
+            history, integrity = security_maintenance_center.load_maintenance_history(history_path)
+            self.assertTrue(integrity["valid"])
+            self.assertEqual(len(history), 1)
+            self.assertEqual(first["sequence"], 1)
+            self.assertEqual(first["previous_hash"], "0" * 64)
+            self.assertEqual(first["cadence_days"], 7)
+
+            report = security_maintenance_center.build_maintenance_report(
+                guide,
+                history,
+                integrity,
+                "windows-security",
+                "weekly-security",
+                "2026-07-16T12:00:00Z",
+            )
+            self.assertEqual(report["catalog"]["category_count"], 8)
+            self.assertEqual(report["catalog"]["task_count"], 32)
+            self.assertEqual(report["catalog"]["routine_count"], 6)
+            self.assertEqual(report["summary"]["overdue"], 1)
+            self.assertEqual(report["summary"]["not_started"], 31)
+            self.assertEqual(report["summary"]["completed_tasks"], 1)
+            self.assertTrue(report["history"]["integrity_valid"])
+            self.assertEqual(report["online"]["api_version"], "0.35.0")
+            self.assertEqual(report["online"]["signed_desktop_version"], "2026.07.16.1")
+            serialized_report = json.dumps(report)
+            for private_value in private_values:
+                self.assertNotIn(private_value, serialized_report)
+            self.assertNotIn("service_message", report["online"])
+            self.assertNotIn("<textarea", Path(security_maintenance_center.__file__).read_text(encoding="utf-8").lower())
+
+            reopened = security_maintenance_center.append_maintenance_event(
+                "defender-protection",
+                "reopened",
+                path=history_path,
+                time_utc="2026-07-16T12:01:00Z",
+            )
+            self.assertEqual(reopened["previous_hash"], first["hash"])
+            history, integrity = security_maintenance_center.load_maintenance_history(history_path)
+            state = security_maintenance_center.maintenance_task_state(
+                "defender-protection",
+                history,
+                "2026-07-16T12:02:00Z",
+            )
+            self.assertEqual(state["state"], "not-started")
+            self.assertEqual(state["next_due_utc"], "")
+
+            calendar_text = security_maintenance_center.build_calendar_text(
+                ["defender-protection", "windows-update"],
+                history,
+                datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
+                event_id="a" * 16,
+            )
+            self.assertEqual(calendar_text.count("BEGIN:VEVENT"), 2)
+            self.assertIn("VaultLink: Review Defender protection", calendar_text)
+            for private_value in private_values:
+                self.assertNotIn(private_value, calendar_text)
+
+            concurrent_path = Path(folder) / "concurrent-maintenance.jsonl"
+            concurrent_errors = []
+
+            def append_concurrently():
+                try:
+                    security_maintenance_center.append_maintenance_event(
+                        "audit-chain-verify",
+                        "completed",
+                        path=concurrent_path,
+                    )
+                except Exception as exc:
+                    concurrent_errors.append(str(exc))
+
+            threads = [threading.Thread(target=append_concurrently, daemon=True) for _index in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    concurrent_errors.append("thread did not finish")
+            concurrent_history, concurrent_integrity = security_maintenance_center.load_maintenance_history(concurrent_path)
+            self.assertEqual(concurrent_errors, [])
+            self.assertTrue(concurrent_integrity["valid"])
+            self.assertEqual(len(concurrent_history), 12)
+
+            with mock.patch.object(security_maintenance_center, "_linklike", return_value=True):
+                _linked_history, linked_integrity = security_maintenance_center.load_maintenance_history(history_path)
+                self.assertFalse(linked_integrity["valid"])
+                with self.assertRaisesRegex(ValueError, "link or junction"):
+                    security_maintenance_center.append_maintenance_event(
+                        "defender-protection",
+                        "completed",
+                        path=history_path,
+                    )
+
+            lines = history_path.read_text(encoding="utf-8").splitlines()
+            damaged = json.loads(lines[0])
+            damaged["state"] = "PRIVATE-CUSTOMER-9812"
+            lines[0] = json.dumps(damaged, sort_keys=True, separators=(",", ":"))
+            history_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _damaged_history, damaged_integrity = security_maintenance_center.load_maintenance_history(history_path)
+            self.assertFalse(damaged_integrity["valid"])
+            with self.assertRaisesRegex(ValueError, "integrity failed"):
+                security_maintenance_center.append_maintenance_event(
+                    "windows-update",
+                    "completed",
+                    path=history_path,
+                )
+
+        with self.assertRaisesRegex(ValueError, "fixed maintenance tasks"):
+            security_maintenance_center.append_maintenance_event("C:/PRIVATE-DATA/file.txt", "completed")
+        with self.assertRaisesRegex(ValueError, "valid UTC"):
+            security_maintenance_center.build_maintenance_report(now_utc="C:/PRIVATE-DATA/file.txt")
+        with self.assertRaisesRegex(ValueError, "not recognized"):
+            security_maintenance_center.maintenance_task_state("arbitrary-task")
+        with self.assertRaisesRegex(ValueError, "No trusted tool"):
+            security_maintenance_center.launch_trusted_task_tool("arbitrary-task")
+        with mock.patch.object(security_maintenance_center.locker, "launch_companion_script") as launch:
+            self.assertEqual(
+                security_maintenance_center.launch_trusted_task_tool("audit-chain-verify"),
+                "Audit Log Viewer",
+            )
+            launch.assert_called_once_with("audit_log_viewer.py")
 
     def test_storage_retention_is_exact_bounded_hash_chained_and_private(self):
         tree = ast.parse(Path(storage_retention_center.__file__).read_text(encoding="utf-8"))

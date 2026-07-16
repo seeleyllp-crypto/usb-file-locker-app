@@ -88,6 +88,12 @@ CONTROL_ACTIONS = {
         "category": "Privacy",
         "summary": "Review fixed storage boundaries and clean only expired VaultLink temporary copies after a bounded preview and typed confirmation.",
     },
+    "security_maintenance": {
+        "label": "Security Maintenance Center",
+        "script": "security_maintenance_center.py",
+        "category": "Core",
+        "summary": "Track thirty-two fixed defensive tasks, six routines, due dates, and privacy-safe hash-chained local history.",
+    },
     "vault_health": {
         "label": "Vault Health Center",
         "script": "vault_health_center.py",

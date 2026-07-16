@@ -97,6 +97,8 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Public Data Control", "Review the fixed public data map with current-tab-only progress and a safe browser receipt.", self.open_public_data_control, 6, 3, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Storage & Retention", "Review eight fixed storage areas, ten controls, and clean only expired VaultLink temporary copies after typed confirmation.", self.open_storage_retention, 7, 0, locker.GREEN, locker.BLACK)
         self.app_card(apps, "Public Retention Guide", "Review fixed retention policy and cleanup boundaries with current-tab-only progress and no remote cleanup.", self.open_public_retention, 7, 1, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Security Maintenance", "Track thirty-two fixed tasks, six routines, due dates, and local hash-chained completion history.", self.open_security_maintenance, 7, 2, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Public Maintenance Planner", "Review the fixed maintenance catalog with current-tab-only progress and no remote PC control.", self.open_public_maintenance, 7, 3, locker.BLUE, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
@@ -390,6 +392,14 @@ class PrivacySafetyHub(tk.Tk):
             self.status.set("Could not open Storage & Retention Center.")
             messagebox.showerror("Could not open Storage & Retention Center", str(exc))
 
+    def open_security_maintenance(self):
+        try:
+            locker.launch_companion_script("security_maintenance_center.py")
+            self.status.set("Opened Security Maintenance Center.")
+        except Exception as exc:
+            self.status.set("Could not open Security Maintenance Center.")
+            messagebox.showerror("Could not open Security Maintenance Center", str(exc))
+
     def open_local_control_center(self):
         try:
             locker.launch_companion_script("local_control_center.py")
@@ -444,6 +454,9 @@ class PrivacySafetyHub(tk.Tk):
 
     def open_public_retention(self):
         self.open_public_page("/retention", "Public Retention Guide")
+
+    def open_public_maintenance(self):
+        self.open_public_page("/maintenance", "Public Maintenance Planner")
 
     def open_signed_update(self):
         self.open_public_page("/update", "Signed Update Center")
