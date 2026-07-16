@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Maintenance Operations adds a protected forty-check cockpit across access, secrets, storage, signed releases, customer surfaces, licensing, support, audit review, commerce, and governance.",
-    "The owner runbook prioritizes failed checks and provides privacy-safe local JSON and CSV exports without returning customer records, maintenance history, license proof, files, paths, PINs, or USB secrets.",
-    "License Issuer and Owner Update Lab now open the dedicated operations view directly.",
-    "API 0.37.0 adds the admin-only maintenance operations contract while remaining read-only toward customer PCs.",
-    "Security Maintenance now adds a privacy-safe readiness dashboard, priority queue, and fixed attention, seven-day, thirty-day, and ninety-day planning windows.",
-    "Eight category and six routine coverage summaries use a clearly labeled reminder-coverage score that never claims antivirus, backup, key, recovery, compliance, or security health.",
-    "Customers can save and compare exact thirteen-field hash-chained coarse snapshots containing only fixed counts, UTC time, anonymous IDs, and integrity hashes.",
-    "Verified non-destructive archives combine the exact fixed-field event and snapshot chains without resetting or deleting active history.",
-    "API 0.36.0 adds four fixed cadence horizons, category and routine coverage bars, priority review, and a sixteen-field current-tab-only browser receipt.",
-    "The public workspace accepts no customer progress, snapshots, schedule scores, history, reminders, maintenance commands, local results, files, paths, identity, or browser-stored state.",
-    "Apps Hub remains at thirty-two tools, same-PC Local Control at twenty-one approved apps, owner experience at sixteen public surfaces, and the package at fifty-two transparent files.",
+    "Owner Maintenance Operations now opens with a daily briefing, customer-impact state, next-review timing, and a five-level severity summary.",
+    "Eight scored domain cards show five checks each and link directly to the relevant owner surface.",
+    "A ten-metric Change Watch compares live aggregate results with a baseline kept only in the current browser tab.",
+    "Four fixed fifteen, thirty, sixty, and one-hundred-twenty-minute owner review plans support local copy and calendar export.",
+    "Eight owner shortcuts and check-specific deep links reduce navigation time without exposing customer records or secrets.",
+    "The cockpit adds local text export, print, and a browser-generated SHA-256 evidence receipt alongside safe JSON and CSV.",
+    "Auto refresh is a visible sixty-second current-tab option; baselines, planner choices, searches, and filters are never uploaded.",
+    "The protected cockpit still runs exactly forty fixed readiness checks across eight owner categories and prioritizes failed checks in a runbook.",
+    "API 0.38.0 provides the schema-two admin-only operations contract while remaining read-only toward customer PCs.",
+    "Reports exclude customer identity, license proof, notes, device identifiers, files, paths, PINs, USB secrets, and customer maintenance history.",
+    "Owner Operations cannot lock, unlock, scan, execute, delete, quarantine, or otherwise control a customer PC.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
