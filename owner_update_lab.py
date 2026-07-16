@@ -46,13 +46,16 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
+    "Owner Maintenance Operations adds a protected forty-check cockpit across access, secrets, storage, signed releases, customer surfaces, licensing, support, audit review, commerce, and governance.",
+    "The owner runbook prioritizes failed checks and provides privacy-safe local JSON and CSV exports without returning customer records, maintenance history, license proof, files, paths, PINs, or USB secrets.",
+    "License Issuer and Owner Update Lab now open the dedicated operations view directly.",
+    "API 0.37.0 adds the admin-only maintenance operations contract while remaining read-only toward customer PCs.",
     "Security Maintenance now adds a privacy-safe readiness dashboard, priority queue, and fixed attention, seven-day, thirty-day, and ninety-day planning windows.",
     "Eight category and six routine coverage summaries use a clearly labeled reminder-coverage score that never claims antivirus, backup, key, recovery, compliance, or security health.",
     "Customers can save and compare exact thirteen-field hash-chained coarse snapshots containing only fixed counts, UTC time, anonymous IDs, and integrity hashes.",
     "Verified non-destructive archives combine the exact fixed-field event and snapshot chains without resetting or deleting active history.",
     "API 0.36.0 adds four fixed cadence horizons, category and routine coverage bars, priority review, and a sixteen-field current-tab-only browser receipt.",
     "The public workspace accepts no customer progress, snapshots, schedule scores, history, reminders, maintenance commands, local results, files, paths, identity, or browser-stored state.",
-    "Security Maintenance still provides thirty-two fixed tasks, six routines, hardcoded trusted tools, calendar planning, reviewed exports, and a ten-field event chain.",
     "Apps Hub remains at thirty-two tools, same-PC Local Control at twenty-one approved apps, owner experience at sixteen public surfaces, and the package at fifty-two transparent files.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
@@ -928,6 +931,7 @@ class OwnerUpdateLab(tk.Tk):
         links.pack(fill="x", padx=18, pady=(0, 8))
         tk.Button(links, text="CANDIDATE FOLDER", command=self.open_candidate_folder, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", ipadx=8, ipady=6)
         tk.Button(links, text="LIVE OWNER CONSOLE", command=self.open_owner_console, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
+        tk.Button(links, text="OWNER OPERATIONS", command=self.open_owner_operations, bg=GREEN, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
         tk.Button(links, text="LIVE UPDATE CENTER", command=self.open_live_center, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
         tk.Button(links, text="APP GITHUB", command=self.open_app_github, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
         tk.Button(links, text="API GITHUB", command=self.open_api_github, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=8, ipady=6)
@@ -1233,6 +1237,9 @@ class OwnerUpdateLab(tk.Tk):
 
     def open_owner_console(self):
         os.startfile(self.server_url() + "/owner")
+
+    def open_owner_operations(self):
+        os.startfile(self.server_url() + "/owner/operations")
 
     def open_live_center(self):
         os.startfile(self.server_url() + "/update")

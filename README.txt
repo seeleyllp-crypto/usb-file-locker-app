@@ -18,6 +18,16 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.16.3 adds OWNER MAINTENANCE OPERATIONS with exactly 40
+  aggregate checks across 8 owner categories and a prioritized runbook.
+- Release, storage, service, licensing, support, audit, shop, legal-review,
+  and 16 customer-surface states appear in one protected web cockpit.
+- OWNER OPERATIONS in License Issuer and Owner Update Lab opens it directly.
+- API 0.37.0 protects the report with the admin header and returns no license
+  proof, customer identity, notes, device identity, files, paths, PINs, USB
+  secrets, report contents, or customer maintenance history.
+- JSON and CSV exports are created locally in the browser. The console cannot
+  lock, unlock, execute, scan, delete, quarantine, or control customer PCs.
 - Version 2026.07.16.2 expands SECURITY MAINTENANCE with a readiness
   dashboard, priority queue, and attention, 7-day, 30-day, and 90-day plans.
 - Eight category and six routine summaries use a reminder-coverage score.

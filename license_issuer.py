@@ -641,6 +641,15 @@ class LicenseIssuer(tk.Tk):
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=9)
         tk.Button(
             action_row,
+            text="OWNER OPERATIONS",
+            command=self.open_owner_operations,
+            bg=locker.GREEN,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=9)
+        tk.Button(
+            action_row,
             text="KEYS + NOTES WEBSITE",
             command=self.open_owner_portal,
             bg=locker.YELLOW,
@@ -960,6 +969,14 @@ class LicenseIssuer(tk.Tk):
             self.status_var.set("Opened the owner keys and notes website. Enter the admin token there to connect.")
         except Exception as exc:
             messagebox.showerror("Could not open owner website", str(exc), parent=self)
+
+    def open_owner_operations(self):
+        try:
+            server = locker.validated_license_server_url(self.server_var.get())
+            webbrowser.open(server + "/owner/operations")
+            self.status_var.set("Opened Owner Maintenance Operations. Enter the admin token there to load the 40-check report.")
+        except Exception as exc:
+            messagebox.showerror("Could not open owner operations", str(exc), parent=self)
 
     def revoke_latest_license(self):
         if self.management_busy:
