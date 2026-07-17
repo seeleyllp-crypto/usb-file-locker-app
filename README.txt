@@ -18,14 +18,15 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.17.3 adds Customer Answers with 30 fixed answers across
-  6 categories. Search, filters, opened answers, and saved choices stay only
-  in the current browser tab.
-- Customers can copy one answer, print the visible set, or export a reviewed
-  saved-answer pack. No free-form question is sent to the API.
-- The Windows Customer Hub opens Customer Answers without placing license
-  proof in the URL.
-- API 0.42.0 serves the fixed answer catalog and customer workspace schema 4
+- Version 2026.07.17.4 adds a Recovery Decision Wizard with 7 fixed
+  situations, 21 yes-or-no decisions, 28 outcomes, and 112 action steps.
+- Customers can go back one answer, restart, copy, print, or export a
+  completed fixed plan. Choices and history stay only in the current tab.
+- The wizard accepts no typed problem, license key, identity, file, path,
+  PIN, USB secret, or local result and cannot control the customer PC.
+- The Windows Customer Hub opens the wizard and Customer Answers without
+  placing license proof in either URL.
+- API 0.43.0 serves the fixed decision and answer catalogs plus workspace schema 4
   without activating a seat or
   returning customer identity, owner notes, receipts, machine identity, paths,
   PINs, USB secrets, payment data, or file contents.

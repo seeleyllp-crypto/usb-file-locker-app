@@ -46,16 +46,16 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Customer Answers provides thirty fixed answers across six practical categories.",
-    "Search covers questions, answers, steps, tags, and category names without uploading search text.",
-    "Category filters and opened-answer state stay only in the current browser tab.",
-    "Customers can save answers for the current tab and switch to a saved-only view.",
-    "Saved-answer JSON exports contain only reviewed public fixed fields and fixed answer IDs.",
-    "Every answer includes ordered safe steps and a fixed link to the matching VaultLink guide.",
-    "Copy Answer creates a public fixed answer with a reminder never to send secrets.",
-    "Print Visible prints only the currently filtered answer set.",
-    "The answer API accepts no license key, identity, machine identity, file, path, PIN, USB secret, local result, or free-form question.",
-    "The Windows Customer Hub links directly to Customer Answers without placing license proof in the URL.",
+    "Recovery Decision Wizard covers seven common customer situations with twenty-one fixed yes-or-no decisions.",
+    "Every branch ends in one of twenty-eight reviewed outcomes with ordered steps, a warning, and a fixed guide route.",
+    "Customers can move back one answer or restart without uploading or storing their choices.",
+    "The current-tab decision trail shows only fixed questions and YES or NO labels.",
+    "Copy, print, and JSON export are enabled only after a fixed action plan is reached.",
+    "Exported plans contain fixed scenario IDs, decision IDs, yes-or-no choices, and reviewed public outcome fields only.",
+    "The wizard accepts no free-form description, license key, identity, machine identity, file, path, PIN, USB secret, or local result.",
+    "The wizard cannot inspect, scan, lock, unlock, install, delete, quarantine, or control a customer PC.",
+    "Customer Workspace and the Windows Customer Hub link directly to the wizard without placing license proof in the URL.",
+    "The existing Customer Answers and Diagnostics Center remain available as supporting guides.",
     "Builds below the signed minimum automatically stage the verified update after active local work finishes.",
     "Required updates still use Ed25519 manifest verification and SHA-256 package verification.",
 ]
