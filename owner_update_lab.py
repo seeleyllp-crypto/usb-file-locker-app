@@ -46,8 +46,8 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Recovery Decision Wizard covers seven common customer situations with twenty-one fixed yes-or-no decisions.",
-    "Every branch ends in one of twenty-eight reviewed outcomes with ordered steps, a warning, and a fixed guide route.",
+    "Recovery Decision Wizard now covers ten customer situations with thirty fixed yes-or-no decisions.",
+    "Every branch ends in one of forty reviewed outcomes with 160 total ordered steps.",
     "Customers can move back one answer or restart without uploading or storing their choices.",
     "The current-tab decision trail shows only fixed questions and YES or NO labels.",
     "Copy, print, and JSON export are enabled only after a fixed action plan is reached.",

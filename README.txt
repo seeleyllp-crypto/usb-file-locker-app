@@ -18,15 +18,17 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.17.4 adds a Recovery Decision Wizard with 7 fixed
-  situations, 21 yes-or-no decisions, 28 outcomes, and 112 action steps.
+- Version 2026.07.17.5 expands Recovery Decision Wizard to 10 situations,
+  30 yes-or-no decisions, 40 outcomes, and 160 action steps.
+- New paths cover failed backups, suspicious messages and phishing, and
+  bounded low-storage cleanup.
 - Customers can go back one answer, restart, copy, print, or export a
   completed fixed plan. Choices and history stay only in the current tab.
 - The wizard accepts no typed problem, license key, identity, file, path,
   PIN, USB secret, or local result and cannot control the customer PC.
 - The Windows Customer Hub opens the wizard and Customer Answers without
   placing license proof in either URL.
-- API 0.43.0 serves the fixed decision and answer catalogs plus workspace schema 4
+- API 0.44.0 serves the fixed decision and answer catalogs plus workspace schema 4
   without activating a seat or
   returning customer identity, owner notes, receipts, machine identity, paths,
   PINs, USB secrets, payment data, or file contents.
