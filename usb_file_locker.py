@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.16.5"
+DESKTOP_APP_VERSION = "2026.07.17.1"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2704,7 +2704,7 @@ def load_customer_workspace_online(state, app_version=None):
             "app_version": str(app_version or DESKTOP_APP_VERSION).strip()[:80],
         },
     )
-    if payload.get("workspace_schema_version") != 2 or not isinstance(payload.get("summary"), dict):
+    if payload.get("workspace_schema_version") != 3 or not isinstance(payload.get("summary"), dict):
         raise ValueError("The API returned an unsupported customer workspace response.")
     return payload
 

@@ -8,6 +8,121 @@ from tkinter import filedialog, messagebox
 import usb_file_locker as locker
 
 
+def customer_care_export(workspace):
+    source = workspace if isinstance(workspace, dict) else {}
+    snapshot = source.get("customer_snapshot") if isinstance(source.get("customer_snapshot"), dict) else {}
+    score = source.get("workspace_score") if isinstance(source.get("workspace_score"), dict) else {}
+    next_action = source.get("next_best_action") if isinstance(source.get("next_best_action"), dict) else {}
+    routine = source.get("weekly_routine") if isinstance(source.get("weekly_routine"), dict) else {}
+    help_center = source.get("help_center") if isinstance(source.get("help_center"), dict) else {}
+
+    def text(value, limit=320):
+        return str(value or "").strip()[:limit]
+
+    def number(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "schema_version": 1,
+        "report_type": "VaultLink Privacy-Safe Customer Care Plan",
+        "workspace_schema_version": number(source.get("workspace_schema_version")),
+        "customer_snapshot": {
+            key: text(snapshot.get(key)) if key in {"status", "rank_name"} else number(snapshot.get(key))
+            for key in (
+                "status",
+                "rank",
+                "rank_name",
+                "workspace_score",
+                "attention_count",
+                "action_count",
+                "unlocked_tool_count",
+                "unlocked_benefit_count",
+                "readiness_lane_count",
+                "weekly_step_count",
+            )
+        },
+        "workspace_score": {
+            "score": number(score.get("score")),
+            "maximum": number(score.get("maximum")),
+            "label": text(score.get("label")),
+            "limitations": text(score.get("limitations")),
+        },
+        "next_best_action": {
+            "id": text(next_action.get("id"), 80),
+            "when": text(next_action.get("when"), 40),
+            "severity": text(next_action.get("severity"), 40),
+            "title": text(next_action.get("title")),
+            "detail": text(next_action.get("detail"), 600),
+            "target_path": text(next_action.get("target_path"), 120),
+            "reason": text(next_action.get("reason"), 600),
+        },
+        "readiness_lanes": [
+            {
+                "id": text(item.get("id"), 80),
+                "title": text(item.get("title")),
+                "purpose": text(item.get("purpose"), 600),
+                "awarded": number(item.get("awarded")),
+                "maximum": number(item.get("maximum")),
+                "percent": number(item.get("percent")),
+                "state": text(item.get("state"), 40),
+                "attention_count": number(item.get("attention_count")),
+            }
+            for item in source.get("readiness_lanes", [])
+            if isinstance(item, dict)
+        ],
+        "weekly_routine": {
+            "title": text(routine.get("title")),
+            "progress_storage": text(routine.get("progress_storage"), 120),
+            "items": [
+                {
+                    "id": text(item.get("id"), 80),
+                    "day": text(item.get("day"), 40),
+                    "title": text(item.get("title")),
+                    "detail": text(item.get("detail"), 600),
+                    "target_path": text(item.get("target_path"), 120),
+                }
+                for item in routine.get("items", [])
+                if isinstance(item, dict)
+            ],
+        },
+        "entitlement_categories": [
+            {
+                "category": text(item.get("category"), 100),
+                "count": number(item.get("count")),
+                "items": [text(value) for value in item.get("items", []) if isinstance(value, str)],
+            }
+            for item in source.get("entitlement_categories", [])
+            if isinstance(item, dict)
+        ],
+        "help_center": {
+            "title": text(help_center.get("title")),
+            "owner_reply_route": text(help_center.get("owner_reply_route"), 120),
+            "free_text_not_included": bool(help_center.get("free_text_not_included")),
+            "items": [
+                {
+                    "id": text(item.get("id"), 80),
+                    "title": text(item.get("title")),
+                    "first_step": text(item.get("first_step"), 600),
+                    "target_path": text(item.get("target_path"), 120),
+                    "support_category": text(item.get("support_category"), 80),
+                }
+                for item in help_center.get("items", [])
+                if isinstance(item, dict)
+            ],
+        },
+        "privacy_guarantees": [
+            text(value, 600) for value in source.get("privacy_guarantees", []) if isinstance(value, str)
+        ],
+        "privacy_notice": (
+            "This fixed-field plan excludes license proof, customer identity, machine identity, passwords, PINs, "
+            "USB secrets, paths, filenames, file contents, payment data, and free-form support text."
+        ),
+    }
+
+
 class CustomerHub(tk.Tk):
     DETAIL_FIELDS = (
         ("LICENSE", "license_status"),
@@ -19,13 +134,15 @@ class CustomerHub(tk.Tk):
         ("LAST SYNC", "last_sync"),
         ("OWNER MESSAGES", "owner_messages"),
         ("VERIFIED AUTO-UPDATES", "automatic_updates"),
+        ("READINESS", "readiness"),
+        ("NEXT ACTION", "next_action"),
     )
 
     def __init__(self):
         super().__init__()
         self.title("VaultLink Customer Workspace")
-        self.geometry("900x840")
-        self.minsize(760, 700)
+        self.geometry("960x900")
+        self.minsize(800, 720)
         self.configure(bg=locker.BG)
         self.settings = locker.load_settings()
         self.state = locker.load_license_state(self.settings)
@@ -38,6 +155,8 @@ class CustomerHub(tk.Tk):
         self.export_button = None
         self.support_export_button = None
         self.recovery_export_button = None
+        self.care_export_button = None
+        self.next_action_button = None
         self.refresh_button = None
         self.rank_box = None
         self.workspace_box = None
@@ -122,8 +241,29 @@ class CustomerHub(tk.Tk):
         self.support_export_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         self.recovery_export_button = tk.Button(workspace_actions, text="EXPORT RECOVERY CARD", command=self.export_recovery_card, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.recovery_export_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
-        self.workspace_box = tk.Text(outer, height=12, bg=locker.FIELD, fg=locker.TEXT, relief="flat", wrap="word", font=("Segoe UI", 9), padx=12, pady=10, state="disabled")
-        self.workspace_box.pack(fill="both", expand=True)
+        self.care_export_button = tk.Button(workspace_actions, text="EXPORT CARE PLAN", command=self.export_care_plan, bg=locker.BLUE, fg=locker.BLACK, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.care_export_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        self.next_action_button = tk.Button(workspace_actions, text="OPEN NEXT ACTION", command=self.open_next_action, bg=locker.GREEN, fg=locker.BLACK, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.next_action_button.pack(side="right", ipadx=10, ipady=5)
+        workspace_shell = tk.Frame(outer, bg=locker.FIELD)
+        workspace_shell.pack(fill="both", expand=True)
+        workspace_scroll = tk.Scrollbar(workspace_shell, orient="vertical")
+        workspace_scroll.pack(side="right", fill="y")
+        self.workspace_box = tk.Text(
+            workspace_shell,
+            height=12,
+            bg=locker.FIELD,
+            fg=locker.TEXT,
+            relief="flat",
+            wrap="word",
+            font=("Segoe UI", 9),
+            padx=12,
+            pady=10,
+            state="disabled",
+            yscrollcommand=workspace_scroll.set,
+        )
+        self.workspace_box.pack(side="left", fill="both", expand=True)
+        workspace_scroll.configure(command=self.workspace_box.yview)
         tk.Label(outer, textvariable=self.status_var, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9), wraplength=760, justify="left").pack(anchor="w", pady=(10, 0))
 
     def server_url(self):
@@ -133,15 +273,26 @@ class CustomerHub(tk.Tk):
         details = locker.customer_center_details(self.state, self.settings)
         for key, variable in self.value_vars.items():
             variable.set(details.get(key, "-"))
+        if self.workspace:
+            snapshot = self.workspace.get("customer_snapshot") or {}
+            next_action = self.workspace.get("next_best_action") or {}
+            self.value_vars["readiness"].set(
+                f"{snapshot.get('workspace_score', 0)}/100 | "
+                f"{snapshot.get('attention_count', 0)} attention item(s)"
+            )
+            self.value_vars["next_action"].set(next_action.get("title") or "Reload workspace")
         has_proof = bool(self.state.get("license_key") and self.state.get("receipt"))
         if self.verify_button is not None:
             self.verify_button.configure(state="normal" if has_proof and not self.busy else "disabled")
         if self.workspace_button is not None:
             self.workspace_button.configure(state="normal" if self.state.get("license_key") and not self.busy else "disabled")
         export_state = "normal" if self.workspace and not self.busy else "disabled"
-        for button in (self.export_button, self.support_export_button, self.recovery_export_button):
+        for button in (self.export_button, self.support_export_button, self.recovery_export_button, self.care_export_button):
             if button is not None:
                 button.configure(state=export_state)
+        if self.next_action_button is not None:
+            target = ((self.workspace or {}).get("next_best_action") or {}).get("target_path")
+            self.next_action_button.configure(state="normal" if target and not self.busy else "disabled")
 
     def render_ranks(self, items):
         lines = []
@@ -173,6 +324,12 @@ class CustomerHub(tk.Tk):
             score = self.workspace.get("workspace_score") or {}
             success_plan = self.workspace.get("success_plan") or {}
             benefit_map = self.workspace.get("benefit_map") or {}
+            next_action = self.workspace.get("next_best_action") or {}
+            readiness_lanes = self.workspace.get("readiness_lanes") or []
+            weekly_routine = (self.workspace.get("weekly_routine") or {}).get("items") or []
+            entitlement_categories = self.workspace.get("entitlement_categories") or []
+            help_items = (self.workspace.get("help_center") or {}).get("items") or []
+            privacy_guarantees = self.workspace.get("privacy_guarantees") or []
             lines.extend(
                 [
                     f"WORKSPACE SCORE | {score.get('score', 0)} / {score.get('maximum', 100)} - {str(score.get('label', 'unknown')).upper()}",
@@ -181,6 +338,33 @@ class CustomerHub(tk.Tk):
                     f"ATTENTION | {checkup.get('attention_count', 0)} item(s)",
                     f"RANK TOOLS | {rank_tools.get('unlocked_count', 0)} unlocked",
                     f"BENEFITS | {benefit_map.get('unlocked_count', 0)} included",
+                    "",
+                    "NEXT BEST ACTION",
+                    f"{str(next_action.get('when', 'maintain')).upper()} | {next_action.get('title', 'Keep the workspace current')}",
+                    f"   {next_action.get('detail', '')}",
+                    "",
+                    "READINESS LANES",
+                ]
+            )
+            for lane in readiness_lanes:
+                lines.append(
+                    f"{lane.get('title', 'Readiness')} | {lane.get('awarded', 0)}/{lane.get('maximum', 0)} "
+                    f"| {str(lane.get('state', 'review')).upper()} | {lane.get('attention_count', 0)} attention"
+                )
+            lines.extend(["", "SEVEN-DAY CARE ROUTINE"])
+            for item in weekly_routine:
+                lines.append(f"{item.get('day', '')} | {item.get('title', '')}")
+            lines.extend(["", "INCLUDED BENEFITS BY CATEGORY"])
+            for item in entitlement_categories:
+                lines.append(f"{item.get('category', 'Other')} | {item.get('count', 0)} included")
+            lines.extend(["", "CUSTOMER HELP PATHS"])
+            for item in help_items:
+                lines.append(f"{item.get('title', 'Help')} | {item.get('first_step', '')}")
+            lines.extend(["", "PRIVACY GUARANTEES"])
+            for item in privacy_guarantees:
+                lines.append(f"- {item}")
+            lines.extend(
+                [
                     "",
                     "30-DAY SUCCESS PLAN",
                 ]
@@ -272,6 +456,21 @@ class CustomerHub(tk.Tk):
             "vaultlink-offline-recovery-card.json",
             "customer_recovery_card_export",
         )
+
+    def export_care_plan(self):
+        self.export_payload(
+            customer_care_export(self.workspace),
+            "Privacy-safe customer care plan",
+            "vaultlink-customer-care-plan.json",
+            "customer_care_plan_export",
+        )
+
+    def open_next_action(self):
+        target = ((self.workspace or {}).get("next_best_action") or {}).get("target_path")
+        if not isinstance(target, str) or not target.startswith("/") or target.startswith("//"):
+            self.status_var.set("Load the workspace before opening the next action.")
+            return
+        self.open_customer_page(target)
 
     def refresh_public_info(self):
         if self.busy:

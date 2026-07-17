@@ -75,7 +75,7 @@ class DesktopHelperTests(unittest.TestCase):
         )
         response = {
             "ok": True,
-            "workspace_schema_version": 2,
+            "workspace_schema_version": 3,
             "summary": {"status": "active", "plan": {"rank": 3, "name": "Personal Plus"}},
             "action_center": {"count": 9, "items": []},
         }
@@ -95,10 +95,43 @@ class DesktopHelperTests(unittest.TestCase):
         with mock.patch.object(
             locker,
             "license_api_post_json",
-            return_value={"workspace_schema_version": 3, "summary": {}},
+            return_value={"workspace_schema_version": 4, "summary": {}},
         ):
             with self.assertRaisesRegex(ValueError, "unsupported customer workspace"):
                 locker.load_customer_workspace_online(state)
+
+    def test_customer_care_export_is_fixed_field_and_private(self):
+        payload = {
+            "workspace_schema_version": 3,
+            "customer_snapshot": {"workspace_score": 82, "private": "PRIVATE-NESTED-SNAPSHOT"},
+            "workspace_score": {"score": 82, "maximum": 100, "private": "PRIVATE-NESTED-SCORE"},
+            "next_best_action": {"id": "update", "title": "Check signed release", "license_key": "PRIVATE-NESTED-KEY"},
+            "readiness_lanes": [{"id": "protection", "percent": 80, "customer": "PRIVATE-NESTED-CUSTOMER"}],
+            "weekly_routine": {"items": [{"id": "monday-status", "secret": "PRIVATE-NESTED-ROUTINE"}]},
+            "entitlement_categories": [{"category": "Recovery", "count": 2, "private": "PRIVATE-NESTED-BENEFIT"}],
+            "help_center": {"items": [{"id": "update", "note": "PRIVATE-NESTED-NOTE"}]},
+            "privacy_guarantees": ["No PC control."],
+            "license_key": "PRIVATE-LICENSE-KEY",
+            "customer_identity": "PRIVATE-CUSTOMER",
+            "free_text": "PRIVATE-SUPPORT-TEXT",
+        }
+        report = customer_hub.customer_care_export(payload)
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["workspace_schema_version"], 3)
+        serialized = json.dumps(report)
+        for private_value in (
+            "PRIVATE-LICENSE-KEY",
+            "PRIVATE-CUSTOMER",
+            "PRIVATE-SUPPORT-TEXT",
+            "PRIVATE-NESTED-SNAPSHOT",
+            "PRIVATE-NESTED-SCORE",
+            "PRIVATE-NESTED-KEY",
+            "PRIVATE-NESTED-CUSTOMER",
+            "PRIVATE-NESTED-ROUTINE",
+            "PRIVATE-NESTED-BENEFIT",
+            "PRIVATE-NESTED-NOTE",
+        ):
+            self.assertNotIn(private_value, serialized)
 
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent

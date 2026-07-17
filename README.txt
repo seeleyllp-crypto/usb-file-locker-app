@@ -18,6 +18,14 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.17.1 adds a next-best action, 4 readiness lanes, a 7-day
+  customer care routine, categorized benefits, 6 help paths, and privacy
+  guarantees to the browser and Windows Customer Workspace.
+- The Windows Customer Workspace now has a scrollable action view, OPEN NEXT
+  ACTION, and a fixed-field EXPORT CARE PLAN report.
+- API 0.40.0 serves customer workspace schema 3 without activating a seat or
+  returning customer identity, owner notes, receipts, machine identity, paths,
+  PINs, USB secrets, payment data, or file contents.
 - Version 2026.07.16.5 adds 6 non-overlapping approval gates, a failed-check
   decision queue, 5 review lanes, and a current-tab owner review session.
 - FOCUS NEXT, MARK LANE REVIEWED, CLEAR SESSION, and EXPORT HANDOFF improve
@@ -25,7 +33,7 @@ Updates:
 - Review marks are temporary notes only. They do not resolve an action or
   prove that the underlying issue was fixed.
 - OWNER OPERATIONS in License Issuer and Owner Update Lab opens it directly.
-- API 0.39.0 protects the schema-3 report with the admin header and returns no
+- API 0.40.0 protects the schema-3 owner report with the admin header and returns no
   license proof, customer identity, notes, device identity, files, paths, PINs,
   USB secrets, report contents, or customer maintenance history.
 - The page can auto-refresh every 60 seconds, keep a current-tab comparison
