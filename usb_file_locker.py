@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.17.1"
+DESKTOP_APP_VERSION = "2026.07.17.2"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2704,7 +2704,7 @@ def load_customer_workspace_online(state, app_version=None):
             "app_version": str(app_version or DESKTOP_APP_VERSION).strip()[:80],
         },
     )
-    if payload.get("workspace_schema_version") != 3 or not isinstance(payload.get("summary"), dict):
+    if payload.get("workspace_schema_version") != 4 or not isinstance(payload.get("summary"), dict):
         raise ValueError("The API returned an unsupported customer workspace response.")
     return payload
 
@@ -4853,6 +4853,7 @@ class USBFileLocker(tk.Tk):
         self.last_license_notice_status = ""
         self.update_results = queue.Queue()
         self.update_operation = ""
+        self.required_update_scheduled = False
         self.latest_update_manifest = None
         self.update_window = None
         self.customer_window = None
@@ -5436,6 +5437,14 @@ class USBFileLocker(tk.Tk):
                 self.update_button.configure(state="normal", text="UPDATE CENTER", bg="#252936", fg=TEXT)
             self.refresh_update_window()
             save_settings(self.settings)
+            if update_required:
+                version = str(payload.get("version", ""))
+                self.status.set(
+                    f"Required signed update {version} verified. Installation will start when the current local task is idle."
+                )
+                log_event("application_required_update", "api", "ok", f"verified={version}")
+                self.schedule_required_update_install()
+                return
             if available and silent:
                 version = str(payload.get("version", ""))
                 if self.settings.get("auto_install_signed_updates", False):
@@ -5497,6 +5506,30 @@ class USBFileLocker(tk.Tk):
                 self.update_button.configure(state="normal", text="UPDATE AVAILABLE", bg=GREEN, fg=BLACK)
                 self.refresh_update_window(error=str(exc))
                 messagebox.showerror("Could not start updater", str(exc), parent=self)
+
+    def schedule_required_update_install(self):
+        if LAB_MODE or self.required_update_scheduled:
+            return
+        manifest = self.latest_update_manifest or {}
+        if not manifest.get("update_available") or manifest.get("current_version_supported", True):
+            return
+        self.required_update_scheduled = True
+        self.after(1200, self.run_required_update_install)
+
+    def run_required_update_install(self):
+        manifest = self.latest_update_manifest or {}
+        if not manifest.get("update_available") or manifest.get("current_version_supported", True):
+            self.required_update_scheduled = False
+            return
+        if self.busy or self.update_operation:
+            self.status.set("Required signed update is waiting for the current local task to finish.")
+            self.after(1000, self.run_required_update_install)
+            return
+        self.required_update_scheduled = False
+        self.status.set(
+            "Installing the required signed update. Unlock and recovery remain available if installation cannot complete."
+        )
+        self.install_latest_update(automatic=True)
 
     def install_latest_update(self, automatic=False):
         if LAB_MODE:

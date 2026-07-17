@@ -75,7 +75,7 @@ class DesktopHelperTests(unittest.TestCase):
         )
         response = {
             "ok": True,
-            "workspace_schema_version": 3,
+            "workspace_schema_version": 4,
             "summary": {"status": "active", "plan": {"rank": 3, "name": "Personal Plus"}},
             "action_center": {"count": 9, "items": []},
         }
@@ -95,19 +95,45 @@ class DesktopHelperTests(unittest.TestCase):
         with mock.patch.object(
             locker,
             "license_api_post_json",
-            return_value={"workspace_schema_version": 4, "summary": {}},
+            return_value={"workspace_schema_version": 5, "summary": {}},
         ):
             with self.assertRaisesRegex(ValueError, "unsupported customer workspace"):
                 locker.load_customer_workspace_online(state)
 
     def test_customer_care_export_is_fixed_field_and_private(self):
         payload = {
-            "workspace_schema_version": 3,
+            "workspace_schema_version": 4,
             "customer_snapshot": {"workspace_score": 82, "private": "PRIVATE-NESTED-SNAPSHOT"},
             "workspace_score": {"score": 82, "maximum": 100, "private": "PRIVATE-NESTED-SCORE"},
             "next_best_action": {"id": "update", "title": "Check signed release", "license_key": "PRIVATE-NESTED-KEY"},
+            "action_center": {
+                "items": [
+                    {"id": "update", "title": "Check signed release", "secret": "PRIVATE-NESTED-ACTION"},
+                    {"id": "backup", "title": "Review backup"},
+                ]
+            },
             "readiness_lanes": [{"id": "protection", "percent": 80, "customer": "PRIVATE-NESTED-CUSTOMER"}],
             "weekly_routine": {"items": [{"id": "monday-status", "secret": "PRIVATE-NESTED-ROUTINE"}]},
+            "journey_map": {
+                "server_tracks_completion": False,
+                "stages": [{"id": "account", "title": "Account", "secret": "PRIVATE-NESTED-JOURNEY"}],
+            },
+            "seat_planner": {"active": 1, "maximum": 3, "available": 2, "device_name": "PRIVATE-DEVICE"},
+            "support_readiness": {
+                "ready_count": 1,
+                "total": 1,
+                "items": [{"id": "license", "ready": True, "note": "PRIVATE-NESTED-SUPPORT"}],
+            },
+            "ninety_day_plan": {
+                "phases": [
+                    {
+                        "id": "now",
+                        "items": [{"id": "update", "title": "Update", "path": "PRIVATE-NESTED-PLAN"}],
+                    }
+                ]
+            },
+            "change_digest": {"api_version": "0.41.0", "owner_note": "PRIVATE-NESTED-DIGEST"},
+            "customer_glossary": [{"id": "locked-file", "term": "Locked file", "private": "PRIVATE-NESTED-GLOSSARY"}],
             "entitlement_categories": [{"category": "Recovery", "count": 2, "private": "PRIVATE-NESTED-BENEFIT"}],
             "help_center": {"items": [{"id": "update", "note": "PRIVATE-NESTED-NOTE"}]},
             "privacy_guarantees": ["No PC control."],
@@ -115,9 +141,15 @@ class DesktopHelperTests(unittest.TestCase):
             "customer_identity": "PRIVATE-CUSTOMER",
             "free_text": "PRIVATE-SUPPORT-TEXT",
         }
-        report = customer_hub.customer_care_export(payload)
+        report = customer_hub.customer_care_export(payload, {"update", "not-a-current-action"})
         self.assertEqual(report["schema_version"], 1)
-        self.assertEqual(report["workspace_schema_version"], 3)
+        self.assertEqual(report["workspace_schema_version"], 4)
+        self.assertEqual(report["completed_action_ids"], ["update"])
+        self.assertEqual(report["seat_planner"]["available"], 2)
+        self.assertFalse(report["journey_map"]["server_tracks_completion"])
+        self.assertEqual(len(report["support_readiness"]["items"]), 1)
+        self.assertEqual(len(report["ninety_day_plan"]["phases"]), 1)
+        self.assertEqual(len(report["customer_glossary"]), 1)
         serialized = json.dumps(report)
         for private_value in (
             "PRIVATE-LICENSE-KEY",
@@ -128,10 +160,45 @@ class DesktopHelperTests(unittest.TestCase):
             "PRIVATE-NESTED-KEY",
             "PRIVATE-NESTED-CUSTOMER",
             "PRIVATE-NESTED-ROUTINE",
+            "PRIVATE-NESTED-ACTION",
+            "PRIVATE-NESTED-JOURNEY",
+            "PRIVATE-DEVICE",
+            "PRIVATE-NESTED-SUPPORT",
+            "PRIVATE-NESTED-PLAN",
+            "PRIVATE-NESTED-DIGEST",
+            "PRIVATE-NESTED-GLOSSARY",
             "PRIVATE-NESTED-BENEFIT",
             "PRIVATE-NESTED-NOTE",
         ):
             self.assertNotIn(private_value, serialized)
+
+    def test_customer_progress_is_bounded_private_and_local(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress_path = Path(temp_dir) / "progress.json"
+            saved = customer_hub.save_customer_progress(
+                ["update", "backup", "update", "../private", "UPPERCASE", "a" * 81],
+                progress_path,
+            )
+            self.assertEqual(saved["completed_action_ids"], ["backup", "update"])
+            self.assertTrue(saved["updated_at_utc"])
+            raw = progress_path.read_text(encoding="utf-8")
+            for private_field in ("license_key", "machine_id", "path", "filename", "pin", "usb_secret"):
+                self.assertNotIn(private_field, raw.lower())
+            self.assertEqual(customer_hub.load_customer_progress(progress_path), saved)
+
+    def test_next_unfinished_customer_action_respects_local_progress(self):
+        workspace = {
+            "action_center": {
+                "items": [
+                    {"id": "first", "title": "First"},
+                    {"id": "second", "title": "Second"},
+                ]
+            },
+            "next_best_action": {"id": "fallback", "title": "Fallback"},
+        }
+        self.assertEqual(customer_hub.next_unfinished_action(workspace, set())["id"], "first")
+        self.assertEqual(customer_hub.next_unfinished_action(workspace, {"first"})["id"], "second")
+        self.assertEqual(customer_hub.next_unfinished_action(workspace, {"first", "second"}), {})
 
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
@@ -2827,6 +2894,34 @@ class DesktopHelperTests(unittest.TestCase):
             locker.USBFileLocker.poll_update_results(app)
         app.install_latest_update.assert_called_once_with(automatic=True)
         ask.assert_not_called()
+
+    def test_required_signed_update_ignores_optional_auto_update_setting(self):
+        manifest = {
+            "version": "9999.2",
+            "update_available": True,
+            "current_version_supported": False,
+        }
+        app = SimpleNamespace(
+            update_results=queue.Queue(),
+            update_operation="check",
+            update_button=FakeButton(state="disabled"),
+            latest_update_manifest=None,
+            settings={"auto_install_signed_updates": False},
+            status=FakeVar(),
+            refresh_update_window=mock.Mock(),
+            schedule_required_update_install=mock.Mock(),
+        )
+        app.update_results.put(("check", manifest, "", True))
+        with (
+            mock.patch.object(locker, "save_settings"),
+            mock.patch.object(locker, "log_event") as log,
+            mock.patch.object(locker.messagebox, "askyesno") as ask,
+        ):
+            locker.USBFileLocker.poll_update_results(app)
+        app.schedule_required_update_install.assert_called_once_with()
+        ask.assert_not_called()
+        self.assertIn("Required signed update 9999.2", app.status.value)
+        self.assertTrue(any(call.args[0] == "application_required_update" for call in log.call_args_list))
 
     def test_updater_extracts_into_mkdtemp_directory_and_rejects_nonempty_reuse(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_updater_mkdtemp_") as folder:

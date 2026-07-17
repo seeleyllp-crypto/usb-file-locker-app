@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Six approval gates divide all forty fixed owner checks exactly once and show clear, review, or blocked outcomes.",
-    "The owner decision queue contains failed fixed checks only, ordered by priority with fixed suggested review timing.",
-    "Five review lanes focus all actions, urgent work, release and service, customers and support, or evidence and governance.",
-    "A current-tab review session can focus the next action, mark a visible lane reviewed, and clear every local review mark.",
-    "The privacy-safe handoff export contains fixed gate results and action IDs without customer records, secrets, paths, or free-form notes.",
-    "The browser SHA-256 receipt now supports schema two with fixed approval-gate results and current-tab reviewed action IDs.",
-    "Review marks never resolve an owner action, change API state, prove remediation, or control a customer PC.",
-    "Daily briefing, severity, domain scores, ten-metric Change Watch, four review windows, shortcuts, print, and safe exports remain available.",
-    "API 0.39.0 provides the schema-three admin-only operations contract while preserving the exact forty-check and eight-category contract.",
-    "Reports exclude customer identity, license proof, notes, device identifiers, files, paths, PINs, USB secrets, and customer maintenance history.",
-    "Owner Operations remains aggregate and read-only toward every customer PC.",
+    "Customer Workspace adds a five-stage continuity journey and persistent local fixed-action progress.",
+    "Anonymous seat planning shows capacity without returning or storing device identity.",
+    "Five support-readiness checks prepare a fixed-field support pack without files, paths, identity, or secrets.",
+    "A four-phase 90-day continuity plan organizes immediate, weekly, monthly, and quarterly care.",
+    "The current change digest compares installed, signed, API, service, and license states without changing the PC.",
+    "A ten-term glossary explains recovery and update concepts in plain language.",
+    "Mark Next Done and Reset Local Progress store only fixed action IDs and a UTC timestamp on the Windows account.",
+    "Care-plan exports contain allowlisted fixed fields and reviewed action IDs only.",
+    "Builds below the signed minimum automatically stage the verified update after active local work finishes.",
+    "Required updates still use Ed25519 manifest verification and SHA-256 package verification.",
+    "Unlock, recovery, exports, existing keys, app data, and locked files remain available if an update cannot complete.",
     "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
@@ -891,6 +891,15 @@ class OwnerUpdateLab(tk.Tk):
         self.add_path_row(form, 2, "API RELEASE REPO", self.api_repo_var, lambda: self.choose_folder(self.api_repo_var))
         tk.Label(form, text="MINIMUM SUPPORTED", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).grid(row=3, column=0, sticky="w", pady=(8, 0))
         tk.Entry(form, textvariable=self.minimum_var, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 10)).grid(row=3, column=1, sticky="ew", padx=(12, 10), pady=(8, 0), ipady=7)
+        tk.Button(
+            form,
+            text="REQUIRE THIS RELEASE",
+            command=self.require_candidate_version,
+            bg=RED,
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=3, column=2, pady=(8, 0), ipadx=9, ipady=6)
 
         tk.Label(panel, text="SIGNED RELEASE NOTES", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=18, pady=(2, 4))
         self.notes = tk.Text(panel, height=5, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9), wrap="word")
@@ -961,6 +970,13 @@ class OwnerUpdateLab(tk.Tk):
 
     def notes_value(self):
         return self.notes.get("1.0", "end")
+
+    def require_candidate_version(self):
+        self.minimum_var.set(locker.DESKTOP_APP_VERSION)
+        self.refresh_candidate_state()
+        self.status_var.set(
+            "Required-update floor set to this candidate. Older builds will install only after signature and package verification; unlock and recovery remain available on failure."
+        )
 
     def append_log(self, text):
         self.log.configure(state="normal")
@@ -1133,10 +1149,16 @@ class OwnerUpdateLab(tk.Tk):
     def start_publish(self):
         report = load_candidate_report() or {}
         version = report.get("version") or locker.DESKTOP_APP_VERSION
+        required_text = (
+            "\n\nREQUIRED UPDATE: older builds will automatically stage this signed release after active local work finishes."
+            if self.minimum_var.get().strip() == version
+            else ""
+        )
         if not messagebox.askyesno(
             "Publish verified update",
             f"Publish VaultLink {version} to customers?\n\n"
-            "The app and API repositories must be clean. The exact tested ZIP and signed manifest will be pushed to GitHub, then verified on the live service.",
+            "The app and API repositories must be clean. The exact tested ZIP and signed manifest will be pushed to GitHub, then verified on the live service."
+            f"{required_text}",
             parent=self,
         ):
             return

@@ -18,14 +18,20 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.17.1 adds a next-best action, 4 readiness lanes, a 7-day
-  customer care routine, categorized benefits, 6 help paths, and privacy
-  guarantees to the browser and Windows Customer Workspace.
-- The Windows Customer Workspace now has a scrollable action view, OPEN NEXT
-  ACTION, and a fixed-field EXPORT CARE PLAN report.
-- API 0.40.0 serves customer workspace schema 3 without activating a seat or
+- Version 2026.07.17.2 adds a 5-stage customer journey, anonymous seat planner,
+  5 support checks, a 4-phase 90-day plan, version digest, glossary, and local
+  action progress to the browser and Windows Customer Workspace.
+- MARK NEXT DONE stores only fixed action IDs and a UTC timestamp on this
+  Windows account. RESET LOCAL PROGRESS clears those local IDs. Progress is
+  never uploaded, and EXPORT CARE PLAN includes only reviewed fixed IDs.
+- API 0.41.0 serves customer workspace schema 4 without activating a seat or
   returning customer identity, owner notes, receipts, machine identity, paths,
   PINs, USB secrets, payment data, or file contents.
+- Owner Update Lab can set REQUIRE THIS RELEASE. A build below that signed
+  minimum automatically installs after active local file work finishes.
+- Required updates still need a valid Ed25519 manifest signature and matching
+  SHA-256 package hash. Failure never blocks unlock, recovery, exports, keys,
+  app data, or existing .locked files.
 - Version 2026.07.16.5 adds 6 non-overlapping approval gates, a failed-check
   decision queue, 5 review lanes, and a current-tab owner review session.
 - FOCUS NEXT, MARK LANE REVIEWED, CLEAR SESSION, and EXPORT HANDOFF improve
