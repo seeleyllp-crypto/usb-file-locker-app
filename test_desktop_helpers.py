@@ -200,6 +200,11 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(customer_hub.next_unfinished_action(workspace, {"first"})["id"], "second")
         self.assertEqual(customer_hub.next_unfinished_action(workspace, {"first", "second"}), {})
 
+    def test_customer_hub_links_to_public_answers_without_credentials(self):
+        source = Path(customer_hub.__file__).read_text(encoding="utf-8")
+        self.assertIn('("ANSWERS", "/QNA")', source)
+        self.assertNotIn('"/QNA?"', source)
+
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))

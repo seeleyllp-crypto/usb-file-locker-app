@@ -384,6 +384,7 @@ class CustomerHub(tk.Tk):
         links.pack(fill="x", pady=(8, 0))
         for label, path in (
             ("ONLINE WORKSPACE", "/workspace"),
+            ("ANSWERS", "/QNA"),
             ("STATUS", "/status"),
             ("DRAFT TERMS", "/terms"),
             ("PRIVACY", "/privacy"),

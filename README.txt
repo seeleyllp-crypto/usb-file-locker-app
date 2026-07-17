@@ -18,13 +18,15 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
-- Version 2026.07.17.2 adds a 5-stage customer journey, anonymous seat planner,
-  5 support checks, a 4-phase 90-day plan, version digest, glossary, and local
-  action progress to the browser and Windows Customer Workspace.
-- MARK NEXT DONE stores only fixed action IDs and a UTC timestamp on this
-  Windows account. RESET LOCAL PROGRESS clears those local IDs. Progress is
-  never uploaded, and EXPORT CARE PLAN includes only reviewed fixed IDs.
-- API 0.41.0 serves customer workspace schema 4 without activating a seat or
+- Version 2026.07.17.3 adds Customer Answers with 30 fixed answers across
+  6 categories. Search, filters, opened answers, and saved choices stay only
+  in the current browser tab.
+- Customers can copy one answer, print the visible set, or export a reviewed
+  saved-answer pack. No free-form question is sent to the API.
+- The Windows Customer Hub opens Customer Answers without placing license
+  proof in the URL.
+- API 0.42.0 serves the fixed answer catalog and customer workspace schema 4
+  without activating a seat or
   returning customer identity, owner notes, receipts, machine identity, paths,
   PINs, USB secrets, payment data, or file contents.
 - Owner Update Lab can set REQUIRE THIS RELEASE. A build below that signed

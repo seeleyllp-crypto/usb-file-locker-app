@@ -46,18 +46,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Customer Workspace adds a five-stage continuity journey and persistent local fixed-action progress.",
-    "Anonymous seat planning shows capacity without returning or storing device identity.",
-    "Five support-readiness checks prepare a fixed-field support pack without files, paths, identity, or secrets.",
-    "A four-phase 90-day continuity plan organizes immediate, weekly, monthly, and quarterly care.",
-    "The current change digest compares installed, signed, API, service, and license states without changing the PC.",
-    "A ten-term glossary explains recovery and update concepts in plain language.",
-    "Mark Next Done and Reset Local Progress store only fixed action IDs and a UTC timestamp on the Windows account.",
-    "Care-plan exports contain allowlisted fixed fields and reviewed action IDs only.",
+    "Customer Answers provides thirty fixed answers across six practical categories.",
+    "Search covers questions, answers, steps, tags, and category names without uploading search text.",
+    "Category filters and opened-answer state stay only in the current browser tab.",
+    "Customers can save answers for the current tab and switch to a saved-only view.",
+    "Saved-answer JSON exports contain only reviewed public fixed fields and fixed answer IDs.",
+    "Every answer includes ordered safe steps and a fixed link to the matching VaultLink guide.",
+    "Copy Answer creates a public fixed answer with a reminder never to send secrets.",
+    "Print Visible prints only the currently filtered answer set.",
+    "The answer API accepts no license key, identity, machine identity, file, path, PIN, USB secret, local result, or free-form question.",
+    "The Windows Customer Hub links directly to Customer Answers without placing license proof in the URL.",
     "Builds below the signed minimum automatically stage the verified update after active local work finishes.",
     "Required updates still use Ed25519 manifest verification and SHA-256 package verification.",
-    "Unlock, recovery, exports, existing keys, app data, and locked files remain available if an update cannot complete.",
-    "The signed update preserves keys, licenses, settings, vault data, audit logs, and locked files.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
