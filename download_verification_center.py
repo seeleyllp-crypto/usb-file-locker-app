@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import base64
 import hashlib
+from itertools import islice
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ MAX_RECEIPT_BYTES = 256 * 1024
 MAX_RECEIPT_FOLDER_BYTES = 32 * 1024 * 1024
 MAX_RECEIPT_FOLDER_ENTRIES = 1000
 MAX_RECEIPT_FOLDER_JSON_FILES = 250
+MAX_RECEIPT_REVIEW_HISTORY = 100
 MAX_PROTECTED_RECEIPT_KEY_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
@@ -815,9 +817,13 @@ def filter_receipt_folder_local_details(
         raise ValueError("Choose a recognized local receipt-review sort mode.")
     if not isinstance(hide_reviewed, bool):
         raise ValueError("Choose a recognized local receipt-review visibility mode.")
+    try:
+        reviewed_iterator = iter(()) if reviewed_ids is None else iter(reviewed_ids)
+    except TypeError as exc:
+        raise ValueError("Review-session IDs must be a bounded iterable.") from exc
     safe_reviewed_ids = {
         value
-        for value in list(reviewed_ids or [])[:MAX_RECEIPT_FOLDER_ENTRIES]
+        for value in islice(reviewed_iterator, MAX_RECEIPT_FOLDER_ENTRIES)
         if type(value) is int and 0 <= value < MAX_RECEIPT_FOLDER_ENTRIES
     }
     query_text = "".join(
@@ -826,7 +832,11 @@ def filter_receipt_folder_local_details(
     ).strip().casefold()
     allowed_statuses = FOLDER_REVIEW_FILTER_STATUSES[category]
     filtered = []
-    for raw_detail in list(details or [])[:MAX_RECEIPT_FOLDER_ENTRIES]:
+    try:
+        detail_iterator = iter(()) if details is None else iter(details)
+    except TypeError as exc:
+        raise ValueError("Local receipt-review rows must be a bounded iterable.") from exc
+    for raw_detail in islice(detail_iterator, MAX_RECEIPT_FOLDER_ENTRIES):
         if not isinstance(raw_detail, dict):
             continue
         status = str(raw_detail.get("status", ""))
@@ -872,6 +882,34 @@ def receipt_folder_review_triage(status):
     if key not in FOLDER_REVIEW_TRIAGE:
         raise ValueError("Choose a recognized local receipt-review result.")
     return dict(FOLDER_REVIEW_TRIAGE[key])
+
+
+def receipt_folder_review_session_summary(details, reviewed_ids=None):
+    rows = filter_receipt_folder_local_details(
+        details,
+        reviewed_ids=reviewed_ids,
+    )
+    summary = {
+        "total_results": len(rows),
+        "reviewed": 0,
+        "pending": 0,
+        "action_required_pending": 0,
+        "review_pending": 0,
+        "actionable_pending": 0,
+    }
+    for row in rows:
+        if row.get("reviewed"):
+            summary["reviewed"] += 1
+            continue
+        summary["pending"] += 1
+        level = FOLDER_REVIEW_TRIAGE[row["status"]]["level"]
+        if level == "critical":
+            summary["action_required_pending"] += 1
+            summary["actionable_pending"] += 1
+        elif level == "review":
+            summary["review_pending"] += 1
+            summary["actionable_pending"] += 1
+    return summary
 
 
 def _audit_receipt_folder_core(path, include_local_details):
@@ -1518,6 +1556,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.inspection_result = None
         self.folder_audit_result = None
         self.folder_audit_local_details = []
+        self.folder_review_window = None
         self.busy = False
         self.file_var = tk.StringVar(value="No file selected.")
         self.hash_var = tk.StringVar(value="Not calculated")
@@ -2097,6 +2136,7 @@ class DownloadVerificationCenter(tk.Tk):
         if not path_text:
             return
         selected = Path(path_text)
+        self.close_receipt_folder_review()
         self.folder_audit_result = None
         self.folder_audit_local_details = []
         self.export_folder_audit_button.configure(state="disabled")
@@ -2200,12 +2240,27 @@ class DownloadVerificationCenter(tk.Tk):
     def view_receipt_folder_review(self):
         if not self.folder_audit_local_details:
             return
+        if self.folder_review_window is not None:
+            try:
+                if self.folder_review_window.winfo_exists():
+                    self.folder_review_window.deiconify()
+                    self.folder_review_window.lift()
+                    self.folder_review_window.focus_set()
+                    return
+            except tk.TclError:
+                pass
+            self.folder_review_window = None
         window = tk.Toplevel(self)
+        self.folder_review_window = window
         window.title("VaultLink Local Receipt Review")
         window.geometry("1040x760")
         window.minsize(880, 650)
         window.configure(bg=locker.BG)
         window.transient(self)
+        window.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: self.close_receipt_folder_review(window),
+        )
         review_details = [
             dict(detail, review_id=index)
             for index, detail in enumerate(
@@ -2215,6 +2270,7 @@ class DownloadVerificationCenter(tk.Tk):
             )
         ]
         reviewed_ids = set()
+        review_history = []
 
         tk.Label(
             window,
@@ -2252,6 +2308,7 @@ class DownloadVerificationCenter(tk.Tk):
         sort_var = tk.StringVar(value="Filename")
         hide_reviewed_var = tk.BooleanVar(value=False)
         visible_count_var = tk.StringVar()
+        session_progress_var = tk.StringVar()
         triage_title_var = tk.StringVar(value="NO RESULT SELECTED")
         triage_meaning_var = tk.StringVar(
             value="Select a row to see its fixed local meaning."
@@ -2405,8 +2462,15 @@ class DownloadVerificationCenter(tk.Tk):
                 )
                 item_status[item_id] = detail["status"]
                 item_review_ids[item_id] = detail["review_id"]
-            visible_count_var.set(
-                f"{len(rows)} shown | {len(reviewed_ids)} of {len(review_details)} reviewed"
+            summary = receipt_folder_review_session_summary(
+                review_details,
+                reviewed_ids,
+            )
+            visible_count_var.set(f"{len(rows)} shown")
+            session_progress_var.set(
+                f"{summary['reviewed']} of {summary['total_results']} reviewed | "
+                f"{summary['actionable_pending']} actionable remaining | "
+                f"{summary['action_required_pending']} Action Required"
             )
             clear_triage_panel()
 
@@ -2459,11 +2523,32 @@ class DownloadVerificationCenter(tk.Tk):
                 reviewed_ids.remove(review_id)
             else:
                 reviewed_ids.add(review_id)
+            review_history.append(review_id)
+            del review_history[:-MAX_RECEIPT_REVIEW_HISTORY]
+            refresh_review()
+            select_review_id(review_id)
+
+        def undo_last_review_mark():
+            if not review_history:
+                triage_title_var.set("NOTHING TO UNDO")
+                triage_meaning_var.set(
+                    "This review session has no earlier mark change to restore."
+                )
+                triage_action_var.set(
+                    "Next safe step: select a row if you want to change its review mark."
+                )
+                return
+            review_id = review_history.pop()
+            if review_id in reviewed_ids:
+                reviewed_ids.remove(review_id)
+            else:
+                reviewed_ids.add(review_id)
             refresh_review()
             select_review_id(review_id)
 
         def reset_review_marks():
             reviewed_ids.clear()
+            review_history.clear()
             refresh_review()
 
         def next_review_item():
@@ -2541,6 +2626,13 @@ class DownloadVerificationCenter(tk.Tk):
             wraplength=890,
             justify="left",
         ).pack(anchor="w", padx=12, pady=(2, 10))
+        tk.Label(
+            triage_panel,
+            textvariable=session_progress_var,
+            bg=locker.PANEL,
+            fg=locker.YELLOW,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=12, pady=(0, 8))
         review_controls = tk.Frame(triage_panel, bg=locker.PANEL)
         review_controls.pack(fill="x", padx=12, pady=(0, 10))
         tk.Button(
@@ -2552,6 +2644,15 @@ class DownloadVerificationCenter(tk.Tk):
             relief="flat",
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", ipadx=10, ipady=5)
+        tk.Button(
+            review_controls,
+            text="UNDO LAST MARK",
+            command=undo_last_review_mark,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         tk.Button(
             review_controls,
             text="RESET REVIEW MARKS",
@@ -2601,7 +2702,7 @@ class DownloadVerificationCenter(tk.Tk):
         tk.Button(
             actions,
             text="CLOSE",
-            command=window.destroy,
+            command=lambda: self.close_receipt_folder_review(window),
             bg="#252936",
             fg=locker.TEXT,
             relief="flat",
@@ -2609,14 +2710,24 @@ class DownloadVerificationCenter(tk.Tk):
         ).pack(side="right", ipadx=12, ipady=7)
         locker.log_event("download_verify_view_receipt_folder_review", "local", "ok")
 
+    def close_receipt_folder_review(self, window=None):
+        target = window or self.folder_review_window
+        if target is not None:
+            try:
+                if target.winfo_exists():
+                    target.destroy()
+            except tk.TclError:
+                pass
+        if target is self.folder_review_window:
+            self.folder_review_window = None
+
     def clear_receipt_folder_review(self, window=None):
         self.folder_audit_local_details = []
         self.view_folder_review_button.configure(state="disabled")
         self.status_var.set(
             "Local receipt names cleared from memory. The aggregate audit remains available."
         )
-        if window is not None and window.winfo_exists():
-            window.destroy()
+        self.close_receipt_folder_review(window)
         locker.log_event("download_verify_clear_receipt_folder_review", "local", "ok")
 
     def compare_prior_receipt(self):

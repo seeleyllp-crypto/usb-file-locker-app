@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now includes a temporary review-session checklist for every displayed result.",
-    "MARK REVIEWED and MARK UNREVIEWED change only a bounded numeric session ID, never a filename or file hash.",
-    "HIDE REVIEWED removes completed rows from the current window without deleting the underlying local list.",
-    "The visible counter now shows displayed rows and total session progress.",
-    "RESET REVIEW MARKS restores every row to Pending without rerunning the folder audit.",
-    "NEXT REVIEW ITEM skips completed rows while continuing to place Action Required results first.",
-    "Reviewed rows use a fixed muted state while pending rows retain their triage colors.",
-    "Review marks disappear when the review window closes and are never logged, exported, persisted, or sent to the API.",
+    "Local Receipt Review now allows only one live window, preventing duplicate filename snapshots.",
+    "Starting a new folder audit closes the old review window before replacing its in-memory results.",
+    "CLEAR LOCAL LIST now destroys the sole review window so no stale filename snapshot remains.",
+    "Receipt rows and reviewed-ID inputs are consumed with hard bounds instead of being fully materialized first.",
+    "UNDO LAST MARK restores up to 100 recent numeric review changes without storing filenames or hashes.",
+    "Session progress now shows total reviewed, actionable remaining, and Action Required remaining.",
+    "RESET REVIEW MARKS also clears the numeric undo history for a clean session.",
+    "The progress summary and undo buffer contain only bounded counts and numeric IDs and are never logged, exported, persisted, or sent to the API.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
     "The app still does not execute receipts, upload data, rescan original downloads, identify malware, or prove that any file is safe.",
-    "API 0.55.0 advertises review-session controls without receiving filenames, marks, progress, selections, or results.",
+    "API 0.56.0 advertises the lifecycle, resource-bound, undo, and progress fixes without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

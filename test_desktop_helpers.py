@@ -8,6 +8,7 @@ import queue
 import stat
 import tempfile
 import threading
+import tkinter as tk
 import unittest
 import urllib.parse
 import zipfile
@@ -685,6 +686,72 @@ class DesktopHelperTests(unittest.TestCase):
                     session_rows,
                     hide_reviewed="private-invalid-mode",
                 )
+            with self.assertRaisesRegex(ValueError, "session IDs"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    reviewed_ids=42,
+                )
+            with self.assertRaisesRegex(ValueError, "rows"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    42,
+                )
+            with mock.patch.object(
+                download_verification_center,
+                "MAX_RECEIPT_FOLDER_ENTRIES",
+                2,
+            ):
+                def bounded_rows():
+                    yield session_rows[0]
+                    yield session_rows[1]
+                    raise AssertionError("review rows were consumed past the bound")
+
+                def bounded_reviewed_ids():
+                    yield 0
+                    yield 1
+                    raise AssertionError("review IDs were consumed past the bound")
+
+                bounded_result = (
+                    download_verification_center.filter_receipt_folder_local_details(
+                        bounded_rows(),
+                        reviewed_ids=bounded_reviewed_ids(),
+                    )
+                )
+            self.assertEqual(len(bounded_result), 2)
+            self.assertTrue(all(item["reviewed"] for item in bounded_result))
+            session_summary = (
+                download_verification_center.receipt_folder_review_session_summary(
+                    [
+                        {
+                            "name": "private-critical.json",
+                            "status": "invalid_or_tampered",
+                            "review_id": 0,
+                        },
+                        {
+                            "name": "private-review.json",
+                            "status": "unsealed_legacy",
+                            "review_id": 1,
+                        },
+                        {
+                            "name": "private-valid.json",
+                            "status": "valid_this_profile",
+                            "review_id": 2,
+                        },
+                    ],
+                    reviewed_ids={1},
+                )
+            )
+            self.assertEqual(
+                session_summary,
+                {
+                    "total_results": 3,
+                    "reviewed": 1,
+                    "pending": 2,
+                    "action_required_pending": 1,
+                    "review_pending": 0,
+                    "actionable_pending": 1,
+                },
+            )
+            self.assertNotIn("private-", json.dumps(session_summary))
             self.assertEqual(
                 [
                     item["name"]
@@ -973,9 +1040,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="NEXT REVIEW ITEM"', source)
         self.assertIn('text="HIDE REVIEWED"', source)
         self.assertIn('value="MARK REVIEWED"', source)
+        self.assertIn('text="UNDO LAST MARK"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
         self.assertIn('table.heading("session", text="Session")', source)
+        self.assertIn("self.folder_review_window = None", source)
+        self.assertIn("MAX_RECEIPT_REVIEW_HISTORY = 100", source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -997,6 +1067,47 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("reviewed_ids", line)
             self.assertNotIn("item_review_ids", line)
             self.assertNotIn("hide_reviewed_var", line)
+            self.assertNotIn("review_history", line)
+            self.assertNotIn("session_progress_var", line)
+
+    def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
+        with mock.patch.object(
+            download_verification_center.locker,
+            "log_event",
+            return_value=None,
+        ):
+            app = download_verification_center.DownloadVerificationCenter()
+            app.withdraw()
+            try:
+                app.folder_audit_local_details = [
+                    {
+                        "name": "private-singleton-receipt.json",
+                        "status": "invalid_or_tampered",
+                    }
+                ]
+                app.view_receipt_folder_review()
+                app.update_idletasks()
+                first_window = app.folder_review_window
+                self.assertIsNotNone(first_window)
+                self.assertTrue(first_window.winfo_exists())
+
+                app.view_receipt_folder_review()
+                app.update_idletasks()
+                self.assertIs(app.folder_review_window, first_window)
+                review_windows = [
+                    child
+                    for child in app.winfo_children()
+                    if isinstance(child, tk.Toplevel) and child.winfo_exists()
+                ]
+                self.assertEqual(len(review_windows), 1)
+
+                app.clear_receipt_folder_review(first_window)
+                app.update_idletasks()
+                self.assertEqual(app.folder_audit_local_details, [])
+                self.assertIsNone(app.folder_review_window)
+                self.assertFalse(first_window.winfo_exists())
+            finally:
+                app.destroy()
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(
