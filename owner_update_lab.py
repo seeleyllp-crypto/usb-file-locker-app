@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now allows only one live window, preventing duplicate filename snapshots.",
-    "Starting a new folder audit closes the old review window before replacing its in-memory results.",
-    "CLEAR LOCAL LIST now destroys the sole review window so no stale filename snapshot remains.",
-    "Receipt rows and reviewed-ID inputs are consumed with hard bounds instead of being fully materialized first.",
-    "UNDO LAST MARK restores up to 100 recent numeric review changes without storing filenames or hashes.",
-    "Session progress now shows total reviewed, actionable remaining, and Action Required remaining.",
-    "RESET REVIEW MARKS also clears the numeric undo history for a clean session.",
-    "The progress summary and undo buffer contain only bounded counts and numeric IDs and are never logged, exported, persisted, or sent to the API.",
+    "Receipt filename search now uses a cancellable 180 ms debounce instead of rebuilding up to 1,000 rows on every keystroke.",
+    "Each new search event cancels the previous pending redraw so only the latest query is applied.",
+    "Closing or clearing the review window cancels any delayed search callback before destroying its widgets.",
+    "The selected numeric review row is preserved across search, filter, sort, mark, undo, and reset refreshes when still visible.",
+    "NEXT PENDING ITEM cycles every unreviewed result in priority order, including Info and Valid rows.",
+    "Session progress now separates total reviewed from total pending.",
+    "A fixed pending breakdown shows Action Required, Review, Info, and Valid counts.",
+    "Debounce state, selection, progress, and level counts remain local memory only and are never logged, exported, persisted, or sent to the API.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
     "The app still does not execute receipts, upload data, rescan original downloads, identify malware, or prove that any file is safe.",
-    "API 0.56.0 advertises the lifecycle, resource-bound, undo, and progress fixes without receiving local review data.",
+    "API 0.57.0 advertises the debounce, selection, full pending navigation, and aggregate breakdown without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

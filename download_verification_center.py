@@ -29,6 +29,7 @@ MAX_RECEIPT_FOLDER_BYTES = 32 * 1024 * 1024
 MAX_RECEIPT_FOLDER_ENTRIES = 1000
 MAX_RECEIPT_FOLDER_JSON_FILES = 250
 MAX_RECEIPT_REVIEW_HISTORY = 100
+RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS = 180
 MAX_PROTECTED_RECEIPT_KEY_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
@@ -895,6 +896,8 @@ def receipt_folder_review_session_summary(details, reviewed_ids=None):
         "pending": 0,
         "action_required_pending": 0,
         "review_pending": 0,
+        "info_pending": 0,
+        "valid_pending": 0,
         "actionable_pending": 0,
     }
     for row in rows:
@@ -909,6 +912,10 @@ def receipt_folder_review_session_summary(details, reviewed_ids=None):
         elif level == "review":
             summary["review_pending"] += 1
             summary["actionable_pending"] += 1
+        elif level == "info":
+            summary["info_pending"] += 1
+        elif level == "good":
+            summary["valid_pending"] += 1
     return summary
 
 
@@ -2261,6 +2268,7 @@ class DownloadVerificationCenter(tk.Tk):
             "WM_DELETE_WINDOW",
             lambda: self.close_receipt_folder_review(window),
         )
+        window._vaultlink_search_after_id = None
         review_details = [
             dict(detail, review_id=index)
             for index, detail in enumerate(
@@ -2309,6 +2317,7 @@ class DownloadVerificationCenter(tk.Tk):
         hide_reviewed_var = tk.BooleanVar(value=False)
         visible_count_var = tk.StringVar()
         session_progress_var = tk.StringVar()
+        session_breakdown_var = tk.StringVar()
         triage_title_var = tk.StringVar(value="NO RESULT SELECTED")
         triage_meaning_var = tk.StringVar(
             value="Select a row to see its fixed local meaning."
@@ -2428,13 +2437,27 @@ class DownloadVerificationCenter(tk.Tk):
         item_status = {}
         item_review_ids = {}
 
+        def cancel_scheduled_search():
+            after_id = getattr(window, "_vaultlink_search_after_id", None)
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                window._vaultlink_search_after_id = None
+
         def clear_triage_panel():
             triage_title_var.set("NO RESULT SELECTED")
             triage_meaning_var.set("Select a row to see its fixed local meaning.")
             triage_action_var.set("Next safe step: no action selected.")
             review_action_var.set("MARK REVIEWED")
 
-        def refresh_review(_event=None):
+        def refresh_review(_event=None, preferred_review_id=None):
+            cancel_scheduled_search()
+            if preferred_review_id is None:
+                selected_items = table.selection()
+                if selected_items:
+                    preferred_review_id = item_review_ids.get(selected_items[0])
             rows = filter_receipt_folder_local_details(
                 review_details,
                 query=search_var.get(),
@@ -2469,10 +2492,18 @@ class DownloadVerificationCenter(tk.Tk):
             visible_count_var.set(f"{len(rows)} shown")
             session_progress_var.set(
                 f"{summary['reviewed']} of {summary['total_results']} reviewed | "
-                f"{summary['actionable_pending']} actionable remaining | "
-                f"{summary['action_required_pending']} Action Required"
+                f"{summary['pending']} pending"
+            )
+            session_breakdown_var.set(
+                "Pending by level: "
+                f"{summary['action_required_pending']} Action Required | "
+                f"{summary['review_pending']} Review | "
+                f"{summary['info_pending']} Info | "
+                f"{summary['valid_pending']} Valid"
             )
             clear_triage_panel()
+            if preferred_review_id is not None:
+                select_review_id(preferred_review_id)
 
         def show_selected_guidance(_event=None):
             selected_items = table.selection()
@@ -2525,8 +2556,7 @@ class DownloadVerificationCenter(tk.Tk):
                 reviewed_ids.add(review_id)
             review_history.append(review_id)
             del review_history[:-MAX_RECEIPT_REVIEW_HISTORY]
-            refresh_review()
-            select_review_id(review_id)
+            refresh_review(preferred_review_id=review_id)
 
         def undo_last_review_mark():
             if not review_history:
@@ -2543,8 +2573,7 @@ class DownloadVerificationCenter(tk.Tk):
                 reviewed_ids.remove(review_id)
             else:
                 reviewed_ids.add(review_id)
-            refresh_review()
-            select_review_id(review_id)
+            refresh_review(preferred_review_id=review_id)
 
         def reset_review_marks():
             reviewed_ids.clear()
@@ -2586,6 +2615,40 @@ class DownloadVerificationCenter(tk.Tk):
             table.see(target)
             show_selected_guidance()
 
+        def next_pending_item():
+            pending_items = [
+                item_id
+                for item_id in table.get_children()
+                if item_review_ids.get(item_id) not in reviewed_ids
+            ]
+            pending_items.sort(
+                key=lambda item_id: (
+                    FOLDER_REVIEW_TRIAGE_PRIORITY[
+                        FOLDER_REVIEW_TRIAGE[item_status[item_id]]["level"]
+                    ],
+                    table.index(item_id),
+                )
+            )
+            if not pending_items:
+                triage_title_var.set("NO PENDING ITEMS SHOWN")
+                triage_meaning_var.set(
+                    "Every result in the current search and filter is marked Reviewed."
+                )
+                triage_action_var.set(
+                    "Next safe step: reset review marks or change the search and filter if you need another pass."
+                )
+                return
+            selected_items = table.selection()
+            if selected_items and selected_items[0] in pending_items:
+                selected_index = pending_items.index(selected_items[0])
+                target = pending_items[(selected_index + 1) % len(pending_items)]
+            else:
+                target = pending_items[0]
+            table.selection_set(target)
+            table.focus(target)
+            table.see(target)
+            show_selected_guidance()
+
         def clear_filters():
             search_var.set("")
             filter_var.set("All results")
@@ -2593,7 +2656,18 @@ class DownloadVerificationCenter(tk.Tk):
             hide_reviewed_var.set(False)
             refresh_review()
 
-        search_entry.bind("<KeyRelease>", refresh_review)
+        def run_scheduled_search():
+            window._vaultlink_search_after_id = None
+            refresh_review()
+
+        def schedule_search_refresh(_event=None):
+            cancel_scheduled_search()
+            window._vaultlink_search_after_id = window.after(
+                RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS,
+                run_scheduled_search,
+            )
+
+        search_entry.bind("<KeyRelease>", schedule_search_refresh)
         filter_box.bind("<<ComboboxSelected>>", refresh_review)
         sort_box.bind("<<ComboboxSelected>>", refresh_review)
         table.bind("<<TreeviewSelect>>", show_selected_guidance)
@@ -2632,6 +2706,15 @@ class DownloadVerificationCenter(tk.Tk):
             bg=locker.PANEL,
             fg=locker.YELLOW,
             font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Label(
+            triage_panel,
+            textvariable=session_breakdown_var,
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 9),
+            wraplength=950,
+            justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 8))
         review_controls = tk.Frame(triage_panel, bg=locker.PANEL)
         review_controls.pack(fill="x", padx=12, pady=(0, 10))
@@ -2692,6 +2775,15 @@ class DownloadVerificationCenter(tk.Tk):
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="NEXT PENDING ITEM",
+            command=next_pending_item,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
             actions,
             textvariable=visible_count_var,
@@ -2714,6 +2806,10 @@ class DownloadVerificationCenter(tk.Tk):
         target = window or self.folder_review_window
         if target is not None:
             try:
+                after_id = getattr(target, "_vaultlink_search_after_id", None)
+                if after_id is not None:
+                    target.after_cancel(after_id)
+                    target._vaultlink_search_after_id = None
                 if target.winfo_exists():
                     target.destroy()
             except tk.TclError:

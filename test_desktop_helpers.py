@@ -748,6 +748,8 @@ class DesktopHelperTests(unittest.TestCase):
                     "pending": 2,
                     "action_required_pending": 1,
                     "review_pending": 0,
+                    "info_pending": 0,
+                    "valid_pending": 1,
                     "actionable_pending": 1,
                 },
             )
@@ -1042,10 +1044,14 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('value="MARK REVIEWED"', source)
         self.assertIn('text="UNDO LAST MARK"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
+        self.assertIn('text="NEXT PENDING ITEM"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
         self.assertIn('table.heading("session", text="Session")', source)
         self.assertIn("self.folder_review_window = None", source)
         self.assertIn("MAX_RECEIPT_REVIEW_HISTORY = 100", source)
+        self.assertIn("RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS = 180", source)
+        self.assertIn('search_entry.bind("<KeyRelease>", schedule_search_refresh)', source)
+        self.assertIn("session_breakdown_var", source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -1069,6 +1075,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("hide_reviewed_var", line)
             self.assertNotIn("review_history", line)
             self.assertNotIn("session_progress_var", line)
+            self.assertNotIn("session_breakdown_var", line)
+            self.assertNotIn("_vaultlink_search_after_id", line)
 
     def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
         with mock.patch.object(
@@ -1101,10 +1109,15 @@ class DesktopHelperTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(review_windows), 1)
 
+                first_window._vaultlink_search_after_id = first_window.after(
+                    60_000,
+                    lambda: None,
+                )
                 app.clear_receipt_folder_review(first_window)
                 app.update_idletasks()
                 self.assertEqual(app.folder_audit_local_details, [])
                 self.assertIsNone(app.folder_review_window)
+                self.assertIsNone(first_window._vaultlink_search_after_id)
                 self.assertFalse(first_window.winfo_exists())
             finally:
                 app.destroy()
