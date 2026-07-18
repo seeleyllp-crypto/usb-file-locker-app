@@ -981,6 +981,55 @@ def receipt_folder_review_session_summary(details, reviewed_ids=None):
     return summary
 
 
+def receipt_folder_review_summary_text(summary):
+    if not isinstance(summary, dict):
+        raise ValueError("Choose a recognized local receipt-review summary.")
+    required_keys = (
+        "total_results",
+        "reviewed",
+        "pending",
+        "action_required_pending",
+        "review_pending",
+        "info_pending",
+        "valid_pending",
+    )
+    counts = {}
+    for key in required_keys:
+        value = summary.get(key)
+        if type(value) is not int or not 0 <= value <= MAX_RECEIPT_FOLDER_ENTRIES:
+            raise ValueError("Local receipt-review summary counts are invalid.")
+        counts[key] = value
+    if counts["reviewed"] + counts["pending"] != counts["total_results"]:
+        raise ValueError("Local receipt-review summary totals are inconsistent.")
+    if (
+        counts["action_required_pending"]
+        + counts["review_pending"]
+        + counts["info_pending"]
+        + counts["valid_pending"]
+        != counts["pending"]
+    ):
+        raise ValueError("Local receipt-review pending counts are inconsistent.")
+    complete_percent = (
+        100
+        if counts["total_results"] == 0
+        else round(100 * counts["reviewed"] / counts["total_results"])
+    )
+    return "\n".join(
+        (
+            "VaultLink Local Receipt Review Summary",
+            f"Total results: {counts['total_results']}",
+            f"Reviewed: {counts['reviewed']}",
+            f"Pending: {counts['pending']}",
+            f"Complete: {complete_percent}%",
+            f"Action Required pending: {counts['action_required_pending']}",
+            f"Review pending: {counts['review_pending']}",
+            f"Info pending: {counts['info_pending']}",
+            f"Valid pending: {counts['valid_pending']}",
+            "Scope: aggregate temporary review marks only; no filenames, paths, hashes, or receipt contents.",
+        )
+    )
+
+
 def _audit_receipt_folder_core(path, include_local_details):
     selected = Path(path)
     if _is_link_or_junction(selected):
@@ -2556,6 +2605,30 @@ class DownloadVerificationCenter(tk.Tk):
             if copy_guidance_button is not None:
                 copy_guidance_button.configure(state="disabled")
 
+        def show_no_visible_results_state(summary=None):
+            if summary is None:
+                summary = receipt_folder_review_session_summary(
+                    review_details,
+                    reviewed_ids,
+                )
+            clear_triage_panel()
+            if summary["total_results"] and summary["pending"] == 0:
+                triage_title_var.set("REVIEW PASS COMPLETE")
+                triage_meaning_var.set(
+                    "Every local result in this temporary review session is marked Reviewed."
+                )
+                triage_action_var.set(
+                    "This checklist state does not change receipt integrity or prove a file is safe."
+                )
+            else:
+                triage_title_var.set("NO RESULTS SHOWN")
+                triage_meaning_var.set(
+                    "The current search and filters do not contain a visible result."
+                )
+                triage_action_var.set(
+                    "Next safe step: clear or adjust the search and filters."
+                )
+
         def refresh_review(_event=None, preferred_review_id=None):
             cancel_scheduled_search()
             if preferred_review_id is None:
@@ -2618,13 +2691,18 @@ class DownloadVerificationCenter(tk.Tk):
                 f"{summary['valid_pending']} Valid"
             )
             clear_triage_panel()
+            if not rows:
+                show_no_visible_results_state(summary)
             if preferred_review_id is not None:
                 select_review_id(preferred_review_id)
 
         def show_selected_guidance(_event=None):
             selected_items = table.selection()
             if not selected_items:
-                clear_triage_panel()
+                if table.get_children():
+                    clear_triage_panel()
+                else:
+                    show_no_visible_results_state()
                 return
             status = item_status.get(selected_items[0])
             if status not in FOLDER_REVIEW_TRIAGE:
@@ -2765,6 +2843,37 @@ class DownloadVerificationCenter(tk.Tk):
                     parent=window,
                 )
 
+        def copy_safe_summary():
+            try:
+                safe_text = receipt_folder_review_summary_text(
+                    receipt_folder_review_session_summary(
+                        review_details,
+                        reviewed_ids,
+                    )
+                )
+                window.clipboard_clear()
+                window.clipboard_append(safe_text)
+                window.update_idletasks()
+                triage_action_var.set(
+                    "Aggregate review summary copied without filenames, paths, hashes, or receipt contents."
+                )
+                locker.log_event(
+                    "download_verify_copy_review_summary",
+                    "local",
+                    "ok",
+                )
+            except Exception:
+                locker.log_event(
+                    "download_verify_copy_review_summary",
+                    "local",
+                    "failed",
+                )
+                messagebox.showerror(
+                    "Copy failed",
+                    "VaultLink could not copy the aggregate review summary.",
+                    parent=window,
+                )
+
         def undo_last_review_mark():
             if not review_history:
                 triage_title_var.set("NOTHING TO UNDO")
@@ -2869,6 +2978,18 @@ class DownloadVerificationCenter(tk.Tk):
         def previous_pending_item():
             cycle_pending_item(-1)
 
+        def focus_receipt_search(_event=None):
+            search_entry.focus_set()
+            search_entry.selection_range(0, tk.END)
+            return "break"
+
+        def shortcut(callback):
+            def handler(_event=None):
+                callback()
+                return "break"
+
+            return handler
+
         def clear_filters():
             search_var.set("")
             filter_var.set("All results")
@@ -2894,6 +3015,11 @@ class DownloadVerificationCenter(tk.Tk):
         sort_box.bind("<<ComboboxSelected>>", refresh_review)
         session_box.bind("<<ComboboxSelected>>", refresh_review)
         table.bind("<<TreeviewSelect>>", show_selected_guidance)
+        table.bind("<Return>", shortcut(toggle_selected_reviewed))
+        table.bind("<space>", shortcut(toggle_selected_reviewed))
+        window.bind("<Control-f>", focus_receipt_search)
+        window.bind("<F3>", shortcut(next_pending_item))
+        window.bind("<Shift-F3>", shortcut(previous_pending_item))
         refresh_review()
 
         triage_panel = tk.Frame(window, bg=locker.PANEL)
@@ -2954,8 +3080,12 @@ class DownloadVerificationCenter(tk.Tk):
         ).pack(anchor="w", padx=12, pady=(0, 8))
         review_controls = tk.Frame(triage_panel, bg=locker.PANEL)
         review_controls.pack(fill="x", padx=12, pady=(0, 10))
+        mark_controls = tk.Frame(review_controls, bg=locker.PANEL)
+        mark_controls.pack(fill="x")
+        copy_controls = tk.Frame(review_controls, bg=locker.PANEL)
+        copy_controls.pack(fill="x", pady=(8, 0))
         tk.Button(
-            review_controls,
+            mark_controls,
             textvariable=review_action_var,
             command=toggle_selected_reviewed,
             bg=locker.BLUE,
@@ -2964,7 +3094,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", ipadx=10, ipady=5)
         tk.Button(
-            review_controls,
+            mark_controls,
             text="MARK SHOWN REVIEWED",
             command=mark_shown_reviewed,
             bg="#252936",
@@ -2973,7 +3103,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         tk.Button(
-            review_controls,
+            mark_controls,
             text="MARK SHOWN PENDING",
             command=mark_shown_pending,
             bg="#252936",
@@ -2982,7 +3112,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         tk.Button(
-            review_controls,
+            mark_controls,
             text="UNDO LAST CHANGE",
             command=undo_last_review_mark,
             bg="#252936",
@@ -2991,7 +3121,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         copy_guidance_button = tk.Button(
-            review_controls,
+            copy_controls,
             text="COPY SAFE GUIDANCE",
             command=copy_selected_guidance,
             state="disabled",
@@ -3008,7 +3138,16 @@ class DownloadVerificationCenter(tk.Tk):
             ipady=5,
         )
         tk.Button(
-            review_controls,
+            copy_controls,
+            text="COPY SAFE SUMMARY",
+            command=copy_safe_summary,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        tk.Button(
+            mark_controls,
             text="RESET REVIEW MARKS",
             command=reset_review_marks,
             bg="#252936",

@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now includes a determinate completion progress bar from 0 to 100 percent.",
-    "The aggregate progress line also shows an exact integer completion percentage.",
-    "Selecting a row now shows its position within the current visible result set.",
-    "PREVIOUS PENDING navigates backward through unreviewed rows while NEXT PENDING ITEM continues forward.",
-    "Both pending directions honor the active filename, result, priority, and session-state filters.",
-    "COPY SAFE GUIDANCE copies only fixed priority, result, meaning, and next-step text.",
-    "Copied guidance never includes the receipt filename, path, hash, selected folder, or local report.",
-    "The copy action records only a coarse success or failure audit event and never records clipboard text.",
-    "All new controls fit the review window at its supported 880 by 650 minimum size.",
-    "Progress, position, navigation, and clipboard state remain local-only; the app never executes, uploads, or proves safety for receipts.",
-    "API 0.60.0 advertises progress, position, reverse navigation, and safe guidance copy without receiving local review data.",
+    "COPY SAFE SUMMARY copies aggregate review totals, completion percentage, and four fixed pending-level counts.",
+    "The summary formatter rejects missing, non-numeric, out-of-range, or inconsistent counts.",
+    "Safe summaries contain no filenames, paths, hashes, timestamps, selected folders, receipt contents, or free-form text.",
+    "Summary copy records only a coarse success or failure audit event and never records clipboard contents.",
+    "An unmatched search or filter now shows a clear NO RESULTS SHOWN state with a safe next step.",
+    "A fully reviewed queue now shows REVIEW PASS COMPLETE without implying integrity, malware detection, or file safety.",
+    "The completion state survives the Treeview selection event emitted when its last visible pending row disappears.",
+    "Ctrl+F focuses and selects the receipt search field for faster review.",
+    "F3 and Shift+F3 navigate forward and backward through the filtered pending queue.",
+    "Enter or Space toggles the selected row's temporary review mark.",
+    "API 0.61.0 advertises aggregate safe summary, keyboard review controls, and stable empty and complete states without local data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

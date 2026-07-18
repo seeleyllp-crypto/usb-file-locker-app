@@ -862,6 +862,34 @@ class DesktopHelperTests(unittest.TestCase):
                 },
             )
             self.assertNotIn("private-", json.dumps(session_summary))
+            safe_summary_text = (
+                download_verification_center.receipt_folder_review_summary_text(
+                    session_summary
+                )
+            )
+            self.assertIn("VaultLink Local Receipt Review Summary", safe_summary_text)
+            self.assertIn("Total results: 3", safe_summary_text)
+            self.assertIn("Reviewed: 1", safe_summary_text)
+            self.assertIn("Pending: 2", safe_summary_text)
+            self.assertIn("Complete: 33%", safe_summary_text)
+            self.assertNotIn("private-", safe_summary_text)
+            self.assertNotIn(str(root), safe_summary_text)
+            with self.assertRaisesRegex(ValueError, "summary"):
+                download_verification_center.receipt_folder_review_summary_text(
+                    "private-invalid-summary"
+                )
+            with self.assertRaisesRegex(ValueError, "counts"):
+                download_verification_center.receipt_folder_review_summary_text(
+                    dict(session_summary, reviewed="private-invalid-count")
+                )
+            with self.assertRaisesRegex(ValueError, "totals"):
+                download_verification_center.receipt_folder_review_summary_text(
+                    dict(session_summary, total_results=4)
+                )
+            with self.assertRaisesRegex(ValueError, "pending counts"):
+                download_verification_center.receipt_folder_review_summary_text(
+                    dict(session_summary, info_pending=1)
+                )
             self.assertEqual(
                 [
                     item["name"]
@@ -1175,6 +1203,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="MARK SHOWN PENDING"', source)
         self.assertIn('text="UNDO LAST CHANGE"', source)
         self.assertIn('text="COPY SAFE GUIDANCE"', source)
+        self.assertIn('text="COPY SAFE SUMMARY"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('text="NEXT PENDING ITEM"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
@@ -1187,7 +1216,15 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("review_percent_var", source)
         self.assertIn("selection_position_var", source)
         self.assertIn("download_verify_copy_review_guidance", source)
+        self.assertIn("download_verify_copy_review_summary", source)
         self.assertIn("ttk.Progressbar(", source)
+        self.assertIn('table.bind("<Return>", shortcut(toggle_selected_reviewed))', source)
+        self.assertIn('table.bind("<space>", shortcut(toggle_selected_reviewed))', source)
+        self.assertIn('window.bind("<Control-f>", focus_receipt_search)', source)
+        self.assertIn('window.bind("<F3>", shortcut(next_pending_item))', source)
+        self.assertIn('window.bind("<Shift-F3>", shortcut(previous_pending_item))', source)
+        self.assertIn('triage_title_var.set("REVIEW PASS COMPLETE")', source)
+        self.assertIn('triage_title_var.set("NO RESULTS SHOWN")', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -1201,8 +1238,9 @@ class DesktopHelperTests(unittest.TestCase):
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "log_event"
         ]
-        self.assertEqual(len(audit_calls), 23)
+        self.assertEqual(len(audit_calls), 25)
         copy_guidance_calls = 0
+        copy_summary_calls = 0
         for call in audit_calls:
             call_source = ast.get_source_segment(source, call) or ""
             if (
@@ -1211,6 +1249,12 @@ class DesktopHelperTests(unittest.TestCase):
                 and call.args[0].value == "download_verify_copy_review_guidance"
             ):
                 copy_guidance_calls += 1
+            if (
+                call.args
+                and isinstance(call.args[0], ast.Constant)
+                and call.args[0].value == "download_verify_copy_review_summary"
+            ):
+                copy_summary_calls += 1
             for private_term in (
                 "path_text",
                 "prior",
@@ -1240,6 +1284,7 @@ class DesktopHelperTests(unittest.TestCase):
             ):
                 self.assertNotIn(private_term, call_source)
         self.assertEqual(copy_guidance_calls, 2)
+        self.assertEqual(copy_summary_calls, 2)
 
     def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
         with mock.patch.object(

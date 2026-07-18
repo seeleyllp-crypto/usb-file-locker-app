@@ -16,6 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.18.12` adds `COPY SAFE SUMMARY` for aggregate review totals, completion percentage, and the four fixed pending-level counts. The formatter rejects missing, non-numeric, out-of-range, or inconsistent values. Its output contains no filenames, paths, hashes, timestamps, selected folders, receipt contents, or free-form text.
+
+Unmatched searches and filters now show `NO RESULTS SHOWN`; a fully reviewed queue shows `REVIEW PASS COMPLETE` without claiming integrity, malware detection, or file safety. A Treeview selection-event race that could overwrite the completion state after the last pending row disappeared is fixed.
+
+Keyboard review is faster: Ctrl+F focuses search, F3 and Shift+F3 move forward and backward through pending rows, and Enter or Space toggles the selected temporary mark. API `0.61.0` advertises these controls without receiving local review or clipboard data.
+
 Release `2026.07.18.11` adds a determinate review-completion bar, an exact completion percentage, and the selected row's position within the current visible results. `PREVIOUS PENDING` navigates backward while `NEXT PENDING ITEM` continues forward, with both directions honoring every active search and filter.
 
 `COPY SAFE GUIDANCE` copies only the selected result's fixed priority, result label, meaning, and next safe step. It never copies the receipt filename, path, hash, folder, or local report. Its audit record contains only the fixed action name plus success or failure, never clipboard text.
