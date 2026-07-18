@@ -649,6 +649,42 @@ class DesktopHelperTests(unittest.TestCase):
                 local_details
             )
             self.assertEqual(len(all_rows), len(local_details))
+            session_rows = [
+                {
+                    "name": item["name"],
+                    "status": item["status"],
+                    "review_id": index,
+                }
+                for index, item in enumerate(all_rows)
+            ]
+            marked_rows = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    reviewed_ids={0, 2, "private-filename.json"},
+                )
+            )
+            self.assertTrue(marked_rows[0]["reviewed"])
+            self.assertFalse(marked_rows[1]["reviewed"])
+            self.assertTrue(marked_rows[2]["reviewed"])
+            self.assertEqual(
+                len(
+                    download_verification_center.filter_receipt_folder_local_details(
+                        session_rows,
+                        reviewed_ids={0, 2},
+                        hide_reviewed=True,
+                    )
+                ),
+                len(session_rows) - 2,
+            )
+            self.assertNotIn(
+                "private-filename.json",
+                json.dumps(marked_rows),
+            )
+            with self.assertRaisesRegex(ValueError, "visibility"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    hide_reviewed="private-invalid-mode",
+                )
             self.assertEqual(
                 [
                     item["name"]
@@ -935,7 +971,11 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('"Priority then filename": "priority"', source)
         self.assertIn('text="CLEAR FILTERS"', source)
         self.assertIn('text="NEXT REVIEW ITEM"', source)
+        self.assertIn('text="HIDE REVIEWED"', source)
+        self.assertIn('value="MARK REVIEWED"', source)
+        self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
+        self.assertIn('table.heading("session", text="Session")', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -954,6 +994,9 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("folder_audit_local_details", line)
             self.assertNotIn("item_status", line)
             self.assertNotIn("triage_", line)
+            self.assertNotIn("reviewed_ids", line)
+            self.assertNotIn("item_review_ids", line)
+            self.assertNotIn("hide_reviewed_var", line)
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(

@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now assigns fixed Action Required, Review, Info, or Valid triage levels to all eleven results.",
-    "A selected row shows a fixed meaning and a safe next step without making a malware verdict.",
-    "The new Needs Review filter shows only Action Required and Review results.",
-    "Priority sorting places Action Required items before Review, Info, and Valid results.",
-    "NEXT REVIEW ITEM cycles Action Required rows first, followed by Review rows.",
-    "Fixed row colors make local priority levels easier to scan without changing any result.",
-    "Triage meanings and next steps are fixed app text and never include receipt filenames.",
-    "Selections, navigation, triage state, searches, filters, sorting, and filenames are never logged, exported, persisted, or sent to the API.",
+    "Local Receipt Review now includes a temporary review-session checklist for every displayed result.",
+    "MARK REVIEWED and MARK UNREVIEWED change only a bounded numeric session ID, never a filename or file hash.",
+    "HIDE REVIEWED removes completed rows from the current window without deleting the underlying local list.",
+    "The visible counter now shows displayed rows and total session progress.",
+    "RESET REVIEW MARKS restores every row to Pending without rerunning the folder audit.",
+    "NEXT REVIEW ITEM skips completed rows while continuing to place Action Required results first.",
+    "Reviewed rows use a fixed muted state while pending rows retain their triage colors.",
+    "Review marks disappear when the review window closes and are never logged, exported, persisted, or sent to the API.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
     "The app still does not execute receipts, upload data, rescan original downloads, identify malware, or prove that any file is safe.",
-    "API 0.54.0 advertises local triage controls without receiving filenames, selections, navigation, guidance, or results.",
+    "API 0.55.0 advertises review-session controls without receiving filenames, marks, progress, selections, or results.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
