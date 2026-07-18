@@ -18,6 +18,21 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.17.7 adds Download Verification Center.
+- A customer chooses one ordinary file up to 8 GB. The app calculates SHA-256
+  in chunks, compares an optional expected hash, and asks Windows to inspect
+  the Authenticode signature without running the file.
+- Links are rejected. Verification stops if the selected file changes while
+  it is being hashed or inspected.
+- SCAN WITH DEFENDER is separate and explicit. It uses a custom Microsoft
+  Defender file scan with remediation disabled, no exclusions, and no shell.
+- A matching hash, valid signature, or Defender no-threat result does not
+  guarantee that a file is safe.
+- Privacy-safe receipts omit filename, path, Windows username, file contents,
+  and raw Defender output. No selected file or receipt is uploaded automatically.
+- Open it from Main Locker, Customer Hub, Apps Hub, Local Control, or
+  Run Download Verification Center.bat.
+- API 0.46.0 publishes the companion and only its fixed audit action names.
 - Version 2026.07.17.6 adds Support Redactor for cleaning copied errors and logs
   before a customer shares them with support.
 - It removes common license and receipt tokens, passwords and PINs, auth tokens,

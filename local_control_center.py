@@ -154,6 +154,12 @@ CONTROL_ACTIONS = {
         "category": "Privacy",
         "summary": "Remove common secrets and personal details from explicitly pasted or opened support text.",
     },
+    "download_verification": {
+        "label": "Download Verification Center",
+        "script": "download_verification_center.py",
+        "category": "Core",
+        "summary": "Calculate SHA-256, compare an expected hash, inspect the Windows signature, and explicitly scan one selected file with Defender.",
+    },
     "breach_guard": {
         "label": "Global Breach Guard",
         "script": "global_breach_guard.py",

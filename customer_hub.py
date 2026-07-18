@@ -380,6 +380,7 @@ class CustomerHub(tk.Tk):
         self.refresh_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=7)
         tk.Button(controls, text="MAIN LOCKER", command=self.open_main_locker, bg="#252936", fg=locker.TEXT, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", ipadx=10, ipady=7)
         tk.Button(controls, text="SUPPORT REDACTOR", command=self.open_support_redactor, bg=locker.GREEN, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", padx=(0, 8), ipadx=10, ipady=7)
+        tk.Button(controls, text="VERIFY DOWNLOAD", command=self.open_download_verification_center, bg=locker.BLUE, fg=locker.BLACK, relief="flat", font=("Segoe UI", 9, "bold")).pack(side="right", padx=(0, 8), ipadx=10, ipady=7)
 
         links = tk.Frame(outer, bg=locker.BG)
         links.pack(fill="x", pady=(8, 0))
@@ -912,6 +913,13 @@ class CustomerHub(tk.Tk):
             self.status_var.set("Opened the local Support Redactor.")
         except Exception as exc:
             messagebox.showerror("Could not open Support Redactor", str(exc), parent=self)
+
+    def open_download_verification_center(self):
+        try:
+            locker.launch_companion_script("download_verification_center.py")
+            self.status_var.set("Opened the local Download Verification Center.")
+        except Exception as exc:
+            messagebox.showerror("Could not open Download Verification Center", str(exc), parent=self)
 
 
 if __name__ == "__main__":

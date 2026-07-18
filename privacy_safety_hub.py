@@ -100,6 +100,7 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Security Maintenance", "Track fixed tasks, planning windows, priority coverage, snapshots, and verified local archives.", self.open_security_maintenance, 7, 2, locker.GREEN, locker.BLACK)
         self.app_card(apps, "Public Maintenance Planner", "Review fixed cadence horizons, coverage, and priorities with current-tab-only progress.", self.open_public_maintenance, 7, 3, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Support Redactor", "Remove common secrets and personal details from copied errors or logs locally before sharing.", self.open_support_redactor, 8, 0, locker.GREEN, locker.BLACK)
+        self.app_card(apps, "Download Verification", "Calculate SHA-256, compare an expected hash, inspect the Windows signature, and explicitly scan one file with Defender.", self.open_download_verification_center, 8, 1, locker.BLUE, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
@@ -312,6 +313,14 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Support Redactor.")
             messagebox.showerror("Could not open Support Redactor", str(exc))
+
+    def open_download_verification_center(self):
+        try:
+            locker.launch_companion_script("download_verification_center.py")
+            self.status.set("Opened Download Verification Center.")
+        except Exception as exc:
+            self.status.set("Could not open Download Verification Center.")
+            messagebox.showerror("Could not open Download Verification Center", str(exc))
 
     def open_global_breach_guard(self):
         try:

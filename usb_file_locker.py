@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.17.6"
+DESKTOP_APP_VERSION = "2026.07.17.7"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -5015,9 +5015,11 @@ class USBFileLocker(tk.Tk):
         tk.Label(support_privacy_row, text="PRIVACY BEFORE SUPPORT", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.support_redactor_button = tk.Button(support_privacy_row, text="SUPPORT REDACTOR", command=self.open_support_redactor, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.support_redactor_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        self.download_verification_button = tk.Button(support_privacy_row, text="VERIFY DOWNLOAD", command=self.open_download_verification_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.download_verification_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         tk.Label(
             support_privacy_row,
-            text="Remove common secrets and personal details from copied errors and logs locally before sharing.",
+            text="Clean support text or check a downloaded file's hash, signature, and optional Defender result locally.",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 8),
@@ -5858,6 +5860,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open Support Redactor.")
             log_event("support_redactor_open", "local", "failed")
             messagebox.showerror("Could not open Support Redactor", str(exc), parent=self)
+
+    def open_download_verification_center(self):
+        try:
+            launch_companion_script("download_verification_center.py")
+            self.status.set("Opened Download Verification Center.")
+            log_event("download_verify_open", "local", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Download Verification Center.")
+            log_event("download_verify_open", "local", "failed")
+            messagebox.showerror("Could not open Download Verification Center", str(exc), parent=self)
 
     def open_incident_response_center(self):
         try:

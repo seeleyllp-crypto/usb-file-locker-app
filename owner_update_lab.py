@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Support Redactor cleans copied error and log text locally before a customer shares it.",
-    "It removes common VaultLink secrets, authentication tokens, passwords, PINs, emails, and secret URL queries.",
-    "It also removes user identities in home paths, key filenames, machine IDs, IP and MAC addresses, phone numbers, US SSNs, and valid card numbers.",
-    "Ordinary error messages, line order, and non-secret version numbers remain visible for useful troubleshooting.",
-    "Customers can paste text or explicitly open a text-style file up to the fixed 5 MB safety limit.",
-    "Original files are never modified and no file, path, text, preview, or detected value is uploaded automatically.",
-    "Copy and save remain disabled until a redacted preview and category-count summary are ready.",
-    "A visible warning requires the customer to review the preview because automated redaction cannot guarantee every secret is found.",
-    "Audit records contain only fixed action names, UTC timestamps, anonymous event IDs, and success or failure.",
+    "Download Verification Center checks one customer-selected ordinary file up to 8 GB without executing or uploading it.",
+    "Chunked SHA-256 calculation can compare an optional expected 64-character hash.",
+    "Links are rejected and verification stops if the file changes during hashing or signature inspection.",
+    "Windows Authenticode inspection reports valid, unsigned, unsupported, or attention states plus the signer subject when available.",
+    "Microsoft Defender scanning is a separate explicit action with remediation disabled and no exclusions.",
+    "Defender is called through an argument list instead of a shell command, so selected filenames cannot inject commands.",
+    "The app never claims that a matching hash, valid signature, or no-threat scan proves a file is safe.",
+    "Privacy-safe receipts omit the filename, path, Windows username, contents, expected hash, and raw Defender output.",
+    "Fixed audit events record only the action, UTC time, anonymous event ID, and success or failure.",
     "The tool is available from Main Locker, Customer Hub, Apps Hub, same-PC Local Control, and its transparent launcher.",
-    "API 0.45.0 publishes companion metadata and accepts only the tool's fixed privacy-safe audit action names.",
+    "API 0.46.0 publishes companion metadata and accepts only seven fixed privacy-safe audit action names.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

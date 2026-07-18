@@ -20,6 +20,7 @@ import backup_verification_center
 import build_signed_update
 import customer_hub
 import diagnostics_center
+import download_verification_center
 import incident_response_center
 import license_issuer
 import local_control_center
@@ -144,6 +145,122 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("path_text", line)
             self.assertNotIn("source", line)
             self.assertNotIn("self.result", line)
+
+    def test_download_verifier_normalizes_and_compares_sha256(self):
+        expected = hashlib.sha256(b"download verification").hexdigest()
+        self.assertEqual(
+            download_verification_center.normalize_expected_sha256(f"SHA-256: {expected.upper()}"),
+            expected,
+        )
+        self.assertEqual(download_verification_center.normalize_expected_sha256(""), "")
+        with self.assertRaisesRegex(ValueError, "64 hexadecimal"):
+            download_verification_center.normalize_expected_sha256("not-a-hash")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "private customer filename.exe"
+            path.write_bytes(b"download verification")
+            with mock.patch.object(
+                download_verification_center,
+                "inspect_authenticode_signature",
+                return_value={
+                    "state": "unsigned",
+                    "status": "NotSigned",
+                    "label": "Not digitally signed",
+                    "status_message": "",
+                    "signer_subject": "",
+                    "signer_issuer": "",
+                },
+            ):
+                result = download_verification_center.verify_download(path, expected)
+            self.assertEqual(result["sha256"], expected)
+            self.assertEqual(result["hash_comparison"], "match")
+            receipt = download_verification_center.build_privacy_safe_receipt(result)
+            serialized = json.dumps(receipt)
+            self.assertNotIn(path.name, serialized)
+            self.assertNotIn(str(path), serialized)
+            self.assertEqual(receipt["sha256"], expected)
+            self.assertEqual(receipt["defender_state"], "not_run")
+            self.assertIn("does not guarantee", " ".join(receipt["limitations"]))
+
+    def test_download_verifier_detects_file_change_and_rejects_large_or_linked_input(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.bin"
+            path.write_bytes(b"fixed bytes")
+            identity = download_verification_center._file_identity(path)
+            changed = dict(identity, mtime_ns=identity["mtime_ns"] + 1)
+            with mock.patch.object(
+                download_verification_center,
+                "_file_identity",
+                side_effect=[identity, changed],
+            ):
+                with self.assertRaisesRegex(ValueError, "changed while"):
+                    download_verification_center.compute_file_sha256(path)
+            link = Path(folder) / "sample-link.bin"
+            try:
+                link.symlink_to(path)
+            except OSError:
+                link = None
+            if link is not None:
+                with self.assertRaisesRegex(ValueError, "Linked files"):
+                    download_verification_center.validate_selected_file(link)
+            with mock.patch.object(
+                download_verification_center,
+                "_file_identity",
+                return_value={
+                    "size": download_verification_center.MAX_FILE_BYTES + 1,
+                    "mtime_ns": 1,
+                    "inode": 1,
+                },
+            ):
+                with self.assertRaisesRegex(ValueError, "8 GB"):
+                    download_verification_center.validate_selected_file(path)
+
+    def test_download_verifier_uses_argument_safe_signature_and_defender_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "name with spaces and ' quote.exe"
+            path.write_bytes(b"safe test file")
+            identity = download_verification_center._file_identity(path)
+            signature_process = SimpleNamespace(
+                returncode=0,
+                stdout='{"Status":"Valid","StatusMessage":"OK","Subject":"CN=Publisher","Issuer":"CN=Issuer"}\n',
+                stderr="",
+            )
+            with mock.patch.object(
+                download_verification_center,
+                "_powershell_executable",
+                return_value=Path("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            ), mock.patch.object(
+                download_verification_center.subprocess,
+                "run",
+                return_value=signature_process,
+            ) as run:
+                signature = download_verification_center.inspect_authenticode_signature(path)
+            self.assertEqual(signature["state"], "valid")
+            signature_args = run.call_args.args[0]
+            self.assertIn("-EncodedCommand", signature_args)
+            self.assertNotIn(str(path), signature_args)
+            self.assertNotIn("shell", run.call_args.kwargs)
+
+            defender_process = SimpleNamespace(
+                returncode=0,
+                stdout="Scan finished. Found no threats.",
+                stderr="",
+            )
+            with mock.patch.object(
+                download_verification_center,
+                "defender_executable",
+                return_value=Path("C:/ProgramData/Defender/MpCmdRun.exe"),
+            ), mock.patch.object(
+                download_verification_center.subprocess,
+                "run",
+                return_value=defender_process,
+            ) as run:
+                defender = download_verification_center.scan_file_with_defender(path)
+            self.assertEqual(defender["state"], "no_threats")
+            defender_args = run.call_args.args[0]
+            self.assertIn(str(path), defender_args)
+            self.assertIn("-DisableRemediation", defender_args)
+            self.assertNotIn("shell", run.call_args.kwargs)
+            self.assertEqual(identity, download_verification_center._file_identity(path))
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(
@@ -290,14 +407,14 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 25)
+        self.assertEqual(len(launchers), 26)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 54)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 54)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 56)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 56)
         self.assertIn("security_maintenance_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Security Maintenance Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("storage_retention_center.py", build_signed_update.PACKAGE_FILES)
@@ -314,6 +431,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Run Diagnostics Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("support_redactor.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Support Redactor.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("download_verification_center.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Download Verification Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("incident_response_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Incident Response Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("recovery_drill_center.py", build_signed_update.PACKAGE_FILES)
@@ -330,6 +449,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(backup_verification_center.BackupVerificationCenter, backup_verification_center.tk.Tk))
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
         self.assertTrue(issubclass(support_redactor.SupportRedactor, support_redactor.tk.Tk))
+        self.assertTrue(
+            issubclass(
+                download_verification_center.DownloadVerificationCenter,
+                download_verification_center.tk.Tk,
+            )
+        )
         self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
         self.assertTrue(issubclass(recovery_drill_center.RecoveryDrillCenter, recovery_drill_center.tk.Tk))
         self.assertTrue(issubclass(recovery_kit_builder.RecoveryKitBuilder, recovery_kit_builder.tk.Tk))
@@ -340,8 +465,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(storage_retention_center.StorageRetentionCenter, storage_retention_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 33)
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 22)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 34)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 23)
         self.assertIn("security_maintenance", local_control_center.CONTROL_ACTIONS)
         self.assertIn("storage_retention", local_control_center.CONTROL_ACTIONS)
         self.assertIn("data_control", local_control_center.CONTROL_ACTIONS)
@@ -384,9 +509,10 @@ class DesktopHelperTests(unittest.TestCase):
             "privacy_safety_hub.py",
             "text_log_processor.py",
             "support_redactor.py",
+            "download_verification_center.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 22)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 23)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -433,14 +559,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 22)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 23)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 22)
+        self.assertEqual(safe_report["session"]["apps_total"], 23)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -581,7 +707,7 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Recovery Kit Builder", unlocked_page)
             self.assertIn("Storage &amp; Retention Center", unlocked_page)
             self.assertIn("Security Maintenance Center", unlocked_page)
-            self.assertIn("22 / 22", unlocked_page)
+            self.assertIn("23 / 23", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -642,7 +768,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 22)
+            self.assertEqual(report["session"]["apps_total"], 23)
         finally:
             connection.close()
             server.shutdown()
