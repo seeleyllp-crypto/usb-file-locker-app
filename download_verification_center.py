@@ -24,6 +24,9 @@ import usb_file_locker as locker
 
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
 MAX_RECEIPT_BYTES = 256 * 1024
+MAX_RECEIPT_FOLDER_BYTES = 32 * 1024 * 1024
+MAX_RECEIPT_FOLDER_ENTRIES = 1000
+MAX_RECEIPT_FOLDER_JSON_FILES = 250
 MAX_PROTECTED_RECEIPT_KEY_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
@@ -461,10 +464,19 @@ def load_verification_receipt(path):
         raise ValueError("Linked receipt files are not accepted.")
     if not selected.is_file() or selected.suffix.lower() != ".json":
         raise ValueError("Choose one VaultLink JSON verification receipt.")
-    if selected.stat().st_size > MAX_RECEIPT_BYTES:
+    before = _file_identity(selected)
+    if before["size"] > MAX_RECEIPT_BYTES:
         raise ValueError("That receipt is larger than the 256 KB import limit.")
     try:
-        payload = json.loads(selected.read_text(encoding="utf-8"))
+        raw = selected.read_bytes()
+    except OSError as exc:
+        raise ValueError("The selected receipt could not be read.") from exc
+    if len(raw) > MAX_RECEIPT_BYTES:
+        raise ValueError("That receipt is larger than the 256 KB import limit.")
+    if before != _file_identity(selected):
+        raise ValueError("The selected receipt changed while it was being inspected.")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise ValueError("The selected receipt is not valid UTF-8 JSON.") from exc
     return normalize_verification_receipt(payload)
@@ -661,6 +673,124 @@ def receipt_inspection_summary(report):
         "The receipt path, filename, signer text, public key, unknown fields, and file contents are excluded.",
     ]
     return "\n".join(lines)
+
+
+def _is_link_or_junction(path):
+    selected = Path(path)
+    return selected.is_symlink() or (
+        hasattr(selected, "is_junction") and selected.is_junction()
+    )
+
+
+def audit_receipt_folder(path):
+    selected = Path(path)
+    if _is_link_or_junction(selected):
+        raise ValueError("Linked or junction receipt folders are not accepted.")
+    if not selected.is_dir():
+        raise ValueError("Choose one ordinary folder containing VaultLink receipts.")
+    counts = {
+        "entries_seen": 0,
+        "json_candidates": 0,
+        "receipts_inspected": 0,
+        "valid_this_profile": 0,
+        "valid_other_profile": 0,
+        "unsealed_legacy": 0,
+        "invalid_or_tampered": 0,
+        "links_or_junctions_skipped": 0,
+        "oversized_receipts_skipped": 0,
+        "other_entries_skipped": 0,
+    }
+    bytes_considered = 0
+    entry_limit_reached = False
+    candidate_limit_reached = False
+    byte_limit_reached = False
+    for child in selected.iterdir():
+        if counts["entries_seen"] >= MAX_RECEIPT_FOLDER_ENTRIES:
+            entry_limit_reached = True
+            break
+        counts["entries_seen"] += 1
+        try:
+            if _is_link_or_junction(child):
+                counts["links_or_junctions_skipped"] += 1
+                continue
+            if not child.is_file() or child.suffix.lower() != ".json":
+                counts["other_entries_skipped"] += 1
+                continue
+            if counts["json_candidates"] >= MAX_RECEIPT_FOLDER_JSON_FILES:
+                candidate_limit_reached = True
+                break
+            counts["json_candidates"] += 1
+            size = int(child.stat().st_size)
+            if size > MAX_RECEIPT_BYTES:
+                counts["oversized_receipts_skipped"] += 1
+                continue
+            if bytes_considered + size > MAX_RECEIPT_FOLDER_BYTES:
+                byte_limit_reached = True
+                break
+            bytes_considered += size
+            try:
+                receipt = load_verification_receipt(child)
+            except Exception:
+                counts["invalid_or_tampered"] += 1
+                continue
+            integrity_state = receipt.get("integrity_state")
+            if integrity_state not in INTEGRITY_LABELS:
+                counts["invalid_or_tampered"] += 1
+                continue
+            counts["receipts_inspected"] += 1
+            counts[integrity_state] += 1
+        except OSError:
+            counts["invalid_or_tampered"] += 1
+    return {
+        "schema_version": 1,
+        "report_type": "vaultlink-receipt-folder-audit",
+        "audited_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "scope": "selected_folder_top_level_only",
+        "limits": {
+            "maximum_top_level_entries": MAX_RECEIPT_FOLDER_ENTRIES,
+            "maximum_json_candidates": MAX_RECEIPT_FOLDER_JSON_FILES,
+            "maximum_cumulative_receipt_bytes": MAX_RECEIPT_FOLDER_BYTES,
+            "maximum_single_receipt_bytes": MAX_RECEIPT_BYTES,
+        },
+        "counts": counts,
+        "bytes_considered": bytes_considered,
+        "entry_limit_reached": entry_limit_reached,
+        "candidate_limit_reached": candidate_limit_reached,
+        "byte_limit_reached": byte_limit_reached,
+        "privacy_note": "This aggregate report excludes the selected folder path, receipt filenames, receipt contents, hashes, signer data, public keys, and validation error text.",
+        "limitations": [
+            "Only top-level JSON files in the explicitly selected folder are considered.",
+            "Invalid results may include malformed, unsupported, changed, or tampered receipts.",
+            "An unsealed legacy receipt may have been edited.",
+            "The audit does not rescan original downloads or prove that any file is safe.",
+            "The audit runs locally and is not uploaded automatically.",
+        ],
+    }
+
+
+def receipt_folder_audit_summary(report):
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    return "\n".join(
+        [
+            "VaultLink Receipt Folder Audit",
+            f"Audited: {report.get('audited_at_utc', 'unknown')}",
+            "Scope: selected folder top level only",
+            f"JSON candidates: {counts.get('json_candidates', 0)}",
+            f"Receipts inspected: {counts.get('receipts_inspected', 0)}",
+            f"Valid local seals: {counts.get('valid_this_profile', 0)}",
+            f"Valid external seals: {counts.get('valid_other_profile', 0)}",
+            f"Unsealed legacy receipts: {counts.get('unsealed_legacy', 0)}",
+            f"Invalid or tampered: {counts.get('invalid_or_tampered', 0)}",
+            f"Links or junctions skipped: {counts.get('links_or_junctions_skipped', 0)}",
+            f"Oversized receipts skipped: {counts.get('oversized_receipts_skipped', 0)}",
+            f"Entry limit reached: {'YES' if report.get('entry_limit_reached') else 'NO'}",
+            f"Candidate limit reached: {'YES' if report.get('candidate_limit_reached') else 'NO'}",
+            f"Byte limit reached: {'YES' if report.get('byte_limit_reached') else 'NO'}",
+            "",
+            "No folder path, receipt filename, receipt content, hash, signer data, public key, or validation error text is included.",
+            "This audit does not rescan original files or prove that they are safe.",
+        ]
+    )
 
 
 def _file_identity(path):
@@ -1149,14 +1279,15 @@ class DownloadVerificationCenter(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink Download Verification Center")
-        self.geometry("1120x940")
-        self.minsize(1050, 930)
+        self.geometry("1120x960")
+        self.minsize(1050, 950)
         self.configure(bg=locker.BG)
         self.selected_path = None
         self.result = None
         self.defender_result = None
         self.comparison_result = None
         self.inspection_result = None
+        self.folder_audit_result = None
         self.busy = False
         self.file_var = tk.StringVar(value="No file selected.")
         self.hash_var = tk.StringVar(value="Not calculated")
@@ -1169,6 +1300,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.defender_var = tk.StringVar(value="Not scanned")
         self.inspection_var = tk.StringVar(value="No receipt inspected")
         self.comparison_var = tk.StringVar(value="No prior receipt compared")
+        self.folder_audit_var = tk.StringVar(value="No receipt folder audited")
         self.status_var = tk.StringVar(
             value="Choose one downloaded file, or inspect an existing VaultLink receipt."
         )
@@ -1183,11 +1315,13 @@ class DownloadVerificationCenter(tk.Tk):
         self.copy_inspection_button = None
         self.compare_button = None
         self.export_comparison_button = None
+        self.folder_audit_button = None
+        self.export_folder_audit_button = None
         self.build_ui()
 
     def build_ui(self):
         outer = tk.Frame(self, bg=locker.BG)
-        outer.pack(fill="both", expand=True, padx=24, pady=22)
+        outer.pack(fill="both", expand=True, padx=24, pady=16)
 
         tk.Label(
             outer,
@@ -1373,6 +1507,43 @@ class DownloadVerificationCenter(tk.Tk):
         )
         self.export_comparison_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
 
+        folder_actions = tk.Frame(outer, bg=locker.BG)
+        folder_actions.pack(fill="x", pady=(0, 12))
+        self.folder_audit_button = tk.Button(
+            folder_actions,
+            text="AUDIT RECEIPT FOLDER",
+            command=self.start_receipt_folder_audit,
+            bg=locker.BLUE,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.folder_audit_button.pack(side="left", ipadx=12, ipady=7)
+        self.export_folder_audit_button = tk.Button(
+            folder_actions,
+            text="EXPORT FOLDER AUDIT",
+            command=self.export_receipt_folder_audit,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+        )
+        self.export_folder_audit_button.pack(
+            side="left",
+            padx=(8, 0),
+            ipadx=12,
+            ipady=7,
+        )
+        tk.Label(
+            folder_actions,
+            textvariable=self.folder_audit_var,
+            bg=locker.BG,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(12, 0))
+
         results = tk.Frame(outer, bg=locker.PANEL)
         results.pack(fill="both", expand=True)
         tk.Label(
@@ -1395,7 +1566,7 @@ class DownloadVerificationCenter(tk.Tk):
             ("RECEIPT COMPARISON", self.comparison_var),
         ):
             row = tk.Frame(results, bg=locker.PANEL)
-            row.pack(fill="x", padx=16, pady=5)
+            row.pack(fill="x", padx=16, pady=4)
             tk.Label(
                 row,
                 text=label,
@@ -1468,12 +1639,14 @@ class DownloadVerificationCenter(tk.Tk):
             self.verify_button.configure(state="disabled")
             self.defender_button.configure(state="disabled")
             self.inspect_receipt_button.configure(state="disabled")
+            self.folder_audit_button.configure(state="disabled")
         else:
             self.progress.stop()
             state = "normal" if self.selected_path else "disabled"
             self.verify_button.configure(state=state)
             self.defender_button.configure(state=state)
             self.inspect_receipt_button.configure(state="normal")
+            self.folder_audit_button.configure(state="normal")
         self.status_var.set(message)
 
     def start_verification(self):
@@ -1492,7 +1665,14 @@ class DownloadVerificationCenter(tk.Tk):
                 result = verify_download(selected, expected)
                 self.after(0, lambda: self.finish_verification(result))
             except Exception as exc:
-                self.after(0, lambda: self.finish_error("Verification failed", exc, "download_verify_run"))
+                self.after(
+                    0,
+                    lambda error=exc: self.finish_error(
+                        "Verification failed",
+                        error,
+                        "download_verify_run",
+                    ),
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1547,7 +1727,14 @@ class DownloadVerificationCenter(tk.Tk):
                 result = scan_file_with_defender(selected)
                 self.after(0, lambda: self.finish_defender_scan(result))
             except Exception as exc:
-                self.after(0, lambda: self.finish_error("Defender scan failed", exc, "download_verify_defender"))
+                self.after(
+                    0,
+                    lambda error=exc: self.finish_error(
+                        "Defender scan failed",
+                        error,
+                        "download_verify_defender",
+                    ),
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1652,6 +1839,97 @@ class DownloadVerificationCenter(tk.Tk):
             "Privacy-safe receipt inspection copied without its path or imported text."
         )
         locker.log_event("download_verify_copy_receipt_inspection", "local", "ok")
+
+    def start_receipt_folder_audit(self):
+        if self.busy:
+            return
+        path_text = filedialog.askdirectory(
+            parent=self,
+            title="Choose one folder containing VaultLink receipts",
+        )
+        if not path_text:
+            return
+        selected = Path(path_text)
+        self.set_busy(
+            True,
+            "Auditing bounded top-level JSON receipts locally without opening subfolders...",
+        )
+
+        def worker():
+            try:
+                report = audit_receipt_folder(selected)
+                self.after(0, lambda: self.finish_receipt_folder_audit(report))
+            except Exception as exc:
+                self.after(
+                    0,
+                    lambda error=exc: self.finish_receipt_folder_audit_error(error),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_receipt_folder_audit(self, report):
+        self.folder_audit_result = report
+        counts = report["counts"]
+        self.folder_audit_var.set(
+            f"{counts['receipts_inspected']} inspected | "
+            f"{counts['valid_this_profile']} local | "
+            f"{counts['valid_other_profile']} external | "
+            f"{counts['unsealed_legacy']} legacy | "
+            f"{counts['invalid_or_tampered']} invalid"
+        )
+        self.export_folder_audit_button.configure(state="normal")
+        self.set_busy(
+            False,
+            "Receipt folder audit finished. The folder path and receipt names were not recorded.",
+        )
+        locker.log_event("download_verify_audit_receipt_folder", "local", "ok")
+
+    def finish_receipt_folder_audit_error(self, error):
+        self.folder_audit_result = None
+        self.folder_audit_var.set("Receipt folder audit failed")
+        self.export_folder_audit_button.configure(state="disabled")
+        self.finish_error(
+            "Receipt folder audit failed",
+            error,
+            "download_verify_audit_receipt_folder",
+        )
+
+    def export_receipt_folder_audit(self):
+        if not self.folder_audit_result:
+            return
+        path_text = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export privacy-safe receipt folder audit",
+            defaultextension=".json",
+            initialfile="vaultlink-receipt-folder-audit.json",
+            filetypes=[("JSON file", "*.json")],
+        )
+        if not path_text:
+            return
+        try:
+            Path(path_text).write_text(
+                json.dumps(self.folder_audit_result, indent=2),
+                encoding="utf-8",
+            )
+            self.status_var.set(
+                "Aggregate receipt folder audit exported. Its destination was not recorded."
+            )
+            locker.log_event(
+                "download_verify_export_receipt_folder_audit",
+                "local",
+                "ok",
+            )
+        except Exception as exc:
+            locker.log_event(
+                "download_verify_export_receipt_folder_audit",
+                "local",
+                "failed",
+            )
+            messagebox.showerror(
+                "Could not export receipt folder audit",
+                str(exc),
+                parent=self,
+            )
 
     def compare_prior_receipt(self):
         if not self.result or self.busy:

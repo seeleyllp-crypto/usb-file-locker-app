@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Download Verification Center now inspects one explicitly selected receipt without requiring the original file.",
-    "Schema-two integrity seals are verified and damaged, missing, malformed, or edited seals fail closed.",
-    "Valid same-profile, valid other-profile, and unsealed legacy receipt states remain visibly distinct.",
-    "The customer can copy a fixed-field privacy-safe receipt inspection summary.",
-    "Inspection exports SHA-256 and fixed categories only, with bounded archive counts and fixed warning IDs.",
-    "Paths, filenames, unknown fields, signer text, signer fingerprints, integrity public keys, archive entry names, and file contents are excluded.",
-    "Arbitrary imported size, extension, type, and architecture text is converted to fixed safe categories.",
-    "Comparing a prior receipt also fills its standalone inspection result automatically.",
-    "Receipt import remains local, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
-    "Receipt inspection does not rescan the original file and does not prove that it is safe.",
-    "API 0.50.0 publishes two fixed receipt-inspection audit actions without receiving the receipt or report.",
+    "Download Verification Center now audits receipts in one explicitly selected folder.",
+    "The audit checks top-level JSON files only and never recurses into subfolders.",
+    "Work is capped at 1,000 top-level entries, 250 JSON candidates, and 32 MB of cumulative receipt data.",
+    "Results count valid local seals, valid external seals, unsealed legacy receipts, and invalid or tampered receipts.",
+    "The export contains aggregate counts only and excludes folder paths, receipt names, contents, hashes, signer data, public keys, and validation errors.",
+    "Links, junctions, subfolders, non-JSON entries, and receipts over 256 KB are skipped.",
+    "Each receipt is rejected if it changes while being read.",
+    "The bounded audit runs on a background thread so the customer interface remains responsive.",
+    "Limit-reached states and skipped-entry counts are disclosed in the report.",
+    "The audit does not execute files, upload data, rescan original downloads, or prove that any file is safe.",
+    "API 0.51.0 publishes two fixed folder-audit action names without receiving the folder or report.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

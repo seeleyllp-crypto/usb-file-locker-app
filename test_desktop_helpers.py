@@ -550,6 +550,112 @@ class DesktopHelperTests(unittest.TestCase):
                 {**normalized, "integrity_state": "invented"}
             )
 
+    def test_download_verifier_folder_audit_is_bounded_aggregate_and_non_recursive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in (
+                "private-local-receipt.json",
+                "private-external-receipt.JSON",
+                "private-legacy-receipt.json",
+                "private-invalid-receipt.json",
+            ):
+                (root / name).write_text("{}", encoding="utf-8")
+            oversized = root / "private-oversized-receipt.json"
+            oversized.write_bytes(
+                b"{" + (b" " * download_verification_center.MAX_RECEIPT_BYTES) + b"}"
+            )
+            (root / "private-note.txt").write_text("not a receipt", encoding="utf-8")
+            subfolder = root / "private-subfolder"
+            subfolder.mkdir()
+            (subfolder / "must-not-be-inspected.json").write_text("{}", encoding="utf-8")
+            linked = root / "private-linked-receipt.json"
+            try:
+                linked.symlink_to(root / "private-local-receipt.json")
+            except OSError:
+                linked = None
+
+            def fake_load(path):
+                name = Path(path).name.lower()
+                if "invalid" in name:
+                    raise ValueError("PRIVATE VALIDATION ERROR")
+                if "external" in name:
+                    return {"integrity_state": "valid_other_profile"}
+                if "legacy" in name:
+                    return {"integrity_state": "unsealed_legacy"}
+                return {"integrity_state": "valid_this_profile"}
+
+            with mock.patch.object(
+                download_verification_center,
+                "load_verification_receipt",
+                side_effect=fake_load,
+            ):
+                report = download_verification_center.audit_receipt_folder(root)
+            counts = report["counts"]
+            self.assertEqual(counts["json_candidates"], 5)
+            self.assertEqual(counts["receipts_inspected"], 3)
+            self.assertEqual(counts["valid_this_profile"], 1)
+            self.assertEqual(counts["valid_other_profile"], 1)
+            self.assertEqual(counts["unsealed_legacy"], 1)
+            self.assertEqual(counts["invalid_or_tampered"], 1)
+            self.assertEqual(counts["oversized_receipts_skipped"], 1)
+            self.assertEqual(counts["other_entries_skipped"], 2)
+            self.assertEqual(
+                counts["links_or_junctions_skipped"],
+                1 if linked is not None else 0,
+            )
+            self.assertEqual(report["scope"], "selected_folder_top_level_only")
+            self.assertFalse(report["entry_limit_reached"])
+            self.assertFalse(report["candidate_limit_reached"])
+            self.assertFalse(report["byte_limit_reached"])
+            serialized = json.dumps(report)
+            summary = download_verification_center.receipt_folder_audit_summary(report)
+            for private_value in (
+                str(root),
+                "private-local-receipt.json",
+                "private-external-receipt",
+                "private-subfolder",
+                "must-not-be-inspected",
+                "PRIVATE VALIDATION ERROR",
+            ):
+                self.assertNotIn(private_value, serialized)
+                self.assertNotIn(private_value, summary)
+
+            capped = root / "capped"
+            capped.mkdir()
+            for index in range(3):
+                (capped / f"receipt-{index}.json").write_text("{}", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    download_verification_center,
+                    "MAX_RECEIPT_FOLDER_JSON_FILES",
+                    2,
+                ),
+                mock.patch.object(
+                    download_verification_center,
+                    "load_verification_receipt",
+                    return_value={"integrity_state": "unsealed_legacy"},
+                ),
+            ):
+                capped_report = download_verification_center.audit_receipt_folder(capped)
+            self.assertEqual(capped_report["counts"]["json_candidates"], 2)
+            self.assertEqual(capped_report["counts"]["receipts_inspected"], 2)
+            self.assertTrue(capped_report["candidate_limit_reached"])
+
+            receipt = download_verification_center.build_privacy_safe_receipt(
+                *download_verification_fixture()
+            )
+            receipt_path = root / "changed-receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            identity = download_verification_center._file_identity(receipt_path)
+            changed = dict(identity, mtime_ns=identity["mtime_ns"] + 1)
+            with mock.patch.object(
+                download_verification_center,
+                "_file_identity",
+                side_effect=[identity, changed],
+            ):
+                with self.assertRaisesRegex(ValueError, "changed while"):
+                    download_verification_center.load_verification_receipt(receipt_path)
+
     def test_download_verifier_compares_only_fixed_receipt_signals(self):
         result, defender = download_verification_fixture()
         prior = download_verification_center.normalize_verification_receipt(
@@ -605,13 +711,15 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="EXPORT SEALED RECEIPT"', source)
         self.assertIn('text="INSPECT RECEIPT"', source)
         self.assertIn('text="COPY RECEIPT CHECK"', source)
+        self.assertIn('text="AUDIT RECEIPT FOLDER"', source)
+        self.assertIn('text="EXPORT FOLDER AUDIT"', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
         self.assertIn('("RECEIPT INSPECTION", self.inspection_var)', source)
         self.assertIn('("RECEIPT COMPARISON", self.comparison_var)', source)
         audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
-        self.assertEqual(len(audit_lines), 16)
+        self.assertEqual(len(audit_lines), 19)
         for line in audit_lines:
             self.assertNotIn("path_text", line)
             self.assertNotIn("prior", line)
