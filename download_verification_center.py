@@ -13,11 +13,18 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import zipfile
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+
 import usb_file_locker as locker
 
 
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
 MAX_RECEIPT_BYTES = 256 * 1024
+MAX_PROTECTED_RECEIPT_KEY_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
 SIGNATURE_TIMEOUT_SECONDS = 30
@@ -133,12 +140,22 @@ COMPARISON_LABELS = {
     "size_band_changed": "Coarse file-size band changed",
     "warning_ids_changed": "Structural warning set changed",
 }
+INTEGRITY_LABELS = {
+    "unsealed_legacy": "UNSEALED LEGACY RECEIPT",
+    "valid_other_profile": "VALID SEAL FROM ANOTHER WINDOWS PROFILE",
+    "valid_this_profile": "VALID LOCAL INTEGRITY SEAL",
+}
 RECEIPT_STRING_STATES = {
     "hash_comparison": {"match", "mismatch", "not_provided"},
     "signature_state": {"attention", "unknown", "unsigned", "valid"},
     "defender_state": {"attention", "inconclusive", "no_threats", "not_run"},
     "extension_header_match": {"match", "mismatch", "not_mapped"},
 }
+RECEIPT_SIGNING_KEY_FILE = locker.APP_DIR / "download_receipt_signing_key.dpapi"
+RECEIPT_SIGNING_ENTROPY = hashlib.sha256(
+    b"VaultLink-Download-Receipt-Integrity-Key-v1"
+).digest()
+RECEIPT_INTEGRITY_SCHEME = "ed25519-dpapi-local-v1"
 
 
 def normalize_expected_sha256(value):
@@ -215,11 +232,147 @@ def _normalized_warning_ids(values):
     return sorted(set(normalized))[:20]
 
 
+def _base64url_encode(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _base64url_decode(value, expected_bytes, label):
+    text = str(value or "").strip()
+    if not text or len(text) > 256 or not re.fullmatch(r"[A-Za-z0-9_-]+", text):
+        raise ValueError(f"The receipt integrity {label} is malformed.")
+    try:
+        raw = base64.urlsafe_b64decode(text + ("=" * (-len(text) % 4)))
+    except Exception as exc:
+        raise ValueError(f"The receipt integrity {label} is malformed.") from exc
+    if len(raw) != expected_bytes:
+        raise ValueError(f"The receipt integrity {label} has the wrong length.")
+    return raw
+
+
+def canonical_verification_receipt_bytes(payload):
+    canonical = dict(payload or {})
+    canonical.pop("integrity_seal", None)
+    return json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+
+def load_or_create_receipt_signing_key():
+    key_path = Path(RECEIPT_SIGNING_KEY_FILE)
+    if key_path.exists():
+        if key_path.is_symlink() or not key_path.is_file():
+            raise ValueError("The local receipt signing key is not a regular file.")
+        protected = key_path.read_bytes()
+        if not protected or len(protected) > MAX_PROTECTED_RECEIPT_KEY_BYTES:
+            raise ValueError("The local receipt signing key is damaged.")
+        try:
+            raw_private_key = locker.dpapi_unprotect(
+                protected,
+                RECEIPT_SIGNING_ENTROPY,
+            )
+            if len(raw_private_key) != 32:
+                raise ValueError("wrong key length")
+            return Ed25519PrivateKey.from_private_bytes(raw_private_key)
+        except Exception as exc:
+            raise ValueError(
+                "The local receipt signing key cannot be opened by this Windows user."
+            ) from exc
+
+    private_key = Ed25519PrivateKey.generate()
+    protected = locker.dpapi_protect(
+        private_key.private_bytes_raw(),
+        RECEIPT_SIGNING_ENTROPY,
+    )
+    if not protected or len(protected) > MAX_PROTECTED_RECEIPT_KEY_BYTES:
+        raise ValueError("Windows could not protect the local receipt signing key.")
+    locker.write_bytes_atomic(key_path, protected)
+    return private_key
+
+
+def receipt_signing_key_id(private_key=None):
+    key = private_key or load_or_create_receipt_signing_key()
+    public_raw = key.public_key().public_bytes_raw()
+    return hashlib.sha256(public_raw).hexdigest()[:16]
+
+
+def seal_verification_receipt(receipt):
+    if not isinstance(receipt, dict):
+        raise ValueError("A verification receipt is required.")
+    if receipt.get("schema_version") != 1:
+        raise ValueError("Only a new schema-one verification receipt can be sealed.")
+    sealed = dict(receipt)
+    sealed["schema_version"] = 2
+    sealed.pop("integrity_seal", None)
+    sealed["integrity_note"] = (
+        "The Ed25519 private key stays DPAPI-protected for this Windows user. "
+        "Only the public key and receipt signature are embedded."
+    )
+    limitations = list(sealed.get("limitations") or [])
+    limitations.extend(
+        [
+            "The local integrity seal detects receipt edits but is not a public code-signing certificate and does not prove the checked file is safe.",
+            "The stable random public key can show that receipts were sealed by the same local signing key.",
+        ]
+    )
+    sealed["limitations"] = limitations
+    private_key = load_or_create_receipt_signing_key()
+    public_raw = private_key.public_key().public_bytes_raw()
+    signature = private_key.sign(canonical_verification_receipt_bytes(sealed))
+    sealed["integrity_seal"] = {
+        "scheme": RECEIPT_INTEGRITY_SCHEME,
+        "key_id": hashlib.sha256(public_raw).hexdigest()[:16],
+        "public_key": _base64url_encode(public_raw),
+        "signature": _base64url_encode(signature),
+    }
+    return sealed
+
+
+def verify_verification_receipt_integrity(payload):
+    schema_version = payload.get("schema_version")
+    seal = payload.get("integrity_seal")
+    if schema_version == 1:
+        if seal is not None:
+            raise ValueError("A schema-one legacy receipt cannot contain an integrity seal.")
+        return {"state": "unsealed_legacy"}
+    if schema_version != 2:
+        raise ValueError("That receipt schema version is not supported.")
+    if not isinstance(seal, dict):
+        raise ValueError("This sealed receipt is missing its integrity seal.")
+    if seal.get("scheme") != RECEIPT_INTEGRITY_SCHEME:
+        raise ValueError("The receipt uses an unsupported integrity-seal scheme.")
+    public_raw = _base64url_decode(seal.get("public_key"), 32, "public key")
+    signature = _base64url_decode(seal.get("signature"), 64, "signature")
+    key_id = str(seal.get("key_id", "")).strip().lower()
+    expected_key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+    if not re.fullmatch(r"[0-9a-f]{16}", key_id) or key_id != expected_key_id:
+        raise ValueError("The receipt integrity key identifier does not match.")
+    try:
+        Ed25519PublicKey.from_public_bytes(public_raw).verify(
+            signature,
+            canonical_verification_receipt_bytes(payload),
+        )
+    except InvalidSignature as exc:
+        raise ValueError(
+            "The receipt integrity seal is invalid. The receipt may have been edited."
+        ) from exc
+    try:
+        local_key_match = key_id == receipt_signing_key_id()
+    except Exception:
+        local_key_match = False
+    return {
+        "state": "valid_this_profile" if local_key_match else "valid_other_profile",
+    }
+
+
 def normalize_verification_receipt(payload):
     if not isinstance(payload, dict):
         raise ValueError("The selected receipt must be a JSON object.")
-    if payload.get("schema_version") != 1 or payload.get("report_type") != "vaultlink-download-verification":
+    if payload.get("report_type") != "vaultlink-download-verification":
         raise ValueError("That is not a supported VaultLink download-verification receipt.")
+    integrity = verify_verification_receipt_integrity(payload)
     sha256 = str(payload.get("sha256", "")).strip().lower()
     if not SHA256_RE.fullmatch(sha256):
         raise ValueError("The receipt does not contain a valid calculated SHA-256.")
@@ -270,6 +423,7 @@ def normalize_verification_receipt(payload):
         "signature_state": signature_state,
         "signer_fingerprint": signer_fingerprint,
         "defender_state": defender_state,
+        "integrity_state": integrity["state"],
         "structure": {
             "detected_type": _clean_receipt_token(structure.get("detected_type"), "unknown", 80).lower(),
             "extension_header_match": match_state,
@@ -300,6 +454,9 @@ def compare_verification_receipt(result, defender, prior_receipt):
     prior = dict(prior_receipt or {})
     if not SHA256_RE.fullmatch(str(prior.get("sha256", ""))):
         raise ValueError("The prior receipt has not been safely normalized.")
+    prior_integrity = str(prior.get("integrity_state", "")).strip()
+    if prior_integrity not in INTEGRITY_LABELS:
+        raise ValueError("The prior receipt integrity state is not recognized.")
     changes = []
     if current["sha256"] != prior["sha256"]:
         changes.append("sha256_changed")
@@ -346,9 +503,10 @@ def compare_verification_receipt(result, defender, prior_receipt):
         "warning_ids_removed": sorted(prior_warnings - current_warnings),
         "current_sha256": current["sha256"],
         "prior_sha256": prior["sha256"],
-        "privacy_note": "Comparison contains fixed fields and hashes only. It excludes both receipt paths, filenames, file contents, signer text, and archive entry names.",
+        "prior_receipt_integrity": prior_integrity,
+        "privacy_note": "Comparison contains fixed fields and hashes only. It excludes both receipt paths, filenames, file contents, signer text, integrity public keys, and archive entry names.",
         "limitations": [
-            "A prior receipt can be edited and is not a signed security certificate.",
+            "A valid local integrity seal detects receipt edits but is not a public code-signing certificate.",
             "An exact fixed-field match does not prove a file is safe.",
             "Comparison runs locally and is not uploaded automatically.",
         ],
@@ -363,6 +521,7 @@ def comparison_summary(comparison):
         "VaultLink Verification Receipt Comparison",
         f"Result: {verdict}",
         f"Same calculated SHA-256: {'YES' if comparison.get('same_sha256') else 'NO'}",
+        f"Prior receipt integrity: {INTEGRITY_LABELS.get(comparison.get('prior_receipt_integrity'), 'UNKNOWN')}",
         f"Changed fixed fields: {len(change_ids)}",
     ]
     for change_id in change_ids:
@@ -372,7 +531,7 @@ def comparison_summary(comparison):
     lines.extend(
         [
             "",
-            "The prior receipt may have been edited and is not a signed security certificate.",
+            "A valid integrity seal detects receipt edits but is not a public code-signing certificate.",
             "An exact comparison does not prove a file is safe.",
         ]
     )
@@ -1013,7 +1172,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.copy_summary_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=8)
         self.export_button = tk.Button(
             actions,
-            text="EXPORT RECEIPT",
+            text="EXPORT SEALED RECEIPT",
             command=self.export_receipt,
             bg=locker.YELLOW,
             fg=locker.BLACK,
@@ -1058,7 +1217,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.export_comparison_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
         tk.Label(
             comparison_actions,
-            text="Prior receipts are sanitized locally and are not treated as signed certificates.",
+            text="Prior receipts are sanitized locally; integrity seals detect edits but are not public certificates.",
             bg=locker.BG,
             fg=locker.MUTED,
             font=("Segoe UI", 8),
@@ -1286,9 +1445,13 @@ class DownloadVerificationCenter(tk.Tk):
         if not path_text:
             return
         try:
-            receipt = build_privacy_safe_receipt(self.result, self.defender_result)
+            receipt = seal_verification_receipt(
+                build_privacy_safe_receipt(self.result, self.defender_result)
+            )
             Path(path_text).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-            self.status_var.set("Verification receipt exported. Its destination was not recorded.")
+            self.status_var.set(
+                "Locally sealed verification receipt exported. Its destination was not recorded."
+            )
             locker.log_event("download_verify_export", "local", "ok")
         except Exception as exc:
             locker.log_event("download_verify_export", "local", "failed")
@@ -1312,8 +1475,12 @@ class DownloadVerificationCenter(tk.Tk):
                 prior,
             )
             verdict = self.comparison_result["verdict"].replace("_", " ").upper()
+            integrity = INTEGRITY_LABELS[
+                self.comparison_result["prior_receipt_integrity"]
+            ]
             self.comparison_var.set(
-                f"{verdict} | {self.comparison_result['change_count']} fixed field change(s)"
+                f"{verdict} | {integrity} | "
+                f"{self.comparison_result['change_count']} fixed field change(s)"
             )
             self.export_comparison_button.configure(state="normal")
             self.status_var.set("Prior receipt compared locally. Its path and unknown fields were discarded.")

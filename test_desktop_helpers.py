@@ -384,6 +384,7 @@ class DesktopHelperTests(unittest.TestCase):
             loaded = download_verification_center.load_verification_receipt(receipt_path)
             serialized = json.dumps(loaded)
             self.assertEqual(loaded["sha256"], result["sha256"])
+            self.assertEqual(loaded["integrity_state"], "unsealed_legacy")
             self.assertEqual(
                 loaded["signer_fingerprint"],
                 hashlib.sha256(b"CN=Fixture Publisher").hexdigest(),
@@ -436,6 +437,82 @@ class DesktopHelperTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Linked receipt"):
                     download_verification_center.load_verification_receipt(linked)
 
+    def test_download_verifier_seals_receipts_and_rejects_tampering(self):
+        result, defender = download_verification_fixture()
+        receipt = download_verification_center.build_privacy_safe_receipt(result, defender)
+
+        def protect(value, _entropy):
+            return b"TEST-DPAPI:" + bytes(byte ^ 0xA5 for byte in value)
+
+        def unprotect(value, _entropy):
+            self.assertTrue(value.startswith(b"TEST-DPAPI:"))
+            return bytes(byte ^ 0xA5 for byte in value[len(b"TEST-DPAPI:"):])
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            key_path = root / "receipt-key.dpapi"
+            receipt_path = root / "sealed-receipt.json"
+            with (
+                mock.patch.object(
+                    download_verification_center,
+                    "RECEIPT_SIGNING_KEY_FILE",
+                    key_path,
+                ),
+                mock.patch.object(download_verification_center.locker, "dpapi_protect", side_effect=protect),
+                mock.patch.object(download_verification_center.locker, "dpapi_unprotect", side_effect=unprotect),
+            ):
+                sealed = download_verification_center.seal_verification_receipt(receipt)
+                receipt_path.write_text(json.dumps(sealed), encoding="utf-8")
+                loaded = download_verification_center.load_verification_receipt(receipt_path)
+                second = download_verification_center.seal_verification_receipt(receipt)
+
+                self.assertEqual(sealed["schema_version"], 2)
+                self.assertEqual(loaded["integrity_state"], "valid_this_profile")
+                self.assertEqual(
+                    sealed["integrity_seal"]["key_id"],
+                    second["integrity_seal"]["key_id"],
+                )
+                protected_key = key_path.read_bytes()
+                self.assertNotIn(unprotect(protected_key, None), protected_key)
+                self.assertNotIn("private_key", json.dumps(sealed).lower())
+                self.assertIn("public key", sealed["integrity_note"])
+                self.assertTrue(
+                    any("same local signing key" in item for item in sealed["limitations"])
+                )
+
+                tampered = json.loads(json.dumps(sealed))
+                tampered["defender_state"] = "attention"
+                receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "may have been edited"):
+                    download_verification_center.load_verification_receipt(receipt_path)
+
+                missing_seal = dict(sealed)
+                missing_seal.pop("integrity_seal")
+                receipt_path.write_text(json.dumps(missing_seal), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "missing its integrity seal"):
+                    download_verification_center.load_verification_receipt(receipt_path)
+
+                malformed = json.loads(json.dumps(sealed))
+                malformed["integrity_seal"]["public_key"] = "bad"
+                receipt_path.write_text(json.dumps(malformed), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "wrong length"):
+                    download_verification_center.load_verification_receipt(receipt_path)
+
+            other_key_path = root / "other-profile-key.dpapi"
+            sealed_path = root / "valid-other-profile.json"
+            sealed_path.write_text(json.dumps(sealed), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    download_verification_center,
+                    "RECEIPT_SIGNING_KEY_FILE",
+                    other_key_path,
+                ),
+                mock.patch.object(download_verification_center.locker, "dpapi_protect", side_effect=protect),
+                mock.patch.object(download_verification_center.locker, "dpapi_unprotect", side_effect=unprotect),
+            ):
+                external = download_verification_center.load_verification_receipt(sealed_path)
+            self.assertEqual(external["integrity_state"], "valid_other_profile")
+
     def test_download_verifier_compares_only_fixed_receipt_signals(self):
         result, defender = download_verification_fixture()
         prior = download_verification_center.normalize_verification_receipt(
@@ -482,11 +559,13 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("signer_subject", exported)
         self.assertNotIn("private-customer-name.exe", exported)
         self.assertNotIn(r"C:\Users\Private", exported)
-        self.assertIn("not a signed security certificate", signal_change["limitations"][0])
+        self.assertIn("not a public code-signing certificate", signal_change["limitations"][0])
+        self.assertEqual(signal_change["prior_receipt_integrity"], "unsealed_legacy")
         self.assertIn("VaultLink Verification Receipt Comparison", download_verification_center.verification_summary(result, defender, exact))
 
     def test_download_verifier_receipt_comparison_ui_and_audit_are_privacy_safe(self):
         source = Path(download_verification_center.__file__).read_text(encoding="utf-8")
+        self.assertIn('text="EXPORT SEALED RECEIPT"', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)

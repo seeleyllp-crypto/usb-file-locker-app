@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Download Verification Center can compare the current result with one explicitly selected prior VaultLink receipt.",
-    "Prior receipt import is local-only, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
-    "Unknown receipt fields are discarded and signer text is converted to a one-way fingerprint before comparison.",
-    "Comparison exports contain hashes, fixed change IDs, and fixed warning IDs but no paths, filenames, contents, signer text, or archive entry names.",
-    "Results distinguish different file bytes, unchanged bytes with changed signals, and an exact fixed-field match.",
-    "Prior receipts are editable and are not signed security certificates; an exact match does not prove a file is safe.",
-    "Bounded header review detects common formats, compares extensions, and reads PE architecture without loading executable code.",
-    "ZIP review reads at most 10,000 central-directory records and never extracts or opens entries.",
-    "Fixed structural and aggregate ZIP warnings contain no archive entry names or file contents.",
-    "Chunked SHA-256, expected-hash comparison, Authenticode inspection, and explicit Defender scanning remain local.",
-    "API 0.48.0 publishes receipt-comparison metadata and two fixed audit action names without receiving either receipt.",
+    "Exported Download Verification Center receipts now carry a local Ed25519 integrity seal.",
+    "The private signing key remains DPAPI-protected for the current Windows user under preserved local app data.",
+    "Only a random public key and receipt signature are embedded; no private signing key is exported.",
+    "Schema-two receipts fail closed when the seal is missing, malformed, or invalid.",
+    "Imports label valid same-profile seals, valid other-profile seals, and unsealed legacy receipts separately.",
+    "A stable random public key can correlate receipts from the same local signing key and this limitation is disclosed.",
+    "Integrity seals detect receipt edits but are not public code-signing certificates and do not prove a checked file is safe.",
+    "Prior receipt comparison remains local, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
+    "Unknown fields, paths, filenames, contents, signer text, integrity public keys, and archive entry names are excluded from comparison exports.",
+    "Chunked SHA-256, bounded structure review, Authenticode inspection, and explicit Defender scanning remain local.",
+    "API 0.49.0 publishes local receipt-integrity metadata without receiving files, receipts, keys, or comparison output.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
