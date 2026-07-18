@@ -589,7 +589,11 @@ class DesktopHelperTests(unittest.TestCase):
                 "load_verification_receipt",
                 side_effect=fake_load,
             ):
-                report = download_verification_center.audit_receipt_folder(root)
+                report, local_details = (
+                    download_verification_center.audit_receipt_folder_with_local_details(
+                        root
+                    )
+                )
             counts = report["counts"]
             self.assertEqual(counts["json_candidates"], 5)
             self.assertEqual(counts["receipts_inspected"], 3)
@@ -607,6 +611,40 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertFalse(report["entry_limit_reached"])
             self.assertFalse(report["candidate_limit_reached"])
             self.assertFalse(report["byte_limit_reached"])
+            local_map = {
+                item["name"]: item["status"]
+                for item in local_details
+            }
+            self.assertEqual(
+                local_map["private-local-receipt.json"],
+                "valid_this_profile",
+            )
+            self.assertEqual(
+                local_map["private-external-receipt.JSON"],
+                "valid_other_profile",
+            )
+            self.assertEqual(
+                local_map["private-legacy-receipt.json"],
+                "unsealed_legacy",
+            )
+            self.assertEqual(
+                local_map["private-invalid-receipt.json"],
+                "invalid_or_tampered",
+            )
+            self.assertEqual(
+                local_map["private-oversized-receipt.json"],
+                "oversized_skipped",
+            )
+            self.assertEqual(
+                local_map["private-subfolder"],
+                "subfolder_skipped",
+            )
+            self.assertEqual(
+                download_verification_center._local_receipt_display_name(
+                    "private\r\nreceipt.json"
+                ),
+                "private  receipt.json",
+            )
             serialized = json.dumps(report)
             summary = download_verification_center.receipt_folder_audit_summary(report)
             for private_value in (
@@ -713,13 +751,15 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="COPY RECEIPT CHECK"', source)
         self.assertIn('text="AUDIT RECEIPT FOLDER"', source)
         self.assertIn('text="EXPORT FOLDER AUDIT"', source)
+        self.assertIn('text="VIEW LOCAL REVIEW"', source)
+        self.assertIn('text="CLEAR LOCAL LIST"', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
         self.assertIn('("RECEIPT INSPECTION", self.inspection_var)', source)
         self.assertIn('("RECEIPT COMPARISON", self.comparison_var)', source)
         audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
-        self.assertEqual(len(audit_lines), 19)
+        self.assertEqual(len(audit_lines), 21)
         for line in audit_lines:
             self.assertNotIn("path_text", line)
             self.assertNotIn("prior", line)

@@ -148,6 +148,19 @@ INTEGRITY_LABELS = {
     "valid_other_profile": "VALID SEAL FROM ANOTHER WINDOWS PROFILE",
     "valid_this_profile": "VALID LOCAL INTEGRITY SEAL",
 }
+FOLDER_REVIEW_STATUS_LABELS = {
+    "byte_limit_not_inspected": "Not inspected: byte limit reached",
+    "candidate_limit_not_inspected": "Not inspected: candidate limit reached",
+    "invalid_or_tampered": "Invalid, unsupported, changed, or tampered",
+    "link_or_junction_skipped": "Skipped link or junction",
+    "non_json_skipped": "Skipped non-JSON entry",
+    "oversized_skipped": "Skipped receipt over 256 KB",
+    "read_error": "Could not read receipt",
+    "subfolder_skipped": "Skipped subfolder",
+    "unsealed_legacy": "Unsealed legacy receipt",
+    "valid_other_profile": "Valid seal from another Windows profile",
+    "valid_this_profile": "Valid local integrity seal",
+}
 RECEIPT_STRING_STATES = {
     "hash_comparison": {"match", "mismatch", "not_provided"},
     "signature_state": {"attention", "unknown", "unsigned", "valid"},
@@ -682,7 +695,15 @@ def _is_link_or_junction(path):
     )
 
 
-def audit_receipt_folder(path):
+def _local_receipt_display_name(value):
+    text = "".join(
+        character if character.isprintable() and character not in "\r\n\t" else " "
+        for character in str(value or "")
+    ).strip()
+    return text[:180] or "[unnamed]"
+
+
+def _audit_receipt_folder_core(path, include_local_details):
     selected = Path(path)
     if _is_link_or_junction(selected):
         raise ValueError("Linked or junction receipt folders are not accepted.")
@@ -700,6 +721,17 @@ def audit_receipt_folder(path):
         "oversized_receipts_skipped": 0,
         "other_entries_skipped": 0,
     }
+    local_details = []
+
+    def add_detail(child, status):
+        if include_local_details:
+            local_details.append(
+                {
+                    "name": _local_receipt_display_name(child.name),
+                    "status": status,
+                }
+            )
+
     bytes_considered = 0
     entry_limit_reached = False
     candidate_limit_reached = False
@@ -712,36 +744,49 @@ def audit_receipt_folder(path):
         try:
             if _is_link_or_junction(child):
                 counts["links_or_junctions_skipped"] += 1
+                add_detail(child, "link_or_junction_skipped")
+                continue
+            if child.is_dir():
+                counts["other_entries_skipped"] += 1
+                add_detail(child, "subfolder_skipped")
                 continue
             if not child.is_file() or child.suffix.lower() != ".json":
                 counts["other_entries_skipped"] += 1
+                add_detail(child, "non_json_skipped")
                 continue
             if counts["json_candidates"] >= MAX_RECEIPT_FOLDER_JSON_FILES:
                 candidate_limit_reached = True
+                add_detail(child, "candidate_limit_not_inspected")
                 break
             counts["json_candidates"] += 1
             size = int(child.stat().st_size)
             if size > MAX_RECEIPT_BYTES:
                 counts["oversized_receipts_skipped"] += 1
+                add_detail(child, "oversized_skipped")
                 continue
             if bytes_considered + size > MAX_RECEIPT_FOLDER_BYTES:
                 byte_limit_reached = True
+                add_detail(child, "byte_limit_not_inspected")
                 break
             bytes_considered += size
             try:
                 receipt = load_verification_receipt(child)
             except Exception:
                 counts["invalid_or_tampered"] += 1
+                add_detail(child, "invalid_or_tampered")
                 continue
             integrity_state = receipt.get("integrity_state")
             if integrity_state not in INTEGRITY_LABELS:
                 counts["invalid_or_tampered"] += 1
+                add_detail(child, "invalid_or_tampered")
                 continue
             counts["receipts_inspected"] += 1
             counts[integrity_state] += 1
+            add_detail(child, integrity_state)
         except OSError:
             counts["invalid_or_tampered"] += 1
-    return {
+            add_detail(child, "read_error")
+    report = {
         "schema_version": 1,
         "report_type": "vaultlink-receipt-folder-audit",
         "audited_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -766,6 +811,19 @@ def audit_receipt_folder(path):
             "The audit runs locally and is not uploaded automatically.",
         ],
     }
+    return report, local_details
+
+
+def audit_receipt_folder(path):
+    report, _local_details = _audit_receipt_folder_core(
+        path,
+        include_local_details=False,
+    )
+    return report
+
+
+def audit_receipt_folder_with_local_details(path):
+    return _audit_receipt_folder_core(path, include_local_details=True)
 
 
 def receipt_folder_audit_summary(report):
@@ -1288,6 +1346,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.comparison_result = None
         self.inspection_result = None
         self.folder_audit_result = None
+        self.folder_audit_local_details = []
         self.busy = False
         self.file_var = tk.StringVar(value="No file selected.")
         self.hash_var = tk.StringVar(value="Not calculated")
@@ -1317,6 +1376,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.export_comparison_button = None
         self.folder_audit_button = None
         self.export_folder_audit_button = None
+        self.view_folder_review_button = None
         self.build_ui()
 
     def build_ui(self):
@@ -1530,6 +1590,22 @@ class DownloadVerificationCenter(tk.Tk):
             state="disabled",
         )
         self.export_folder_audit_button.pack(
+            side="left",
+            padx=(8, 0),
+            ipadx=12,
+            ipady=7,
+        )
+        self.view_folder_review_button = tk.Button(
+            folder_actions,
+            text="VIEW LOCAL REVIEW",
+            command=self.view_receipt_folder_review,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+        )
+        self.view_folder_review_button.pack(
             side="left",
             padx=(8, 0),
             ipadx=12,
@@ -1850,6 +1926,11 @@ class DownloadVerificationCenter(tk.Tk):
         if not path_text:
             return
         selected = Path(path_text)
+        self.folder_audit_result = None
+        self.folder_audit_local_details = []
+        self.export_folder_audit_button.configure(state="disabled")
+        self.view_folder_review_button.configure(state="disabled")
+        self.folder_audit_var.set("Receipt folder audit running")
         self.set_busy(
             True,
             "Auditing bounded top-level JSON receipts locally without opening subfolders...",
@@ -1857,8 +1938,16 @@ class DownloadVerificationCenter(tk.Tk):
 
         def worker():
             try:
-                report = audit_receipt_folder(selected)
-                self.after(0, lambda: self.finish_receipt_folder_audit(report))
+                report, local_details = audit_receipt_folder_with_local_details(
+                    selected
+                )
+                self.after(
+                    0,
+                    lambda: self.finish_receipt_folder_audit(
+                        report,
+                        local_details,
+                    ),
+                )
             except Exception as exc:
                 self.after(
                     0,
@@ -1867,8 +1956,9 @@ class DownloadVerificationCenter(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def finish_receipt_folder_audit(self, report):
+    def finish_receipt_folder_audit(self, report, local_details):
         self.folder_audit_result = report
+        self.folder_audit_local_details = list(local_details)
         counts = report["counts"]
         self.folder_audit_var.set(
             f"{counts['receipts_inspected']} inspected | "
@@ -1878,6 +1968,9 @@ class DownloadVerificationCenter(tk.Tk):
             f"{counts['invalid_or_tampered']} invalid"
         )
         self.export_folder_audit_button.configure(state="normal")
+        self.view_folder_review_button.configure(
+            state="normal" if self.folder_audit_local_details else "disabled"
+        )
         self.set_busy(
             False,
             "Receipt folder audit finished. The folder path and receipt names were not recorded.",
@@ -1886,8 +1979,10 @@ class DownloadVerificationCenter(tk.Tk):
 
     def finish_receipt_folder_audit_error(self, error):
         self.folder_audit_result = None
+        self.folder_audit_local_details = []
         self.folder_audit_var.set("Receipt folder audit failed")
         self.export_folder_audit_button.configure(state="disabled")
+        self.view_folder_review_button.configure(state="disabled")
         self.finish_error(
             "Receipt folder audit failed",
             error,
@@ -1930,6 +2025,101 @@ class DownloadVerificationCenter(tk.Tk):
                 str(exc),
                 parent=self,
             )
+
+    def view_receipt_folder_review(self):
+        if not self.folder_audit_local_details:
+            return
+        window = tk.Toplevel(self)
+        window.title("VaultLink Local Receipt Review")
+        window.geometry("880x540")
+        window.minsize(700, 420)
+        window.configure(bg=locker.BG)
+        window.transient(self)
+
+        tk.Label(
+            window,
+            text="Local Receipt Review",
+            bg=locker.BG,
+            fg=locker.TEXT,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(anchor="w", padx=20, pady=(18, 2))
+        tk.Label(
+            window,
+            text="Receipt names stay in this window only and are never added to exports, audit logs, or API requests.",
+            bg=locker.BG,
+            fg=locker.MUTED,
+            font=("Segoe UI", 9),
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        table_frame = tk.Frame(window, bg=locker.PANEL)
+        table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+        table = ttk.Treeview(
+            table_frame,
+            columns=("receipt", "result"),
+            show="headings",
+            selectmode="browse",
+        )
+        table.heading("receipt", text="Receipt filename")
+        table.heading("result", text="Local result")
+        table.column("receipt", width=500, minwidth=260, anchor="w")
+        table.column("result", width=300, minwidth=220, anchor="w")
+        scrollbar = ttk.Scrollbar(
+            table_frame,
+            orient="vertical",
+            command=table.yview,
+        )
+        table.configure(yscrollcommand=scrollbar.set)
+        table.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        for detail in sorted(
+            self.folder_audit_local_details,
+            key=lambda item: str(item.get("name", "")).casefold(),
+        ):
+            table.insert(
+                "",
+                "end",
+                values=(
+                    detail.get("name", "[unnamed]"),
+                    FOLDER_REVIEW_STATUS_LABELS.get(
+                        detail.get("status"),
+                        "Unknown local result",
+                    ),
+                ),
+            )
+
+        actions = tk.Frame(window, bg=locker.BG)
+        actions.pack(fill="x", padx=20, pady=(0, 18))
+        tk.Button(
+            actions,
+            text="CLEAR LOCAL LIST",
+            command=lambda: self.clear_receipt_folder_review(window),
+            bg=locker.YELLOW,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=window.destroy,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=12, ipady=7)
+        locker.log_event("download_verify_view_receipt_folder_review", "local", "ok")
+
+    def clear_receipt_folder_review(self, window=None):
+        self.folder_audit_local_details = []
+        self.view_folder_review_button.configure(state="disabled")
+        self.status_var.set(
+            "Local receipt names cleared from memory. The aggregate audit remains available."
+        )
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        locker.log_event("download_verify_clear_receipt_folder_review", "local", "ok")
 
     def compare_prior_receipt(self):
         if not self.result or self.busy:

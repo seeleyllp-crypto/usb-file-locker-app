@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Download Verification Center now audits receipts in one explicitly selected folder.",
-    "The audit checks top-level JSON files only and never recurses into subfolders.",
-    "Work is capped at 1,000 top-level entries, 250 JSON candidates, and 32 MB of cumulative receipt data.",
-    "Results count valid local seals, valid external seals, unsealed legacy receipts, and invalid or tampered receipts.",
-    "The export contains aggregate counts only and excludes folder paths, receipt names, contents, hashes, signer data, public keys, and validation errors.",
-    "Links, junctions, subfolders, non-JSON entries, and receipts over 256 KB are skipped.",
-    "Each receipt is rejected if it changes while being read.",
-    "The bounded audit runs on a background thread so the customer interface remains responsive.",
-    "Limit-reached states and skipped-entry counts are disclosed in the report.",
-    "The audit does not execute files, upload data, rescan original downloads, or prove that any file is safe.",
-    "API 0.51.0 publishes two fixed folder-audit action names without receiving the folder or report.",
+    "Receipt Folder Audit now offers a local review list that identifies each top-level entry by filename and fixed result.",
+    "Local filename details are stored separately from the aggregate audit report.",
+    "Receipt names never enter aggregate exports, audit-log details, API requests, or persisted app state.",
+    "The review list exists in memory only and has an explicit clear control.",
+    "Names are capped at 180 characters and control characters are replaced before local display.",
+    "Fixed local results distinguish valid local, valid external, legacy, invalid, skipped, unreadable, and limit states.",
+    "The review window has no copy or filename export action.",
+    "Clearing local names leaves the anonymous aggregate report available for export.",
+    "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
+    "The app still does not execute receipts, upload data, rescan original downloads, or prove that any file is safe.",
+    "API 0.52.0 recognizes fixed local-review view and clear actions without receiving filenames or results.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
