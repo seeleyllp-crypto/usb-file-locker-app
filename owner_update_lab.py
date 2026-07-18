@@ -46,6 +46,12 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
+    "Download Verification Center can compare the current result with one explicitly selected prior VaultLink receipt.",
+    "Prior receipt import is local-only, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
+    "Unknown receipt fields are discarded and signer text is converted to a one-way fingerprint before comparison.",
+    "Comparison exports contain hashes, fixed change IDs, and fixed warning IDs but no paths, filenames, contents, signer text, or archive entry names.",
+    "Results distinguish different file bytes, unchanged bytes with changed signals, and an exact fixed-field match.",
+    "Prior receipts are editable and are not signed security certificates; an exact match does not prove a file is safe.",
     "Download Verification Center now performs bounded local file-header and ZIP central-directory review.",
     "Fixed signatures identify PE, shortcut, ZIP, PDF, images, 7z, RAR, GZIP, ELF, OLE, text, or unknown data.",
     "Mapped extensions are compared with detected headers and PE architecture is read without loading executable code.",
@@ -56,7 +62,7 @@ DEFAULT_NOTES = [
     "Chunked SHA-256, expected-hash comparison, Authenticode inspection, and explicit Defender scanning remain available.",
     "Links are rejected and verification stops if the selected file changes during review.",
     "Structural checks are warning signals, not malware detection or proof that a file is safe.",
-    "API 0.47.0 publishes expanded companion metadata without receiving selected file information.",
+    "API 0.48.0 publishes receipt-comparison metadata and two fixed audit action names without receiving either receipt.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

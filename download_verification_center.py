@@ -17,6 +17,7 @@ import usb_file_locker as locker
 
 
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
+MAX_RECEIPT_BYTES = 256 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
 SIGNATURE_TIMEOUT_SECONDS = 30
@@ -119,6 +120,25 @@ WARNING_LABELS = {
     "misleading_double_extension": "Filename combines a document/media extension with an executable extension",
     "windows_shortcut": "Selected file is a Windows shortcut",
 }
+COMPARISON_LABELS = {
+    "archive_summary_changed": "ZIP aggregate summary changed",
+    "defender_state_changed": "Defender state changed",
+    "detected_type_changed": "Detected file type changed",
+    "extension_changed": "Filename extension changed",
+    "extension_header_match_changed": "Extension/header match state changed",
+    "pe_architecture_changed": "PE architecture changed",
+    "sha256_changed": "Calculated SHA-256 changed",
+    "signature_state_changed": "Digital-signature state changed",
+    "signer_changed": "Signer identity changed",
+    "size_band_changed": "Coarse file-size band changed",
+    "warning_ids_changed": "Structural warning set changed",
+}
+RECEIPT_STRING_STATES = {
+    "hash_comparison": {"match", "mismatch", "not_provided"},
+    "signature_state": {"attention", "unknown", "unsigned", "valid"},
+    "defender_state": {"attention", "inconclusive", "no_threats", "not_run"},
+    "extension_header_match": {"match", "mismatch", "not_mapped"},
+}
 
 
 def normalize_expected_sha256(value):
@@ -163,6 +183,200 @@ def warning_labels(warning_ids):
         WARNING_LABELS.get(str(warning_id), str(warning_id).replace("_", " ").title())
         for warning_id in warning_ids or []
     ]
+
+
+def _bounded_receipt_count(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return min(1_000_000, max(0, number))
+
+
+def _clean_receipt_token(value, fallback, limit=80):
+    text = "".join(
+        character
+        for character in str(value or "")
+        if character in {" ", "-", "_", ".", "[", "]"} or character.isalnum()
+    ).strip()
+    return (text[:limit] or fallback)
+
+
+def _normalized_warning_ids(values):
+    if not isinstance(values, (list, tuple)):
+        return []
+    normalized = []
+    for value in values[:50]:
+        warning_id = str(value or "").strip()
+        if warning_id in WARNING_LABELS:
+            normalized.append(warning_id)
+        elif warning_id:
+            normalized.append("unrecognized_warning_id")
+    return sorted(set(normalized))[:20]
+
+
+def normalize_verification_receipt(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("The selected receipt must be a JSON object.")
+    if payload.get("schema_version") != 1 or payload.get("report_type") != "vaultlink-download-verification":
+        raise ValueError("That is not a supported VaultLink download-verification receipt.")
+    sha256 = str(payload.get("sha256", "")).strip().lower()
+    if not SHA256_RE.fullmatch(sha256):
+        raise ValueError("The receipt does not contain a valid calculated SHA-256.")
+    structure = payload.get("structure") if isinstance(payload.get("structure"), dict) else {}
+    archive = structure.get("archive") if isinstance(structure.get("archive"), dict) else None
+    signature_state = str(payload.get("signature_state", "unknown")).strip().lower()
+    defender_state = str(payload.get("defender_state", "not_run")).strip().lower()
+    hash_comparison = str(payload.get("hash_comparison", "not_provided")).strip().lower()
+    match_state = str(structure.get("extension_header_match", "not_mapped")).strip().lower()
+    if signature_state not in RECEIPT_STRING_STATES["signature_state"]:
+        signature_state = "unknown"
+    if defender_state not in RECEIPT_STRING_STATES["defender_state"]:
+        defender_state = "inconclusive"
+    if hash_comparison not in RECEIPT_STRING_STATES["hash_comparison"]:
+        hash_comparison = "not_provided"
+    if match_state not in RECEIPT_STRING_STATES["extension_header_match"]:
+        match_state = "not_mapped"
+    signer_subject = str(payload.get("signer_subject", "")).strip()
+    signer_fingerprint = hashlib.sha256(signer_subject.encode("utf-8")).hexdigest() if signer_subject else ""
+    archive_summary = None
+    if archive is not None:
+        archive_summary = {
+            field: _bounded_receipt_count(archive.get(field))
+            for field in (
+                "entry_count",
+                "reviewed_entry_count",
+                "traversal_entry_count",
+                "link_entry_count",
+                "encrypted_entry_count",
+                "executable_entry_count",
+                "nested_archive_count",
+                "macro_entry_count",
+                "high_compression_entry_count",
+            )
+        }
+        archive_summary["declared_size_band"] = _clean_receipt_token(
+            archive.get("declared_size_band"),
+            "unknown",
+            40,
+        )
+        archive_summary["review_truncated"] = bool(archive.get("review_truncated"))
+        archive_summary["warning_ids"] = _normalized_warning_ids(archive.get("warning_ids"))
+    return {
+        "sha256": sha256,
+        "size_band": _clean_receipt_token(payload.get("size_band"), "unknown", 40),
+        "extension": _clean_receipt_token(payload.get("extension"), "[none]", 24).lower(),
+        "hash_comparison": hash_comparison,
+        "signature_state": signature_state,
+        "signer_fingerprint": signer_fingerprint,
+        "defender_state": defender_state,
+        "structure": {
+            "detected_type": _clean_receipt_token(structure.get("detected_type"), "unknown", 80).lower(),
+            "extension_header_match": match_state,
+            "pe_architecture": _clean_receipt_token(structure.get("pe_architecture"), "not_applicable", 40),
+            "warning_ids": _normalized_warning_ids(structure.get("warning_ids")),
+            "archive": archive_summary,
+        },
+    }
+
+
+def load_verification_receipt(path):
+    selected = Path(path)
+    if selected.is_symlink():
+        raise ValueError("Linked receipt files are not accepted.")
+    if not selected.is_file() or selected.suffix.lower() != ".json":
+        raise ValueError("Choose one VaultLink JSON verification receipt.")
+    if selected.stat().st_size > MAX_RECEIPT_BYTES:
+        raise ValueError("That receipt is larger than the 256 KB import limit.")
+    try:
+        payload = json.loads(selected.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError("The selected receipt is not valid UTF-8 JSON.") from exc
+    return normalize_verification_receipt(payload)
+
+
+def compare_verification_receipt(result, defender, prior_receipt):
+    current = normalize_verification_receipt(build_privacy_safe_receipt(result, defender))
+    prior = dict(prior_receipt or {})
+    if not SHA256_RE.fullmatch(str(prior.get("sha256", ""))):
+        raise ValueError("The prior receipt has not been safely normalized.")
+    changes = []
+    if current["sha256"] != prior["sha256"]:
+        changes.append("sha256_changed")
+    if current["size_band"] != prior.get("size_band"):
+        changes.append("size_band_changed")
+    if current["extension"] != prior.get("extension"):
+        changes.append("extension_changed")
+    if current["signature_state"] != prior.get("signature_state"):
+        changes.append("signature_state_changed")
+    if current["signer_fingerprint"] != prior.get("signer_fingerprint"):
+        changes.append("signer_changed")
+    if current["defender_state"] != prior.get("defender_state"):
+        changes.append("defender_state_changed")
+    current_structure = current["structure"]
+    prior_structure = prior.get("structure") if isinstance(prior.get("structure"), dict) else {}
+    if current_structure["detected_type"] != prior_structure.get("detected_type"):
+        changes.append("detected_type_changed")
+    if current_structure["extension_header_match"] != prior_structure.get("extension_header_match"):
+        changes.append("extension_header_match_changed")
+    if current_structure["pe_architecture"] != prior_structure.get("pe_architecture"):
+        changes.append("pe_architecture_changed")
+    current_warnings = set(current_structure["warning_ids"])
+    prior_warnings = set(prior_structure.get("warning_ids") or [])
+    if current_warnings != prior_warnings:
+        changes.append("warning_ids_changed")
+    if current_structure.get("archive") != prior_structure.get("archive"):
+        changes.append("archive_summary_changed")
+    same_sha256 = current["sha256"] == prior["sha256"]
+    if not same_sha256:
+        verdict = "different_file_bytes"
+    elif changes:
+        verdict = "same_bytes_signals_changed"
+    else:
+        verdict = "exact_fixed_field_match"
+    return {
+        "schema_version": 1,
+        "report_type": "vaultlink-download-comparison",
+        "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "verdict": verdict,
+        "same_sha256": same_sha256,
+        "change_ids": sorted(set(changes)),
+        "change_count": len(set(changes)),
+        "warning_ids_added": sorted(current_warnings - prior_warnings),
+        "warning_ids_removed": sorted(prior_warnings - current_warnings),
+        "current_sha256": current["sha256"],
+        "prior_sha256": prior["sha256"],
+        "privacy_note": "Comparison contains fixed fields and hashes only. It excludes both receipt paths, filenames, file contents, signer text, and archive entry names.",
+        "limitations": [
+            "A prior receipt can be edited and is not a signed security certificate.",
+            "An exact fixed-field match does not prove a file is safe.",
+            "Comparison runs locally and is not uploaded automatically.",
+        ],
+    }
+
+
+def comparison_summary(comparison):
+    comparison = dict(comparison or {})
+    verdict = str(comparison.get("verdict", "unknown")).replace("_", " ").upper()
+    change_ids = comparison.get("change_ids") or []
+    lines = [
+        "VaultLink Verification Receipt Comparison",
+        f"Result: {verdict}",
+        f"Same calculated SHA-256: {'YES' if comparison.get('same_sha256') else 'NO'}",
+        f"Changed fixed fields: {len(change_ids)}",
+    ]
+    for change_id in change_ids:
+        lines.append(f"- {COMPARISON_LABELS.get(change_id, change_id)}")
+    if not change_ids:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "The prior receipt may have been edited and is not a signed security certificate.",
+            "An exact comparison does not prove a file is safe.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _file_identity(path):
@@ -619,21 +833,20 @@ def build_privacy_safe_receipt(result, defender=None):
     }
 
 
-def verification_summary(result, defender=None):
+def verification_summary(result, defender=None, comparison=None):
     receipt = build_privacy_safe_receipt(result, defender)
-    comparison = receipt["hash_comparison"].replace("_", " ").upper()
+    hash_comparison = receipt["hash_comparison"].replace("_", " ").upper()
     signature = receipt["signature_state"].replace("_", " ").upper()
     defender_state = receipt["defender_state"].replace("_", " ").upper()
     structure = receipt["structure"]
     warning_count = len(structure["warning_ids"])
-    return "\n".join(
-        [
+    lines = [
             "VaultLink Download Verification",
             f"Checked: {receipt['created_at_utc']}",
             f"File type: {receipt['extension']}",
             f"Size band: {receipt['size_band']}",
             f"SHA-256: {receipt['sha256']}",
-            f"Expected hash: {comparison}",
+            f"Expected hash: {hash_comparison}",
             f"Digital signature: {signature}",
             f"Detected type: {structure['detected_type']}",
             f"Extension/header: {structure['extension_header_match'].replace('_', ' ').upper()}",
@@ -643,19 +856,22 @@ def verification_summary(result, defender=None):
             "A matching hash, valid signature, or no-threat scan does not guarantee a file is safe.",
             "The selected file was not uploaded by VaultLink.",
         ]
-    )
+    if comparison:
+        lines.extend(["", comparison_summary(comparison)])
+    return "\n".join(lines)
 
 
 class DownloadVerificationCenter(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink Download Verification Center")
-        self.geometry("1120x790")
-        self.minsize(900, 680)
+        self.geometry("1120x900")
+        self.minsize(1020, 900)
         self.configure(bg=locker.BG)
         self.selected_path = None
         self.result = None
         self.defender_result = None
+        self.comparison_result = None
         self.busy = False
         self.file_var = tk.StringVar(value="No file selected.")
         self.hash_var = tk.StringVar(value="Not calculated")
@@ -666,6 +882,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.warning_var = tk.StringVar(value="No structural review yet")
         self.archive_var = tk.StringVar(value="Not an inspected ZIP archive")
         self.defender_var = tk.StringVar(value="Not scanned")
+        self.comparison_var = tk.StringVar(value="No prior receipt compared")
         self.status_var = tk.StringVar(value="Choose one downloaded file to begin.")
         self.expected_var = tk.StringVar(value="")
         self.progress = None
@@ -674,6 +891,8 @@ class DownloadVerificationCenter(tk.Tk):
         self.copy_hash_button = None
         self.copy_summary_button = None
         self.export_button = None
+        self.compare_button = None
+        self.export_comparison_button = None
         self.build_ui()
 
     def build_ui(self):
@@ -813,6 +1032,38 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="right", ipadx=12, ipady=8)
 
+        comparison_actions = tk.Frame(outer, bg=locker.BG)
+        comparison_actions.pack(fill="x", pady=(0, 12))
+        self.compare_button = tk.Button(
+            comparison_actions,
+            text="COMPARE PRIOR RECEIPT",
+            command=self.compare_prior_receipt,
+            bg=locker.BLUE,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+        )
+        self.compare_button.pack(side="left", ipadx=12, ipady=7)
+        self.export_comparison_button = tk.Button(
+            comparison_actions,
+            text="EXPORT COMPARISON",
+            command=self.export_comparison,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+        )
+        self.export_comparison_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
+        tk.Label(
+            comparison_actions,
+            text="Prior receipts are sanitized locally and are not treated as signed certificates.",
+            bg=locker.BG,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=(12, 0))
+
         results = tk.Frame(outer, bg=locker.PANEL)
         results.pack(fill="both", expand=True)
         tk.Label(
@@ -831,6 +1082,7 @@ class DownloadVerificationCenter(tk.Tk):
             ("REVIEW SIGNALS", self.warning_var),
             ("ARCHIVE REVIEW", self.archive_var),
             ("MICROSOFT DEFENDER", self.defender_var),
+            ("RECEIPT COMPARISON", self.comparison_var),
         ):
             row = tk.Frame(results, bg=locker.PANEL)
             row.pack(fill="x", padx=16, pady=5)
@@ -875,6 +1127,7 @@ class DownloadVerificationCenter(tk.Tk):
             self.selected_path = selected
             self.result = None
             self.defender_result = None
+            self.comparison_result = None
             self.file_var.set(f"{selected.name} | {locker.format_update_size(identity['size'])}")
             self.hash_var.set("Not calculated")
             self.compare_var.set("Expected hash not provided")
@@ -884,11 +1137,14 @@ class DownloadVerificationCenter(tk.Tk):
             self.warning_var.set("No structural review yet")
             self.archive_var.set("Not an inspected ZIP archive")
             self.defender_var.set("Not scanned")
+            self.comparison_var.set("No prior receipt compared")
             self.verify_button.configure(state="normal")
             self.defender_button.configure(state="normal")
             self.copy_hash_button.configure(state="disabled")
             self.copy_summary_button.configure(state="disabled")
             self.export_button.configure(state="disabled")
+            self.compare_button.configure(state="disabled")
+            self.export_comparison_button.configure(state="disabled")
             self.status_var.set("File selected locally. Its path was not recorded or uploaded.")
             locker.log_event("download_verify_select", "local", "ok")
         except Exception as exc:
@@ -964,6 +1220,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.copy_hash_button.configure(state="normal")
         self.copy_summary_button.configure(state="normal")
         self.export_button.configure(state="normal")
+        self.compare_button.configure(state="normal")
         self.set_busy(False, "Verification finished locally. Review every result before deciding whether to use the file.")
         locker.log_event("download_verify_run", "local", "ok")
 
@@ -1009,7 +1266,9 @@ class DownloadVerificationCenter(tk.Tk):
         if not self.result:
             return
         self.clipboard_clear()
-        self.clipboard_append(verification_summary(self.result, self.defender_result))
+        self.clipboard_append(
+            verification_summary(self.result, self.defender_result, self.comparison_result)
+        )
         self.update()
         self.status_var.set("Privacy-safe summary copied without the filename or path.")
         locker.log_event("download_verify_copy_summary", "local", "ok")
@@ -1034,6 +1293,60 @@ class DownloadVerificationCenter(tk.Tk):
         except Exception as exc:
             locker.log_event("download_verify_export", "local", "failed")
             messagebox.showerror("Could not export receipt", str(exc), parent=self)
+
+    def compare_prior_receipt(self):
+        if not self.result or self.busy:
+            return
+        path_text = filedialog.askopenfilename(
+            parent=self,
+            title="Choose a prior VaultLink verification receipt",
+            filetypes=[("VaultLink JSON receipt", "*.json")],
+        )
+        if not path_text:
+            return
+        try:
+            prior = load_verification_receipt(path_text)
+            self.comparison_result = compare_verification_receipt(
+                self.result,
+                self.defender_result,
+                prior,
+            )
+            verdict = self.comparison_result["verdict"].replace("_", " ").upper()
+            self.comparison_var.set(
+                f"{verdict} | {self.comparison_result['change_count']} fixed field change(s)"
+            )
+            self.export_comparison_button.configure(state="normal")
+            self.status_var.set("Prior receipt compared locally. Its path and unknown fields were discarded.")
+            locker.log_event("download_verify_compare_receipt", "local", "ok")
+        except Exception as exc:
+            self.comparison_result = None
+            self.comparison_var.set("Prior receipt comparison failed")
+            self.export_comparison_button.configure(state="disabled")
+            locker.log_event("download_verify_compare_receipt", "local", "failed")
+            messagebox.showerror("Could not compare receipt", str(exc), parent=self)
+
+    def export_comparison(self):
+        if not self.comparison_result:
+            return
+        path_text = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export privacy-safe receipt comparison",
+            defaultextension=".json",
+            initialfile="vaultlink-download-comparison.json",
+            filetypes=[("JSON file", "*.json")],
+        )
+        if not path_text:
+            return
+        try:
+            Path(path_text).write_text(
+                json.dumps(self.comparison_result, indent=2),
+                encoding="utf-8",
+            )
+            self.status_var.set("Comparison exported. Its destination was not recorded.")
+            locker.log_event("download_verify_export_comparison", "local", "ok")
+        except Exception as exc:
+            locker.log_event("download_verify_export_comparison", "local", "failed")
+            messagebox.showerror("Could not export comparison", str(exc), parent=self)
 
     def open_windows_security(self):
         try:

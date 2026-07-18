@@ -42,6 +42,34 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 VALID_TEST_LICENSE = "vlk1." + ("A" * 24) + "." + ("B" * 24)
 
 
+def download_verification_fixture():
+    return (
+        {
+            "sha256": hashlib.sha256(b"stable verified download").hexdigest(),
+            "size_band": "under 1 MB",
+            "extension": ".exe",
+            "expected_sha256_provided": False,
+            "hash_comparison": "not_provided",
+            "signature": {
+                "state": "valid",
+                "status": "Valid",
+                "signer_subject": "CN=Fixture Publisher",
+            },
+            "structure": {
+                "detected_type": "windows_pe",
+                "extension_header_match": "match",
+                "pe_architecture": "x64",
+                "warning_ids": ["executable_or_script_extension"],
+                "archive": None,
+            },
+        },
+        {
+            "state": "no_threats",
+            "scan_mode": "custom file scan with remediation disabled",
+        },
+    )
+
+
 class FakeVar:
     def __init__(self):
         self.value = ""
@@ -338,6 +366,138 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(structure["detected_type"], "text")
             self.assertEqual(structure["extension_header_match"], "mismatch")
             self.assertIn("extension_header_mismatch", structure["warning_ids"])
+
+    def test_download_verifier_loads_only_bounded_sanitized_receipts(self):
+        result, defender = download_verification_fixture()
+        receipt = download_verification_center.build_privacy_safe_receipt(result, defender)
+        receipt.update(
+            {
+                "unknown_private_field": "PRIVATE IMPORTED TEXT",
+                "filename": "private-customer-name.exe",
+                "path": r"C:\Users\Private\Downloads\private-customer-name.exe",
+            }
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            receipt_path = root / "receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            loaded = download_verification_center.load_verification_receipt(receipt_path)
+            serialized = json.dumps(loaded)
+            self.assertEqual(loaded["sha256"], result["sha256"])
+            self.assertEqual(
+                loaded["signer_fingerprint"],
+                hashlib.sha256(b"CN=Fixture Publisher").hexdigest(),
+            )
+            for private_value in (
+                "PRIVATE IMPORTED TEXT",
+                "private-customer-name.exe",
+                r"C:\Users\Private",
+                "CN=Fixture Publisher",
+                str(receipt_path),
+            ):
+                self.assertNotIn(private_value, serialized)
+
+            invalid_cases = {
+                "not-json.txt": "{}",
+                "malformed.json": "{",
+                "wrong-schema.json": json.dumps(
+                    {"schema_version": 9, "report_type": "other", "sha256": "a" * 64}
+                ),
+                "bad-hash.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "report_type": "vaultlink-download-verification",
+                        "sha256": "not-a-hash",
+                    }
+                ),
+            }
+            for name, content in invalid_cases.items():
+                path = root / name
+                path.write_text(content, encoding="utf-8")
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    download_verification_center.load_verification_receipt(path)
+
+            invalid_utf8 = root / "invalid-utf8.json"
+            invalid_utf8.write_bytes(b"\xff\xfe\x00")
+            with self.assertRaisesRegex(ValueError, "UTF-8 JSON"):
+                download_verification_center.load_verification_receipt(invalid_utf8)
+
+            oversized = root / "oversized.json"
+            oversized.write_bytes(b"{" + (b" " * download_verification_center.MAX_RECEIPT_BYTES) + b"}")
+            with self.assertRaisesRegex(ValueError, "256 KB"):
+                download_verification_center.load_verification_receipt(oversized)
+
+            linked = root / "linked.json"
+            try:
+                linked.symlink_to(receipt_path)
+            except OSError:
+                linked = None
+            if linked is not None:
+                with self.assertRaisesRegex(ValueError, "Linked receipt"):
+                    download_verification_center.load_verification_receipt(linked)
+
+    def test_download_verifier_compares_only_fixed_receipt_signals(self):
+        result, defender = download_verification_fixture()
+        prior = download_verification_center.normalize_verification_receipt(
+            download_verification_center.build_privacy_safe_receipt(result, defender)
+        )
+        exact = download_verification_center.compare_verification_receipt(
+            result,
+            defender,
+            prior,
+        )
+        self.assertEqual(exact["verdict"], "exact_fixed_field_match")
+        self.assertEqual(exact["change_count"], 0)
+        self.assertTrue(exact["same_sha256"])
+
+        changed_bytes = dict(result, sha256=hashlib.sha256(b"different bytes").hexdigest())
+        different = download_verification_center.compare_verification_receipt(
+            changed_bytes,
+            defender,
+            prior,
+        )
+        self.assertEqual(different["verdict"], "different_file_bytes")
+        self.assertIn("sha256_changed", different["change_ids"])
+
+        changed_signals = json.loads(json.dumps(result))
+        changed_signals["signature"]["state"] = "unsigned"
+        changed_signals["signature"]["signer_subject"] = ""
+        changed_signals["structure"]["warning_ids"] = []
+        signal_change = download_verification_center.compare_verification_receipt(
+            changed_signals,
+            {"state": "attention"},
+            prior,
+        )
+        self.assertEqual(signal_change["verdict"], "same_bytes_signals_changed")
+        self.assertTrue(
+            {
+                "signature_state_changed",
+                "signer_changed",
+                "warning_ids_changed",
+                "defender_state_changed",
+            }.issubset(signal_change["change_ids"])
+        )
+        exported = json.dumps(signal_change)
+        self.assertNotIn("Fixture Publisher", exported)
+        self.assertNotIn("signer_subject", exported)
+        self.assertNotIn("private-customer-name.exe", exported)
+        self.assertNotIn(r"C:\Users\Private", exported)
+        self.assertIn("not a signed security certificate", signal_change["limitations"][0])
+        self.assertIn("VaultLink Verification Receipt Comparison", download_verification_center.verification_summary(result, defender, exact))
+
+    def test_download_verifier_receipt_comparison_ui_and_audit_are_privacy_safe(self):
+        source = Path(download_verification_center.__file__).read_text(encoding="utf-8")
+        self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
+        self.assertIn('text="EXPORT COMPARISON"', source)
+        self.assertIn('state="disabled"', source)
+        self.assertIn('("RECEIPT COMPARISON", self.comparison_var)', source)
+        audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
+        self.assertEqual(len(audit_lines), 13)
+        for line in audit_lines:
+            self.assertNotIn("path_text", line)
+            self.assertNotIn("prior", line)
+            self.assertNotIn("self.comparison_result", line)
+            self.assertNotIn("self.selected_path", line)
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(
