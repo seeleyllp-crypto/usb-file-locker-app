@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Receipt filename search now uses a cancellable 180 ms debounce instead of rebuilding up to 1,000 rows on every keystroke.",
-    "Each new search event cancels the previous pending redraw so only the latest query is applied.",
-    "Closing or clearing the review window cancels any delayed search callback before destroying its widgets.",
-    "The selected numeric review row is preserved across search, filter, sort, mark, undo, and reset refreshes when still visible.",
-    "NEXT PENDING ITEM cycles every unreviewed result in priority order, including Info and Valid rows.",
-    "Session progress now separates total reviewed from total pending.",
-    "A fixed pending breakdown shows Action Required, Review, Info, and Valid counts.",
-    "Debounce state, selection, progress, and level counts remain local memory only and are never logged, exported, persisted, or sent to the API.",
+    "Local Receipt Review now has a dedicated priority filter for Action Required, Review, Info, and Valid results.",
+    "The priority filter composes with filename search, result filters, sorting, and Hide Reviewed without changing the bounded audit.",
+    "MARK SHOWN REVIEWED marks every pending row in the current visible search and filter.",
+    "Bulk marking consumes no more than the existing 1,000-row review bound and ignores duplicate or invalid numeric review IDs.",
+    "UNDO LAST CHANGE restores an entire bulk action in one step instead of undoing each row separately.",
+    "The review history keeps at most 100 reversible actions and contains only bounded numeric IDs plus prior boolean mark state.",
+    "The row counter now separates total shown from pending shown for the active filters.",
+    "Priority, bulk changes, undo history, selection, and counts stay in local memory and are never logged, exported, persisted, or sent to the API.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
     "The app still does not execute receipts, upload data, rescan original downloads, identify malware, or prove that any file is safe.",
-    "API 0.57.0 advertises the debounce, selection, full pending navigation, and aggregate breakdown without receiving local review data.",
+    "API 0.58.0 advertises priority filtering, bounded bulk review, one-step bulk undo, and visible pending counts without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

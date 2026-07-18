@@ -243,6 +243,7 @@ FOLDER_REVIEW_TRIAGE_PRIORITY = {
     "info": 2,
     "good": 3,
 }
+FOLDER_REVIEW_LEVELS = frozenset({"all", *FOLDER_REVIEW_TRIAGE_PRIORITY})
 FOLDER_REVIEW_FILTER_STATUSES = {
     "all": frozenset(FOLDER_REVIEW_STATUS_LABELS),
     "needs_review": FOLDER_REVIEW_NEEDS_REVIEW_STATUSES,
@@ -808,12 +809,15 @@ def filter_receipt_folder_local_details(
     details,
     query="",
     category="all",
+    level="all",
     sort_mode="filename",
     reviewed_ids=None,
     hide_reviewed=False,
 ):
     if category not in FOLDER_REVIEW_FILTER_STATUSES:
         raise ValueError("Choose a recognized local receipt-review filter.")
+    if level not in FOLDER_REVIEW_LEVELS:
+        raise ValueError("Choose a recognized local receipt-review priority level.")
     if sort_mode not in FOLDER_REVIEW_SORT_MODES:
         raise ValueError("Choose a recognized local receipt-review sort mode.")
     if not isinstance(hide_reviewed, bool):
@@ -842,6 +846,8 @@ def filter_receipt_folder_local_details(
             continue
         status = str(raw_detail.get("status", ""))
         if status not in FOLDER_REVIEW_STATUS_LABELS or status not in allowed_statuses:
+            continue
+        if level != "all" and FOLDER_REVIEW_TRIAGE[status]["level"] != level:
             continue
         name = _local_receipt_display_name(raw_detail.get("name"))
         if query_text and query_text not in name.casefold():
@@ -876,6 +882,40 @@ def filter_receipt_folder_local_details(
                 FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
             )
     return sorted(filtered, key=sort_key)
+
+
+def apply_receipt_folder_review_marks(reviewed_ids, review_ids, reviewed):
+    if not isinstance(reviewed, bool):
+        raise ValueError("Choose a recognized local receipt-review mark.")
+    try:
+        reviewed_iterator = iter(()) if reviewed_ids is None else iter(reviewed_ids)
+        review_iterator = iter(()) if review_ids is None else iter(review_ids)
+    except TypeError as exc:
+        raise ValueError("Review-session IDs must be bounded iterables.") from exc
+    safe_reviewed_ids = {
+        value
+        for value in islice(reviewed_iterator, MAX_RECEIPT_FOLDER_ENTRIES)
+        if type(value) is int and 0 <= value < MAX_RECEIPT_FOLDER_ENTRIES
+    }
+    changes = []
+    seen = set()
+    for review_id in islice(review_iterator, MAX_RECEIPT_FOLDER_ENTRIES):
+        if (
+            type(review_id) is not int
+            or not 0 <= review_id < MAX_RECEIPT_FOLDER_ENTRIES
+            or review_id in seen
+        ):
+            continue
+        seen.add(review_id)
+        was_reviewed = review_id in safe_reviewed_ids
+        if was_reviewed == reviewed:
+            continue
+        changes.append((review_id, was_reviewed))
+        if reviewed:
+            safe_reviewed_ids.add(review_id)
+        else:
+            safe_reviewed_ids.remove(review_id)
+    return safe_reviewed_ids, tuple(changes)
 
 
 def receipt_folder_review_triage(status):
@@ -2306,6 +2346,13 @@ class DownloadVerificationCenter(tk.Tk):
             "Skipped entries": "skipped",
             "Limit-stopped entries": "limits",
         }
+        level_labels = {
+            "All priorities": "all",
+            "Action Required": "critical",
+            "Review": "review",
+            "Info": "info",
+            "Valid": "good",
+        }
         sort_labels = {
             "Filename": "filename",
             "Priority then filename": "priority",
@@ -2313,6 +2360,7 @@ class DownloadVerificationCenter(tk.Tk):
         }
         search_var = tk.StringVar()
         filter_var = tk.StringVar(value="All results")
+        level_var = tk.StringVar(value="All priorities")
         sort_var = tk.StringVar(value="Filename")
         hide_reviewed_var = tk.BooleanVar(value=False)
         visible_count_var = tk.StringVar()
@@ -2345,11 +2393,18 @@ class DownloadVerificationCenter(tk.Tk):
         ).grid(row=0, column=1, sticky="w", padx=8, pady=(10, 3))
         tk.Label(
             controls,
-            text="SORT",
+            text="PRIORITY",
             bg=locker.PANEL,
             fg=locker.MUTED,
             font=("Segoe UI", 8, "bold"),
         ).grid(row=0, column=2, sticky="w", padx=8, pady=(10, 3))
+        tk.Label(
+            controls,
+            text="SORT",
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=3, sticky="w", padx=8, pady=(10, 3))
         search_entry = tk.Entry(
             controls,
             textvariable=search_var,
@@ -2375,14 +2430,22 @@ class DownloadVerificationCenter(tk.Tk):
             width=22,
         )
         filter_box.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 12), ipady=4)
+        level_box = ttk.Combobox(
+            controls,
+            textvariable=level_var,
+            values=tuple(level_labels),
+            state="readonly",
+            width=18,
+        )
+        level_box.grid(row=1, column=2, sticky="ew", padx=8, pady=(0, 12), ipady=4)
         sort_box = ttk.Combobox(
             controls,
             textvariable=sort_var,
             values=tuple(sort_labels),
             state="readonly",
-            width=22,
+            width=20,
         )
-        sort_box.grid(row=1, column=2, sticky="ew", padx=8, pady=(0, 12), ipady=4)
+        sort_box.grid(row=1, column=3, sticky="ew", padx=8, pady=(0, 12), ipady=4)
         tk.Checkbutton(
             controls,
             text="HIDE REVIEWED",
@@ -2398,7 +2461,7 @@ class DownloadVerificationCenter(tk.Tk):
         ).grid(
             row=2,
             column=0,
-            columnspan=3,
+            columnspan=4,
             sticky="w",
             padx=12,
             pady=(0, 10),
@@ -2462,6 +2525,7 @@ class DownloadVerificationCenter(tk.Tk):
                 review_details,
                 query=search_var.get(),
                 category=filter_labels[filter_var.get()],
+                level=level_labels[level_var.get()],
                 sort_mode=sort_labels[sort_var.get()],
                 reviewed_ids=reviewed_ids,
                 hide_reviewed=hide_reviewed_var.get(),
@@ -2489,7 +2553,10 @@ class DownloadVerificationCenter(tk.Tk):
                 review_details,
                 reviewed_ids,
             )
-            visible_count_var.set(f"{len(rows)} shown")
+            visible_pending = sum(not bool(row.get("reviewed")) for row in rows)
+            visible_count_var.set(
+                f"{len(rows)} shown | {visible_pending} pending shown"
+            )
             session_progress_var.set(
                 f"{summary['reviewed']} of {summary['total_results']} reviewed | "
                 f"{summary['pending']} pending"
@@ -2535,6 +2602,20 @@ class DownloadVerificationCenter(tk.Tk):
                     return True
             return False
 
+        def apply_review_mark_action(review_ids, reviewed):
+            updated_reviewed_ids, changes = apply_receipt_folder_review_marks(
+                reviewed_ids,
+                review_ids,
+                reviewed,
+            )
+            if not changes:
+                return ()
+            reviewed_ids.clear()
+            reviewed_ids.update(updated_reviewed_ids)
+            review_history.append(changes)
+            del review_history[:-MAX_RECEIPT_REVIEW_HISTORY]
+            return changes
+
         def toggle_selected_reviewed():
             selected_items = table.selection()
             if not selected_items:
@@ -2550,13 +2631,29 @@ class DownloadVerificationCenter(tk.Tk):
             if review_id is None:
                 clear_triage_panel()
                 return
-            if review_id in reviewed_ids:
-                reviewed_ids.remove(review_id)
-            else:
-                reviewed_ids.add(review_id)
-            review_history.append(review_id)
-            del review_history[:-MAX_RECEIPT_REVIEW_HISTORY]
+            apply_review_mark_action(
+                (review_id,),
+                review_id not in reviewed_ids,
+            )
             refresh_review(preferred_review_id=review_id)
+
+        def mark_shown_reviewed():
+            visible_pending_ids = [
+                item_review_ids[item_id]
+                for item_id in table.get_children()
+                if item_review_ids.get(item_id) not in reviewed_ids
+            ]
+            changes = apply_review_mark_action(visible_pending_ids, True)
+            if not changes:
+                triage_title_var.set("NO PENDING ITEMS SHOWN")
+                triage_meaning_var.set(
+                    "Every result in the current search and filter is already marked Reviewed."
+                )
+                triage_action_var.set(
+                    "Next safe step: change the search or filters if you need to review another group."
+                )
+                return
+            refresh_review(preferred_review_id=changes[0][0])
 
         def undo_last_review_mark():
             if not review_history:
@@ -2568,12 +2665,13 @@ class DownloadVerificationCenter(tk.Tk):
                     "Next safe step: select a row if you want to change its review mark."
                 )
                 return
-            review_id = review_history.pop()
-            if review_id in reviewed_ids:
-                reviewed_ids.remove(review_id)
-            else:
-                reviewed_ids.add(review_id)
-            refresh_review(preferred_review_id=review_id)
+            changes = review_history.pop()
+            for review_id, was_reviewed in changes:
+                if was_reviewed:
+                    reviewed_ids.add(review_id)
+                else:
+                    reviewed_ids.discard(review_id)
+            refresh_review(preferred_review_id=changes[0][0])
 
         def reset_review_marks():
             reviewed_ids.clear()
@@ -2652,6 +2750,7 @@ class DownloadVerificationCenter(tk.Tk):
         def clear_filters():
             search_var.set("")
             filter_var.set("All results")
+            level_var.set("All priorities")
             sort_var.set("Filename")
             hide_reviewed_var.set(False)
             refresh_review()
@@ -2669,6 +2768,7 @@ class DownloadVerificationCenter(tk.Tk):
 
         search_entry.bind("<KeyRelease>", schedule_search_refresh)
         filter_box.bind("<<ComboboxSelected>>", refresh_review)
+        level_box.bind("<<ComboboxSelected>>", refresh_review)
         sort_box.bind("<<ComboboxSelected>>", refresh_review)
         table.bind("<<TreeviewSelect>>", show_selected_guidance)
         refresh_review()
@@ -2729,7 +2829,16 @@ class DownloadVerificationCenter(tk.Tk):
         ).pack(side="left", ipadx=10, ipady=5)
         tk.Button(
             review_controls,
-            text="UNDO LAST MARK",
+            text="MARK SHOWN REVIEWED",
+            command=mark_shown_reviewed,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        tk.Button(
+            review_controls,
+            text="UNDO LAST CHANGE",
             command=undo_last_review_mark,
             bg="#252936",
             fg=locker.TEXT,

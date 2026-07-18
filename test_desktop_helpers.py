@@ -650,6 +650,31 @@ class DesktopHelperTests(unittest.TestCase):
                 local_details
             )
             self.assertEqual(len(all_rows), len(local_details))
+            level_statuses = {
+                level: {
+                    item["status"]
+                    for item in download_verification_center.filter_receipt_folder_local_details(
+                        local_details,
+                        level=level,
+                    )
+                }
+                for level in ("critical", "review", "info", "good")
+            }
+            self.assertEqual(
+                set().union(*level_statuses.values()),
+                {item["status"] for item in all_rows},
+            )
+            for level, statuses in level_statuses.items():
+                self.assertTrue(statuses)
+                self.assertTrue(
+                    all(
+                        download_verification_center.FOLDER_REVIEW_TRIAGE[status][
+                            "level"
+                        ]
+                        == level
+                        for status in statuses
+                    )
+                )
             session_rows = [
                 {
                     "name": item["name"],
@@ -718,6 +743,62 @@ class DesktopHelperTests(unittest.TestCase):
                 )
             self.assertEqual(len(bounded_result), 2)
             self.assertTrue(all(item["reviewed"] for item in bounded_result))
+            updated_reviewed, bulk_changes = (
+                download_verification_center.apply_receipt_folder_review_marks(
+                    {1},
+                    (0, 1, 2, 2, "private-name.json"),
+                    True,
+                )
+            )
+            self.assertEqual(updated_reviewed, {0, 1, 2})
+            self.assertEqual(bulk_changes, ((0, False), (2, False)))
+            restored_reviewed = set(updated_reviewed)
+            for review_id, was_reviewed in bulk_changes:
+                if was_reviewed:
+                    restored_reviewed.add(review_id)
+                else:
+                    restored_reviewed.discard(review_id)
+            self.assertEqual(restored_reviewed, {1})
+            updated_reviewed, unmark_changes = (
+                download_verification_center.apply_receipt_folder_review_marks(
+                    updated_reviewed,
+                    (1, 2),
+                    False,
+                )
+            )
+            self.assertEqual(updated_reviewed, {0})
+            self.assertEqual(unmark_changes, ((1, True), (2, True)))
+            with self.assertRaisesRegex(ValueError, "mark"):
+                download_verification_center.apply_receipt_folder_review_marks(
+                    set(),
+                    (0,),
+                    "private-invalid-mark",
+                )
+            with self.assertRaisesRegex(ValueError, "bounded iterables"):
+                download_verification_center.apply_receipt_folder_review_marks(
+                    set(),
+                    42,
+                    True,
+                )
+            with mock.patch.object(
+                download_verification_center,
+                "MAX_RECEIPT_FOLDER_ENTRIES",
+                2,
+            ):
+                def bounded_bulk_ids():
+                    yield 0
+                    yield 1
+                    raise AssertionError("bulk review IDs were consumed past the bound")
+
+                bounded_reviewed, bounded_changes = (
+                    download_verification_center.apply_receipt_folder_review_marks(
+                        set(),
+                        bounded_bulk_ids(),
+                        True,
+                    )
+                )
+            self.assertEqual(bounded_reviewed, {0, 1})
+            self.assertEqual(bounded_changes, ((0, False), (1, False)))
             session_summary = (
                 download_verification_center.receipt_folder_review_session_summary(
                     [
@@ -902,6 +983,11 @@ class DesktopHelperTests(unittest.TestCase):
                     local_details,
                     category="private-unknown-filter",
                 )
+            with self.assertRaisesRegex(ValueError, "priority level"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    level="private-unknown-level",
+                )
             with self.assertRaisesRegex(ValueError, "sort mode"):
                 download_verification_center.filter_receipt_folder_local_details(
                     local_details,
@@ -1038,11 +1124,14 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('"Skipped entries": "skipped"', source)
         self.assertIn('"Limit-stopped entries": "limits"', source)
         self.assertIn('"Priority then filename": "priority"', source)
+        self.assertIn('"All priorities": "all"', source)
+        self.assertIn('"Action Required": "critical"', source)
         self.assertIn('text="CLEAR FILTERS"', source)
         self.assertIn('text="NEXT REVIEW ITEM"', source)
         self.assertIn('text="HIDE REVIEWED"', source)
         self.assertIn('value="MARK REVIEWED"', source)
-        self.assertIn('text="UNDO LAST MARK"', source)
+        self.assertIn('text="MARK SHOWN REVIEWED"', source)
+        self.assertIn('text="UNDO LAST CHANGE"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('text="NEXT PENDING ITEM"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
@@ -1077,6 +1166,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("session_progress_var", line)
             self.assertNotIn("session_breakdown_var", line)
             self.assertNotIn("_vaultlink_search_after_id", line)
+            self.assertNotIn("level_var", line)
+            self.assertNotIn("visible_pending", line)
 
     def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
         with mock.patch.object(
