@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Exported Download Verification Center receipts now carry a local Ed25519 integrity seal.",
-    "The private signing key remains DPAPI-protected for the current Windows user under preserved local app data.",
-    "Only a random public key and receipt signature are embedded; no private signing key is exported.",
-    "Schema-two receipts fail closed when the seal is missing, malformed, or invalid.",
-    "Imports label valid same-profile seals, valid other-profile seals, and unsealed legacy receipts separately.",
-    "A stable random public key can correlate receipts from the same local signing key and this limitation is disclosed.",
-    "Integrity seals detect receipt edits but are not public code-signing certificates and do not prove a checked file is safe.",
-    "Prior receipt comparison remains local, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
-    "Unknown fields, paths, filenames, contents, signer text, integrity public keys, and archive entry names are excluded from comparison exports.",
-    "Chunked SHA-256, bounded structure review, Authenticode inspection, and explicit Defender scanning remain local.",
-    "API 0.49.0 publishes local receipt-integrity metadata without receiving files, receipts, keys, or comparison output.",
+    "Download Verification Center now inspects one explicitly selected receipt without requiring the original file.",
+    "Schema-two integrity seals are verified and damaged, missing, malformed, or edited seals fail closed.",
+    "Valid same-profile, valid other-profile, and unsealed legacy receipt states remain visibly distinct.",
+    "The customer can copy a fixed-field privacy-safe receipt inspection summary.",
+    "Inspection exports SHA-256 and fixed categories only, with bounded archive counts and fixed warning IDs.",
+    "Paths, filenames, unknown fields, signer text, signer fingerprints, integrity public keys, archive entry names, and file contents are excluded.",
+    "Arbitrary imported size, extension, type, and architecture text is converted to fixed safe categories.",
+    "Comparing a prior receipt also fills its standalone inspection result automatically.",
+    "Receipt import remains local, rejects links, requires strict UTF-8 JSON, and is capped at 256 KB.",
+    "Receipt inspection does not rescan the original file and does not prove that it is safe.",
+    "API 0.50.0 publishes two fixed receipt-inspection audit actions without receiving the receipt or report.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

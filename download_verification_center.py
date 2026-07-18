@@ -151,6 +151,27 @@ RECEIPT_STRING_STATES = {
     "defender_state": {"attention", "inconclusive", "no_threats", "not_run"},
     "extension_header_match": {"match", "mismatch", "not_mapped"},
 }
+RECEIPT_SIZE_BANDS = {
+    "under 1 MB",
+    "1 MB to under 10 MB",
+    "10 MB to under 100 MB",
+    "100 MB to under 500 MB",
+    "500 MB to under 2 GB",
+    "2 GB to 8 GB",
+    "unknown",
+}
+RECEIPT_ARCHIVE_SIZE_BANDS = RECEIPT_SIZE_BANDS | {
+    "over 8 GB to 50 GB",
+    "over 50 GB",
+}
+RECEIPT_PE_ARCHITECTURES = {
+    "ARM64",
+    "Itanium",
+    "not_applicable",
+    "unknown",
+    "x64",
+    "x86",
+}
 RECEIPT_SIGNING_KEY_FILE = locker.APP_DIR / "download_receipt_signing_key.dpapi"
 RECEIPT_SIGNING_ENTROPY = hashlib.sha256(
     b"VaultLink-Download-Receipt-Integrity-Key-v1"
@@ -535,6 +556,110 @@ def comparison_summary(comparison):
             "An exact comparison does not prove a file is safe.",
         ]
     )
+    return "\n".join(lines)
+
+
+def _receipt_extension_category(extension):
+    value = str(extension or "").strip().lower()
+    if value == "[none]":
+        return "none"
+    if value in RISKY_EXTENSIONS:
+        return "executable_or_script"
+    if any(value in extensions for extensions in TYPE_EXTENSIONS.values()):
+        return "recognized"
+    return "other"
+
+
+def build_receipt_inspection_report(receipt):
+    receipt = dict(receipt or {})
+    sha256 = str(receipt.get("sha256", "")).strip().lower()
+    integrity_state = str(receipt.get("integrity_state", "")).strip()
+    if not SHA256_RE.fullmatch(sha256):
+        raise ValueError("The normalized receipt hash is invalid.")
+    if integrity_state not in INTEGRITY_LABELS:
+        raise ValueError("The normalized receipt integrity state is invalid.")
+    size_value = str(receipt.get("size_band", "unknown"))
+    size_value = size_value if size_value in RECEIPT_SIZE_BANDS else "unknown"
+    signature_state = str(receipt.get("signature_state", "unknown"))
+    if signature_state not in RECEIPT_STRING_STATES["signature_state"]:
+        signature_state = "unknown"
+    defender_state = str(receipt.get("defender_state", "inconclusive"))
+    if defender_state not in RECEIPT_STRING_STATES["defender_state"]:
+        defender_state = "inconclusive"
+    structure = receipt.get("structure") if isinstance(receipt.get("structure"), dict) else {}
+    detected_type = str(structure.get("detected_type", "unknown")).lower()
+    if detected_type not in TYPE_EXTENSIONS and detected_type != "unknown":
+        detected_type = "unknown"
+    extension_match = str(structure.get("extension_header_match", "not_mapped"))
+    if extension_match not in RECEIPT_STRING_STATES["extension_header_match"]:
+        extension_match = "not_mapped"
+    pe_architecture = str(structure.get("pe_architecture", "unknown"))
+    if pe_architecture not in RECEIPT_PE_ARCHITECTURES:
+        pe_architecture = "unknown"
+    warnings = _normalized_warning_ids(structure.get("warning_ids"))
+    archive = structure.get("archive") if isinstance(structure.get("archive"), dict) else None
+    archive_report = None
+    if archive is not None:
+        declared_band = str(archive.get("declared_size_band", "unknown"))
+        if declared_band not in RECEIPT_ARCHIVE_SIZE_BANDS:
+            declared_band = "unknown"
+        archive_report = {
+            "entry_count": _bounded_receipt_count(archive.get("entry_count")),
+            "reviewed_entry_count": _bounded_receipt_count(
+                archive.get("reviewed_entry_count")
+            ),
+            "declared_size_band": declared_band,
+            "warning_ids": _normalized_warning_ids(archive.get("warning_ids")),
+            "review_truncated": bool(archive.get("review_truncated")),
+        }
+    return {
+        "schema_version": 1,
+        "report_type": "vaultlink-download-receipt-inspection",
+        "inspected_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "integrity_state": integrity_state,
+        "sha256": sha256,
+        "size_band": size_value,
+        "extension_category": _receipt_extension_category(receipt.get("extension")),
+        "signature_state": signature_state,
+        "defender_state": defender_state,
+        "structure": {
+            "detected_type": detected_type,
+            "extension_header_match": extension_match,
+            "pe_architecture": pe_architecture,
+            "warning_ids": warnings,
+            "archive": archive_report,
+        },
+        "privacy_note": "This fixed-field inspection excludes the receipt path, filename, unknown fields, signer text, signer fingerprint, integrity public key, archive entry names, and file contents.",
+        "limitations": [
+            "A valid integrity seal detects receipt edits but is not a public code-signing certificate.",
+            "An unsealed legacy receipt may have been edited.",
+            "Receipt inspection does not rescan the original file or prove that it is safe.",
+            "Inspection runs locally and is not uploaded automatically.",
+        ],
+    }
+
+
+def receipt_inspection_summary(report):
+    report = dict(report or {})
+    structure = report.get("structure") if isinstance(report.get("structure"), dict) else {}
+    warning_ids = structure.get("warning_ids") or []
+    archive = structure.get("archive") if isinstance(structure.get("archive"), dict) else None
+    lines = [
+        "VaultLink Verification Receipt Inspection",
+        f"Inspected: {report.get('inspected_at_utc', 'unknown')}",
+        f"Integrity: {INTEGRITY_LABELS.get(report.get('integrity_state'), 'UNKNOWN')}",
+        f"SHA-256: {report.get('sha256', 'unknown')}",
+        f"Size band: {report.get('size_band', 'unknown')}",
+        f"Extension category: {str(report.get('extension_category', 'other')).replace('_', ' ').upper()}",
+        f"Digital signature state: {str(report.get('signature_state', 'unknown')).replace('_', ' ').upper()}",
+        f"Defender state: {str(report.get('defender_state', 'inconclusive')).replace('_', ' ').upper()}",
+        f"Detected type: {str(structure.get('detected_type', 'unknown')).replace('_', ' ').upper()}",
+        f"Fixed structural warnings: {len(warning_ids)}",
+        f"Archive summary present: {'YES' if archive else 'NO'}",
+        "",
+        "This inspection did not rescan the original file and does not prove that it is safe.",
+        "The receipt path, filename, signer text, public key, unknown fields, and file contents are excluded.",
+    ]
     return "\n".join(lines)
 
 
@@ -1024,13 +1149,14 @@ class DownloadVerificationCenter(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink Download Verification Center")
-        self.geometry("1120x900")
-        self.minsize(1020, 900)
+        self.geometry("1120x940")
+        self.minsize(1050, 930)
         self.configure(bg=locker.BG)
         self.selected_path = None
         self.result = None
         self.defender_result = None
         self.comparison_result = None
+        self.inspection_result = None
         self.busy = False
         self.file_var = tk.StringVar(value="No file selected.")
         self.hash_var = tk.StringVar(value="Not calculated")
@@ -1041,8 +1167,11 @@ class DownloadVerificationCenter(tk.Tk):
         self.warning_var = tk.StringVar(value="No structural review yet")
         self.archive_var = tk.StringVar(value="Not an inspected ZIP archive")
         self.defender_var = tk.StringVar(value="Not scanned")
+        self.inspection_var = tk.StringVar(value="No receipt inspected")
         self.comparison_var = tk.StringVar(value="No prior receipt compared")
-        self.status_var = tk.StringVar(value="Choose one downloaded file to begin.")
+        self.status_var = tk.StringVar(
+            value="Choose one downloaded file, or inspect an existing VaultLink receipt."
+        )
         self.expected_var = tk.StringVar(value="")
         self.progress = None
         self.verify_button = None
@@ -1050,6 +1179,8 @@ class DownloadVerificationCenter(tk.Tk):
         self.copy_hash_button = None
         self.copy_summary_button = None
         self.export_button = None
+        self.inspect_receipt_button = None
+        self.copy_inspection_button = None
         self.compare_button = None
         self.export_comparison_button = None
         self.build_ui()
@@ -1193,6 +1324,32 @@ class DownloadVerificationCenter(tk.Tk):
 
         comparison_actions = tk.Frame(outer, bg=locker.BG)
         comparison_actions.pack(fill="x", pady=(0, 12))
+        self.inspect_receipt_button = tk.Button(
+            comparison_actions,
+            text="INSPECT RECEIPT",
+            command=self.inspect_receipt,
+            bg=locker.GREEN,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.inspect_receipt_button.pack(side="left", ipadx=12, ipady=7)
+        self.copy_inspection_button = tk.Button(
+            comparison_actions,
+            text="COPY RECEIPT CHECK",
+            command=self.copy_receipt_inspection,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+        )
+        self.copy_inspection_button.pack(
+            side="left",
+            padx=(8, 0),
+            ipadx=12,
+            ipady=7,
+        )
         self.compare_button = tk.Button(
             comparison_actions,
             text="COMPARE PRIOR RECEIPT",
@@ -1203,7 +1360,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
             state="disabled",
         )
-        self.compare_button.pack(side="left", ipadx=12, ipady=7)
+        self.compare_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
         self.export_comparison_button = tk.Button(
             comparison_actions,
             text="EXPORT COMPARISON",
@@ -1215,13 +1372,6 @@ class DownloadVerificationCenter(tk.Tk):
             state="disabled",
         )
         self.export_comparison_button.pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
-        tk.Label(
-            comparison_actions,
-            text="Prior receipts are sanitized locally; integrity seals detect edits but are not public certificates.",
-            bg=locker.BG,
-            fg=locker.MUTED,
-            font=("Segoe UI", 8),
-        ).pack(side="left", padx=(12, 0))
 
         results = tk.Frame(outer, bg=locker.PANEL)
         results.pack(fill="both", expand=True)
@@ -1241,6 +1391,7 @@ class DownloadVerificationCenter(tk.Tk):
             ("REVIEW SIGNALS", self.warning_var),
             ("ARCHIVE REVIEW", self.archive_var),
             ("MICROSOFT DEFENDER", self.defender_var),
+            ("RECEIPT INSPECTION", self.inspection_var),
             ("RECEIPT COMPARISON", self.comparison_var),
         ):
             row = tk.Frame(results, bg=locker.PANEL)
@@ -1316,11 +1467,13 @@ class DownloadVerificationCenter(tk.Tk):
             self.progress.start(12)
             self.verify_button.configure(state="disabled")
             self.defender_button.configure(state="disabled")
+            self.inspect_receipt_button.configure(state="disabled")
         else:
             self.progress.stop()
             state = "normal" if self.selected_path else "disabled"
             self.verify_button.configure(state=state)
             self.defender_button.configure(state=state)
+            self.inspect_receipt_button.configure(state="normal")
         self.status_var.set(message)
 
     def start_verification(self):
@@ -1457,6 +1610,49 @@ class DownloadVerificationCenter(tk.Tk):
             locker.log_event("download_verify_export", "local", "failed")
             messagebox.showerror("Could not export receipt", str(exc), parent=self)
 
+    def inspect_receipt(self):
+        if self.busy:
+            return
+        path_text = filedialog.askopenfilename(
+            parent=self,
+            title="Inspect a VaultLink verification receipt",
+            filetypes=[("VaultLink JSON receipt", "*.json")],
+        )
+        if not path_text:
+            return
+        try:
+            normalized = load_verification_receipt(path_text)
+            self.inspection_result = build_receipt_inspection_report(normalized)
+            integrity = INTEGRITY_LABELS[self.inspection_result["integrity_state"]]
+            warning_count = len(
+                self.inspection_result["structure"]["warning_ids"]
+            )
+            self.inspection_var.set(
+                f"{integrity} | {warning_count} fixed structural warning(s)"
+            )
+            self.copy_inspection_button.configure(state="normal")
+            self.status_var.set(
+                "Receipt inspected locally. Unknown fields and its path were discarded."
+            )
+            locker.log_event("download_verify_inspect_receipt", "local", "ok")
+        except Exception as exc:
+            self.inspection_result = None
+            self.inspection_var.set("Receipt inspection failed")
+            self.copy_inspection_button.configure(state="disabled")
+            locker.log_event("download_verify_inspect_receipt", "local", "failed")
+            messagebox.showerror("Could not inspect receipt", str(exc), parent=self)
+
+    def copy_receipt_inspection(self):
+        if not self.inspection_result:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(receipt_inspection_summary(self.inspection_result))
+        self.update()
+        self.status_var.set(
+            "Privacy-safe receipt inspection copied without its path or imported text."
+        )
+        locker.log_event("download_verify_copy_receipt_inspection", "local", "ok")
+
     def compare_prior_receipt(self):
         if not self.result or self.busy:
             return
@@ -1469,6 +1665,13 @@ class DownloadVerificationCenter(tk.Tk):
             return
         try:
             prior = load_verification_receipt(path_text)
+            self.inspection_result = build_receipt_inspection_report(prior)
+            self.inspection_var.set(
+                f"{INTEGRITY_LABELS[self.inspection_result['integrity_state']]} | "
+                f"{len(self.inspection_result['structure']['warning_ids'])} "
+                "fixed structural warning(s)"
+            )
+            self.copy_inspection_button.configure(state="normal")
             self.comparison_result = compare_verification_receipt(
                 self.result,
                 self.defender_result,

@@ -513,6 +513,43 @@ class DesktopHelperTests(unittest.TestCase):
                 external = download_verification_center.load_verification_receipt(sealed_path)
             self.assertEqual(external["integrity_state"], "valid_other_profile")
 
+    def test_download_verifier_receipt_inspection_exports_only_fixed_fields(self):
+        result, defender = download_verification_fixture()
+        receipt = download_verification_center.build_privacy_safe_receipt(result, defender)
+        receipt["private_unknown"] = "PRIVATE IMPORTED TEXT"
+        receipt["size_band"] = "PRIVATE SIZE TEXT"
+        receipt["extension"] = ".privateextension"
+        receipt["signer_subject"] = "CN=PRIVATE SIGNER TEXT"
+        receipt["structure"]["detected_type"] = "PRIVATE DETECTED TYPE"
+        receipt["structure"]["pe_architecture"] = "PRIVATE ARCHITECTURE"
+        normalized = download_verification_center.normalize_verification_receipt(receipt)
+        report = download_verification_center.build_receipt_inspection_report(normalized)
+        summary = download_verification_center.receipt_inspection_summary(report)
+        serialized = json.dumps(report)
+
+        self.assertEqual(report["integrity_state"], "unsealed_legacy")
+        self.assertEqual(report["size_band"], "unknown")
+        self.assertEqual(report["extension_category"], "other")
+        self.assertEqual(report["structure"]["detected_type"], "unknown")
+        self.assertEqual(report["structure"]["pe_architecture"], "unknown")
+        self.assertIn(result["sha256"], summary)
+        for private_value in (
+            "PRIVATE IMPORTED TEXT",
+            "PRIVATE SIZE TEXT",
+            ".privateextension",
+            "PRIVATE SIGNER TEXT",
+            "PRIVATE DETECTED TYPE",
+            "PRIVATE ARCHITECTURE",
+            "signer_fingerprint",
+            "public_key",
+        ):
+            self.assertNotIn(private_value, serialized)
+            self.assertNotIn(private_value, summary)
+        with self.assertRaisesRegex(ValueError, "integrity state"):
+            download_verification_center.build_receipt_inspection_report(
+                {**normalized, "integrity_state": "invented"}
+            )
+
     def test_download_verifier_compares_only_fixed_receipt_signals(self):
         result, defender = download_verification_fixture()
         prior = download_verification_center.normalize_verification_receipt(
@@ -566,12 +603,15 @@ class DesktopHelperTests(unittest.TestCase):
     def test_download_verifier_receipt_comparison_ui_and_audit_are_privacy_safe(self):
         source = Path(download_verification_center.__file__).read_text(encoding="utf-8")
         self.assertIn('text="EXPORT SEALED RECEIPT"', source)
+        self.assertIn('text="INSPECT RECEIPT"', source)
+        self.assertIn('text="COPY RECEIPT CHECK"', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
+        self.assertIn('("RECEIPT INSPECTION", self.inspection_var)', source)
         self.assertIn('("RECEIPT COMPARISON", self.comparison_var)', source)
         audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
-        self.assertEqual(len(audit_lines), 13)
+        self.assertEqual(len(audit_lines), 16)
         for line in audit_lines:
             self.assertNotIn("path_text", line)
             self.assertNotIn("prior", line)
