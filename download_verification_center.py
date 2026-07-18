@@ -934,6 +934,19 @@ def receipt_folder_review_triage(status):
     return dict(FOLDER_REVIEW_TRIAGE[key])
 
 
+def receipt_folder_review_guidance_text(status):
+    key = str(status or "")
+    guidance = receipt_folder_review_triage(key)
+    return "\n".join(
+        (
+            f"Priority: {guidance['level_label']}",
+            f"Result: {FOLDER_REVIEW_STATUS_LABELS[key]}",
+            f"Meaning: {guidance['meaning']}",
+            f"Next safe step: {guidance['next_action']}",
+        )
+    )
+
+
 def receipt_folder_review_session_summary(details, reviewed_ids=None):
     rows = filter_receipt_folder_local_details(
         details,
@@ -2380,6 +2393,8 @@ class DownloadVerificationCenter(tk.Tk):
         visible_count_var = tk.StringVar()
         session_progress_var = tk.StringVar()
         session_breakdown_var = tk.StringVar()
+        review_percent_var = tk.DoubleVar(value=0.0)
+        selection_position_var = tk.StringVar(value="No row selected")
         triage_title_var = tk.StringVar(value="NO RESULT SELECTED")
         triage_meaning_var = tk.StringVar(
             value="Select a row to see its fixed local meaning."
@@ -2388,6 +2403,7 @@ class DownloadVerificationCenter(tk.Tk):
             value="Next safe step: no action selected."
         )
         review_action_var = tk.StringVar(value="MARK REVIEWED")
+        copy_guidance_button = None
 
         controls = tk.Frame(window, bg=locker.PANEL)
         controls.pack(fill="x", padx=20, pady=(0, 12))
@@ -2536,6 +2552,9 @@ class DownloadVerificationCenter(tk.Tk):
             triage_meaning_var.set("Select a row to see its fixed local meaning.")
             triage_action_var.set("Next safe step: no action selected.")
             review_action_var.set("MARK REVIEWED")
+            selection_position_var.set("No row selected")
+            if copy_guidance_button is not None:
+                copy_guidance_button.configure(state="disabled")
 
         def refresh_review(_event=None, preferred_review_id=None):
             cancel_scheduled_search()
@@ -2581,9 +2600,15 @@ class DownloadVerificationCenter(tk.Tk):
                 f"{len(rows)} shown | {visible_pending} pending | "
                 f"{visible_reviewed} reviewed"
             )
+            review_percent = (
+                100
+                if summary["total_results"] == 0
+                else round(100 * summary["reviewed"] / summary["total_results"])
+            )
+            review_percent_var.set(review_percent)
             session_progress_var.set(
                 f"{summary['reviewed']} of {summary['total_results']} reviewed | "
-                f"{summary['pending']} pending"
+                f"{summary['pending']} pending | {review_percent}% complete"
             )
             session_breakdown_var.set(
                 "Pending by level: "
@@ -2615,6 +2640,12 @@ class DownloadVerificationCenter(tk.Tk):
             review_action_var.set(
                 "MARK UNREVIEWED" if review_id in reviewed_ids else "MARK REVIEWED"
             )
+            selection_position_var.set(
+                f"Selected {table.index(selected_items[0]) + 1} of "
+                f"{len(table.get_children())} shown"
+            )
+            if copy_guidance_button is not None:
+                copy_guidance_button.configure(state="normal")
 
         def select_review_id(review_id):
             for item_id, item_review_id in item_review_ids.items():
@@ -2697,6 +2728,43 @@ class DownloadVerificationCenter(tk.Tk):
                 return
             refresh_review(preferred_review_id=changes[0][0])
 
+        def copy_selected_guidance():
+            selected_items = table.selection()
+            if not selected_items:
+                triage_title_var.set("NO RESULT SELECTED")
+                triage_meaning_var.set(
+                    "Select one row before copying its fixed safe guidance."
+                )
+                triage_action_var.set(
+                    "Next safe step: select a visible receipt result."
+                )
+                return
+            status = item_status.get(selected_items[0])
+            try:
+                safe_text = receipt_folder_review_guidance_text(status)
+                window.clipboard_clear()
+                window.clipboard_append(safe_text)
+                window.update_idletasks()
+                triage_action_var.set(
+                    "Fixed guidance copied without the receipt filename or path."
+                )
+                locker.log_event(
+                    "download_verify_copy_review_guidance",
+                    "local",
+                    "ok",
+                )
+            except Exception:
+                locker.log_event(
+                    "download_verify_copy_review_guidance",
+                    "local",
+                    "failed",
+                )
+                messagebox.showerror(
+                    "Copy failed",
+                    "VaultLink could not copy the fixed guidance.",
+                    parent=window,
+                )
+
         def undo_last_review_mark():
             if not review_history:
                 triage_title_var.set("NOTHING TO UNDO")
@@ -2755,7 +2823,7 @@ class DownloadVerificationCenter(tk.Tk):
             table.see(target)
             show_selected_guidance()
 
-        def next_pending_item():
+        def ordered_pending_items():
             pending_items = [
                 item_id
                 for item_id in table.get_children()
@@ -2769,6 +2837,10 @@ class DownloadVerificationCenter(tk.Tk):
                     table.index(item_id),
                 )
             )
+            return pending_items
+
+        def cycle_pending_item(step):
+            pending_items = ordered_pending_items()
             if not pending_items:
                 triage_title_var.set("NO PENDING ITEMS SHOWN")
                 triage_meaning_var.set(
@@ -2781,13 +2853,21 @@ class DownloadVerificationCenter(tk.Tk):
             selected_items = table.selection()
             if selected_items and selected_items[0] in pending_items:
                 selected_index = pending_items.index(selected_items[0])
-                target = pending_items[(selected_index + 1) % len(pending_items)]
+                target = pending_items[
+                    (selected_index + step) % len(pending_items)
+                ]
             else:
-                target = pending_items[0]
+                target = pending_items[0 if step > 0 else -1]
             table.selection_set(target)
             table.focus(target)
             table.see(target)
             show_selected_guidance()
+
+        def next_pending_item():
+            cycle_pending_item(1)
+
+        def previous_pending_item():
+            cycle_pending_item(-1)
 
         def clear_filters():
             search_var.set("")
@@ -2850,6 +2930,12 @@ class DownloadVerificationCenter(tk.Tk):
             fg=locker.YELLOW,
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w", padx=12, pady=(0, 8))
+        ttk.Progressbar(
+            triage_panel,
+            mode="determinate",
+            maximum=100,
+            variable=review_percent_var,
+        ).pack(fill="x", padx=12, pady=(0, 8), ipady=2)
         tk.Label(
             triage_panel,
             textvariable=session_breakdown_var,
@@ -2858,6 +2944,13 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9),
             wraplength=950,
             justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Label(
+            triage_panel,
+            textvariable=selection_position_var,
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 9),
         ).pack(anchor="w", padx=12, pady=(0, 8))
         review_controls = tk.Frame(triage_panel, bg=locker.PANEL)
         review_controls.pack(fill="x", padx=12, pady=(0, 10))
@@ -2897,6 +2990,23 @@ class DownloadVerificationCenter(tk.Tk):
             relief="flat",
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
+        copy_guidance_button = tk.Button(
+            review_controls,
+            text="COPY SAFE GUIDANCE",
+            command=copy_selected_guidance,
+            state="disabled",
+            bg="#252936",
+            fg=locker.TEXT,
+            disabledforeground=locker.MUTED,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        copy_guidance_button.pack(
+            side="left",
+            padx=(8, 0),
+            ipadx=10,
+            ipady=5,
+        )
         tk.Button(
             review_controls,
             text="RESET REVIEW MARKS",
@@ -2933,6 +3043,15 @@ class DownloadVerificationCenter(tk.Tk):
             command=next_review_item,
             bg=locker.BLUE,
             fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="PREVIOUS PENDING",
+            command=previous_pending_item,
+            bg="#252936",
+            fg=locker.TEXT,
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)

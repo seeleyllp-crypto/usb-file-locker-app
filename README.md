@@ -16,6 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.18.11` adds a determinate review-completion bar, an exact completion percentage, and the selected row's position within the current visible results. `PREVIOUS PENDING` navigates backward while `NEXT PENDING ITEM` continues forward, with both directions honoring every active search and filter.
+
+`COPY SAFE GUIDANCE` copies only the selected result's fixed priority, result label, meaning, and next safe step. It never copies the receipt filename, path, hash, folder, or local report. Its audit record contains only the fixed action name plus success or failure, never clipboard text.
+
+Progress, position, navigation, and clipboard state remain local to the open window. The controls fit the supported `880x650` minimum review size. API `0.60.0` advertises these features without receiving local review data.
+
 Release `2026.07.18.10` replaces the one-way Hide Reviewed checkbox with an All, Pending only, or Reviewed only session selector. Session state composes with filename search, result filters, the priority filter, and sorting. The visible counter now separately shows total, pending, and reviewed rows.
 
 `MARK SHOWN PENDING` reopens every reviewed row in the current visible view. Like `MARK SHOWN REVIEWED`, the whole batch can be restored with one `UNDO LAST CHANGE`. Legacy helper callers using `hide_reviewed=True` keep the same pending-only behavior.

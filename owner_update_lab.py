@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now has an All, Pending only, or Reviewed only session-state selector.",
-    "Pending only replaces the old one-way Hide Reviewed control with a clearer reusable view.",
-    "Reviewed only lets customers inspect exactly which visible rows have temporary review marks.",
-    "MARK SHOWN PENDING reopens every reviewed row in the current visible search and filters.",
-    "Session state composes with filename search, result filters, priority filters, and sorting.",
-    "UNDO LAST CHANGE restores an entire MARK SHOWN PENDING or MARK SHOWN REVIEWED batch in one step.",
-    "The row counter now shows total, pending, and reviewed rows for the active view.",
-    "Legacy helper callers using hide_reviewed=True keep the same pending-only behavior.",
-    "Batch work stays within 1,000 numeric IDs and review history stays within 100 reversible actions.",
-    "Session state, bulk changes, history, selection, and counts remain local-only and the app never executes or uploads receipts.",
-    "API 0.59.0 advertises session views, bounded batch reopen, one-step undo, and visible state counts without receiving local review data.",
+    "Local Receipt Review now includes a determinate completion progress bar from 0 to 100 percent.",
+    "The aggregate progress line also shows an exact integer completion percentage.",
+    "Selecting a row now shows its position within the current visible result set.",
+    "PREVIOUS PENDING navigates backward through unreviewed rows while NEXT PENDING ITEM continues forward.",
+    "Both pending directions honor the active filename, result, priority, and session-state filters.",
+    "COPY SAFE GUIDANCE copies only fixed priority, result, meaning, and next-step text.",
+    "Copied guidance never includes the receipt filename, path, hash, selected folder, or local report.",
+    "The copy action records only a coarse success or failure audit event and never records clipboard text.",
+    "All new controls fit the review window at its supported 880 by 650 minimum size.",
+    "Progress, position, navigation, and clipboard state remain local-only; the app never executes, uploads, or proves safety for receipts.",
+    "API 0.60.0 advertises progress, position, reverse navigation, and safe guidance copy without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

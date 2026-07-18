@@ -1001,6 +1001,17 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertEqual(critical_guidance["level"], "critical")
             self.assertIn("Do not rely", critical_guidance["next_action"])
             self.assertNotIn("private-invalid-receipt", json.dumps(critical_guidance))
+            safe_guidance = (
+                download_verification_center.receipt_folder_review_guidance_text(
+                    "invalid_or_tampered"
+                )
+            )
+            self.assertIn("Priority: ACTION REQUIRED", safe_guidance)
+            self.assertIn("Result: Invalid, unsupported, changed, or tampered", safe_guidance)
+            self.assertIn("Meaning:", safe_guidance)
+            self.assertIn("Next safe step:", safe_guidance)
+            self.assertNotIn("private-invalid-receipt", safe_guidance)
+            self.assertNotIn(str(root), safe_guidance)
             with self.assertRaisesRegex(ValueError, "result"):
                 download_verification_center.receipt_folder_review_triage(
                     "private-unknown-result"
@@ -1155,6 +1166,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('"Action Required": "critical"', source)
         self.assertIn('text="CLEAR FILTERS"', source)
         self.assertIn('text="NEXT REVIEW ITEM"', source)
+        self.assertIn('text="PREVIOUS PENDING"', source)
         self.assertIn('text="SESSION"', source)
         self.assertIn('"Pending only": "pending"', source)
         self.assertIn('"Reviewed only": "reviewed"', source)
@@ -1162,6 +1174,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="MARK SHOWN REVIEWED"', source)
         self.assertIn('text="MARK SHOWN PENDING"', source)
         self.assertIn('text="UNDO LAST CHANGE"', source)
+        self.assertIn('text="COPY SAFE GUIDANCE"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('text="NEXT PENDING ITEM"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
@@ -1171,35 +1184,62 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS = 180", source)
         self.assertIn('search_entry.bind("<KeyRelease>", schedule_search_refresh)', source)
         self.assertIn("session_breakdown_var", source)
+        self.assertIn("review_percent_var", source)
+        self.assertIn("selection_position_var", source)
+        self.assertIn("download_verify_copy_review_guidance", source)
+        self.assertIn("ttk.Progressbar(", source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
         self.assertIn('("RECEIPT INSPECTION", self.inspection_var)', source)
         self.assertIn('("RECEIPT COMPARISON", self.comparison_var)', source)
-        audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
-        self.assertEqual(len(audit_lines), 21)
-        for line in audit_lines:
-            self.assertNotIn("path_text", line)
-            self.assertNotIn("prior", line)
-            self.assertNotIn("self.comparison_result", line)
-            self.assertNotIn("self.selected_path", line)
-            self.assertNotIn("search_var", line)
-            self.assertNotIn("filter_var", line)
-            self.assertNotIn("sort_var", line)
-            self.assertNotIn("folder_audit_local_details", line)
-            self.assertNotIn("item_status", line)
-            self.assertNotIn("triage_", line)
-            self.assertNotIn("reviewed_ids", line)
-            self.assertNotIn("item_review_ids", line)
-            self.assertNotIn("hide_reviewed_var", line)
-            self.assertNotIn("session_var", line)
-            self.assertNotIn("review_history", line)
-            self.assertNotIn("session_progress_var", line)
-            self.assertNotIn("session_breakdown_var", line)
-            self.assertNotIn("_vaultlink_search_after_id", line)
-            self.assertNotIn("level_var", line)
-            self.assertNotIn("visible_pending", line)
-            self.assertNotIn("visible_reviewed", line)
+        source_tree = ast.parse(source)
+        audit_calls = [
+            node
+            for node in ast.walk(source_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "log_event"
+        ]
+        self.assertEqual(len(audit_calls), 23)
+        copy_guidance_calls = 0
+        for call in audit_calls:
+            call_source = ast.get_source_segment(source, call) or ""
+            if (
+                call.args
+                and isinstance(call.args[0], ast.Constant)
+                and call.args[0].value == "download_verify_copy_review_guidance"
+            ):
+                copy_guidance_calls += 1
+            for private_term in (
+                "path_text",
+                "prior",
+                "self.comparison_result",
+                "self.selected_path",
+                "search_var",
+                "filter_var",
+                "sort_var",
+                "folder_audit_local_details",
+                "item_status",
+                "triage_",
+                "reviewed_ids",
+                "item_review_ids",
+                "hide_reviewed_var",
+                "session_var",
+                "review_history",
+                "session_progress_var",
+                "session_breakdown_var",
+                "_vaultlink_search_after_id",
+                "level_var",
+                "visible_pending",
+                "visible_reviewed",
+                "review_percent_var",
+                "selection_position_var",
+                "safe_text",
+                "clipboard",
+            ):
+                self.assertNotIn(private_term, call_source)
+        self.assertEqual(copy_guidance_calls, 2)
 
     def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
         with mock.patch.object(
