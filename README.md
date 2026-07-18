@@ -16,6 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.18.10` replaces the one-way Hide Reviewed checkbox with an All, Pending only, or Reviewed only session selector. Session state composes with filename search, result filters, the priority filter, and sorting. The visible counter now separately shows total, pending, and reviewed rows.
+
+`MARK SHOWN PENDING` reopens every reviewed row in the current visible view. Like `MARK SHOWN REVIEWED`, the whole batch can be restored with one `UNDO LAST CHANGE`. Legacy helper callers using `hide_reviewed=True` keep the same pending-only behavior.
+
+Session state and batch changes remain bounded to 1,000 numeric IDs with at most 100 reversible actions. They are never logged, exported, persisted, or sent to the API. API `0.59.0` advertises these controls without receiving local review data.
+
 Release `2026.07.18.9` adds a dedicated priority filter to Local Receipt Review. Customers can combine Action Required, Review, Info, or Valid with filename search, the existing result filter, sorting, and Hide Reviewed. The row counter now separates all shown rows from pending shown rows.
 
 `MARK SHOWN REVIEWED` applies only to pending rows in the current visible search and filters. One `UNDO LAST CHANGE` restores the whole bulk action. Work remains bounded to 1,000 numeric review IDs, duplicate or invalid IDs are ignored, and history is capped at 100 reversible actions.

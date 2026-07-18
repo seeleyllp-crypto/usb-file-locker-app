@@ -692,6 +692,28 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertTrue(marked_rows[0]["reviewed"])
             self.assertFalse(marked_rows[1]["reviewed"])
             self.assertTrue(marked_rows[2]["reviewed"])
+            pending_rows = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    reviewed_ids={0, 2},
+                    session_state="pending",
+                )
+            )
+            reviewed_rows = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    reviewed_ids={0, 2},
+                    session_state="reviewed",
+                )
+            )
+            self.assertEqual(len(pending_rows), len(session_rows) - 2)
+            self.assertEqual(len(reviewed_rows), 2)
+            self.assertTrue(all(not item["reviewed"] for item in pending_rows))
+            self.assertTrue(all(item["reviewed"] for item in reviewed_rows))
+            self.assertEqual(
+                len(pending_rows) + len(reviewed_rows),
+                len(session_rows),
+            )
             self.assertEqual(
                 len(
                     download_verification_center.filter_receipt_folder_local_details(
@@ -710,6 +732,11 @@ class DesktopHelperTests(unittest.TestCase):
                 download_verification_center.filter_receipt_folder_local_details(
                     session_rows,
                     hide_reviewed="private-invalid-mode",
+                )
+            with self.assertRaisesRegex(ValueError, "session state"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    session_rows,
+                    session_state="private-invalid-session",
                 )
             with self.assertRaisesRegex(ValueError, "session IDs"):
                 download_verification_center.filter_receipt_folder_local_details(
@@ -1128,9 +1155,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('"Action Required": "critical"', source)
         self.assertIn('text="CLEAR FILTERS"', source)
         self.assertIn('text="NEXT REVIEW ITEM"', source)
-        self.assertIn('text="HIDE REVIEWED"', source)
+        self.assertIn('text="SESSION"', source)
+        self.assertIn('"Pending only": "pending"', source)
+        self.assertIn('"Reviewed only": "reviewed"', source)
         self.assertIn('value="MARK REVIEWED"', source)
         self.assertIn('text="MARK SHOWN REVIEWED"', source)
+        self.assertIn('text="MARK SHOWN PENDING"', source)
         self.assertIn('text="UNDO LAST CHANGE"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('text="NEXT PENDING ITEM"', source)
@@ -1162,12 +1192,14 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("reviewed_ids", line)
             self.assertNotIn("item_review_ids", line)
             self.assertNotIn("hide_reviewed_var", line)
+            self.assertNotIn("session_var", line)
             self.assertNotIn("review_history", line)
             self.assertNotIn("session_progress_var", line)
             self.assertNotIn("session_breakdown_var", line)
             self.assertNotIn("_vaultlink_search_after_id", line)
             self.assertNotIn("level_var", line)
             self.assertNotIn("visible_pending", line)
+            self.assertNotIn("visible_reviewed", line)
 
     def test_download_verifier_receipt_review_window_is_singleton_and_clear_releases_names(self):
         with mock.patch.object(
