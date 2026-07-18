@@ -5,10 +5,13 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
+import struct
 import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import zipfile
 
 import usb_file_locker as locker
 
@@ -18,6 +21,104 @@ HASH_CHUNK_BYTES = 1024 * 1024
 DEFENDER_TIMEOUT_SECONDS = 10 * 60
 SIGNATURE_TIMEOUT_SECONDS = 30
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_ARCHIVE_DECLARED_BYTES = 50 * 1024 * 1024 * 1024
+HIGH_COMPRESSION_RATIO = 200
+HIGH_COMPRESSION_MIN_BYTES = 100 * 1024 * 1024
+RISKY_EXTENSIONS = {
+    ".bat",
+    ".cmd",
+    ".com",
+    ".cpl",
+    ".dll",
+    ".exe",
+    ".hta",
+    ".jar",
+    ".js",
+    ".jse",
+    ".lnk",
+    ".msi",
+    ".ocx",
+    ".ps1",
+    ".reg",
+    ".scr",
+    ".sys",
+    ".vbe",
+    ".vbs",
+    ".wsf",
+}
+DECOY_EXTENSIONS = {
+    ".csv",
+    ".doc",
+    ".docx",
+    ".gif",
+    ".jpg",
+    ".jpeg",
+    ".md",
+    ".mp3",
+    ".mp4",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".rtf",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+NESTED_ARCHIVE_EXTENSIONS = {
+    ".7z",
+    ".apk",
+    ".gz",
+    ".iso",
+    ".jar",
+    ".rar",
+    ".tar",
+    ".tgz",
+    ".xz",
+    ".zip",
+}
+TYPE_EXTENSIONS = {
+    "windows_pe": {".cpl", ".dll", ".exe", ".ocx", ".scr", ".sys"},
+    "windows_shortcut": {".lnk"},
+    "zip_archive": {".apk", ".docm", ".docx", ".jar", ".pptm", ".pptx", ".vsix", ".xlsm", ".xlsx", ".zip"},
+    "pdf": {".pdf"},
+    "png": {".png"},
+    "jpeg": {".jpeg", ".jpg"},
+    "gif": {".gif"},
+    "seven_zip": {".7z"},
+    "rar": {".rar"},
+    "gzip": {".gz", ".tgz"},
+    "elf": {".elf", ".so"},
+    "ole_compound": {".doc", ".msi", ".ppt", ".xls"},
+    "text": {".bat", ".cfg", ".cmd", ".csv", ".ini", ".js", ".json", ".md", ".ps1", ".reg", ".txt", ".vbs", ".xml", ".yaml", ".yml"},
+}
+PE_ARCHITECTURES = {
+    0x014C: "x86",
+    0x0200: "Itanium",
+    0x8664: "x64",
+    0xAA64: "ARM64",
+}
+WINDOWS_SHORTCUT_HEADER = bytes.fromhex("4c0000000114020000000000c000000000000046")
+WARNING_LABELS = {
+    "archive_declared_size_over_50gb": "Archive declares more than 50 GB of expanded data",
+    "archive_encrypted_entries": "Archive contains encrypted entries that were not readable",
+    "archive_entry_review_truncated": "Archive has more than 10,000 entries; review was truncated",
+    "archive_executable_entries": "Archive contains executable or script extensions",
+    "archive_extreme_compression": "Archive contains an extreme compression-ratio entry",
+    "archive_links": "Archive contains link entries",
+    "archive_nested_archives": "Archive contains nested archive extensions",
+    "archive_office_macros": "Archive contains an Office macro project name",
+    "archive_traversal_paths": "Archive contains absolute or parent-traversal paths",
+    "archive_zero_compressed_size": "Archive declares expanded data with zero compressed bytes",
+    "executable_or_script_extension": "Selected file uses an executable or script extension",
+    "extension_header_mismatch": "Filename extension does not match the detected header",
+    "macro_enabled_office_extension": "Selected file uses a macro-enabled Office extension",
+    "malformed_pe_header": "File starts with MZ but has an invalid PE header",
+    "misleading_double_extension": "Filename combines a document/media extension with an executable extension",
+    "windows_shortcut": "Selected file is a Windows shortcut",
+}
 
 
 def normalize_expected_sha256(value):
@@ -46,6 +147,22 @@ def size_band(size_bytes):
     if size < 2 * gib:
         return "500 MB to under 2 GB"
     return "2 GB to 8 GB"
+
+
+def archive_size_band(size_bytes):
+    size = max(0, int(size_bytes or 0))
+    if size > MAX_ARCHIVE_DECLARED_BYTES:
+        return "over 50 GB"
+    if size > MAX_FILE_BYTES:
+        return "over 8 GB to 50 GB"
+    return size_band(size)
+
+
+def warning_labels(warning_ids):
+    return [
+        WARNING_LABELS.get(str(warning_id), str(warning_id).replace("_", " ").title())
+        for warning_id in warning_ids or []
+    ]
 
 
 def _file_identity(path):
@@ -90,6 +207,200 @@ def compute_file_sha256(path):
         "size_bytes": read_bytes,
         "size_band": size_band(read_bytes),
         "extension": selected.suffix.lower()[:24] or "[none]",
+    }
+
+
+def _looks_like_text(sample):
+    if not sample or b"\x00" in sample:
+        return False
+    printable = sum(
+        byte in {9, 10, 13} or 32 <= byte <= 126
+        for byte in sample
+    )
+    return printable / len(sample) >= 0.90
+
+
+def detect_file_header(path):
+    selected, identity = validate_selected_file(path)
+    with selected.open("rb") as handle:
+        sample = handle.read(4096)
+        if sample.startswith(b"MZ"):
+            if len(sample) < 64:
+                return {"detected_type": "dos_mz_or_invalid_pe", "pe_architecture": "unknown", "malformed_pe": True}
+            pe_offset = struct.unpack("<I", sample[60:64])[0]
+            if pe_offset > min(max(identity["size"] - 6, 0), 1024 * 1024):
+                return {"detected_type": "dos_mz_or_invalid_pe", "pe_architecture": "unknown", "malformed_pe": True}
+            handle.seek(pe_offset)
+            pe_header = handle.read(6)
+            if len(pe_header) != 6 or pe_header[:4] != b"PE\x00\x00":
+                return {"detected_type": "dos_mz_or_invalid_pe", "pe_architecture": "unknown", "malformed_pe": True}
+            machine = struct.unpack("<H", pe_header[4:6])[0]
+            return {
+                "detected_type": "windows_pe",
+                "pe_architecture": PE_ARCHITECTURES.get(machine, f"unknown-0x{machine:04x}"),
+                "malformed_pe": False,
+            }
+    if sample.startswith(WINDOWS_SHORTCUT_HEADER):
+        detected_type = "windows_shortcut"
+    elif zipfile.is_zipfile(selected):
+        detected_type = "zip_archive"
+    elif sample.startswith(b"%PDF-"):
+        detected_type = "pdf"
+    elif sample.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected_type = "png"
+    elif sample.startswith(b"\xff\xd8\xff"):
+        detected_type = "jpeg"
+    elif sample.startswith((b"GIF87a", b"GIF89a")):
+        detected_type = "gif"
+    elif sample.startswith(b"7z\xbc\xaf'\x1c"):
+        detected_type = "seven_zip"
+    elif sample.startswith(b"Rar!\x1a\x07"):
+        detected_type = "rar"
+    elif sample.startswith(b"\x1f\x8b"):
+        detected_type = "gzip"
+    elif sample.startswith(b"\x7fELF"):
+        detected_type = "elf"
+    elif sample.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        detected_type = "ole_compound"
+    elif _looks_like_text(sample):
+        detected_type = "text"
+    else:
+        detected_type = "unknown"
+    return {
+        "detected_type": detected_type,
+        "pe_architecture": "not_applicable",
+        "malformed_pe": False,
+    }
+
+
+def extension_header_match(extension, detected_type):
+    extension = str(extension or "").lower()
+    expected = TYPE_EXTENSIONS.get(str(detected_type))
+    if not expected or not extension:
+        return "not_mapped"
+    return "match" if extension in expected else "mismatch"
+
+
+def inspect_zip_structure(path):
+    selected, before = validate_selected_file(path)
+    summary = {
+        "reviewed": True,
+        "entry_count": 0,
+        "reviewed_entry_count": 0,
+        "declared_size_band": "under 1 MB",
+        "traversal_entry_count": 0,
+        "link_entry_count": 0,
+        "encrypted_entry_count": 0,
+        "executable_entry_count": 0,
+        "nested_archive_count": 0,
+        "macro_entry_count": 0,
+        "high_compression_entry_count": 0,
+        "review_truncated": False,
+        "warning_ids": [],
+    }
+    try:
+        with zipfile.ZipFile(selected, "r") as archive:
+            entries = archive.infolist()
+            summary["entry_count"] = len(entries)
+            reviewed = entries[:MAX_ARCHIVE_ENTRIES]
+            summary["reviewed_entry_count"] = len(reviewed)
+            summary["review_truncated"] = len(entries) > len(reviewed)
+            total_declared = 0
+            total_compressed = 0
+            for info in reviewed:
+                if info.is_dir():
+                    continue
+                total_declared += max(0, int(info.file_size))
+                total_compressed += max(0, int(info.compress_size))
+                normalized = str(info.filename).replace("\\", "/")
+                parts = [part for part in normalized.split("/") if part not in {"", "."}]
+                if (
+                    normalized.startswith(("/", "\\"))
+                    or re.match(r"(?i)^[a-z]:", normalized)
+                    or ".." in parts
+                ):
+                    summary["traversal_entry_count"] += 1
+                mode = (int(info.external_attr) >> 16) & 0xFFFF
+                if mode and stat.S_ISLNK(mode):
+                    summary["link_entry_count"] += 1
+                if int(info.flag_bits) & 0x1:
+                    summary["encrypted_entry_count"] += 1
+                lowered = normalized.lower()
+                suffix = Path(lowered).suffix
+                if suffix in RISKY_EXTENSIONS:
+                    summary["executable_entry_count"] += 1
+                if suffix in NESTED_ARCHIVE_EXTENSIONS:
+                    summary["nested_archive_count"] += 1
+                if lowered.endswith("vbaproject.bin"):
+                    summary["macro_entry_count"] += 1
+                ratio = int(info.file_size) / max(1, int(info.compress_size))
+                if int(info.file_size) >= HIGH_COMPRESSION_MIN_BYTES and ratio >= HIGH_COMPRESSION_RATIO:
+                    summary["high_compression_entry_count"] += 1
+            summary["declared_size_band"] = archive_size_band(total_declared)
+            if total_declared > MAX_ARCHIVE_DECLARED_BYTES:
+                summary["warning_ids"].append("archive_declared_size_over_50gb")
+            if summary["review_truncated"]:
+                summary["warning_ids"].append("archive_entry_review_truncated")
+            warning_fields = (
+                ("traversal_entry_count", "archive_traversal_paths"),
+                ("link_entry_count", "archive_links"),
+                ("encrypted_entry_count", "archive_encrypted_entries"),
+                ("executable_entry_count", "archive_executable_entries"),
+                ("nested_archive_count", "archive_nested_archives"),
+                ("macro_entry_count", "archive_office_macros"),
+                ("high_compression_entry_count", "archive_extreme_compression"),
+            )
+            for field, warning_id in warning_fields:
+                if summary[field]:
+                    summary["warning_ids"].append(warning_id)
+            if total_compressed == 0 and total_declared > 0:
+                summary["warning_ids"].append("archive_zero_compressed_size")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("The file looked like ZIP data but its central directory was unreadable.") from exc
+    if before != _file_identity(selected):
+        raise ValueError("The file changed during its bounded ZIP structure review.")
+    summary["warning_ids"] = sorted(set(summary["warning_ids"]))
+    return summary
+
+
+def inspect_file_structure(path):
+    selected, before = validate_selected_file(path)
+    header = detect_file_header(selected)
+    extension = selected.suffix.lower()[:24] or "[none]"
+    suffixes = [suffix.lower() for suffix in selected.suffixes]
+    double_extension = (
+        len(suffixes) >= 2
+        and suffixes[-1] in RISKY_EXTENSIONS
+        and any(suffix in DECOY_EXTENSIONS for suffix in suffixes[:-1])
+    )
+    match_state = extension_header_match(extension, header["detected_type"])
+    warning_ids = []
+    if extension in RISKY_EXTENSIONS:
+        warning_ids.append("executable_or_script_extension")
+    if double_extension:
+        warning_ids.append("misleading_double_extension")
+    if match_state == "mismatch":
+        warning_ids.append("extension_header_mismatch")
+    if header.get("malformed_pe"):
+        warning_ids.append("malformed_pe_header")
+    if header["detected_type"] == "windows_shortcut":
+        warning_ids.append("windows_shortcut")
+    if extension in {".docm", ".xlsm", ".pptm"}:
+        warning_ids.append("macro_enabled_office_extension")
+    archive = None
+    if header["detected_type"] == "zip_archive":
+        archive = inspect_zip_structure(selected)
+        warning_ids.extend(archive["warning_ids"])
+    if before != _file_identity(selected):
+        raise ValueError("The file changed during its structure review.")
+    return {
+        "detected_type": header["detected_type"],
+        "extension": extension,
+        "extension_header_match": match_state,
+        "pe_architecture": header["pe_architecture"],
+        "double_extension": double_extension,
+        "warning_ids": sorted(set(warning_ids)),
+        "archive": archive,
     }
 
 
@@ -163,6 +474,7 @@ $signature = Get-AuthenticodeSignature -LiteralPath $path
 def verify_download(path, expected_sha256=""):
     expected = normalize_expected_sha256(expected_sha256)
     hash_result = compute_file_sha256(path)
+    structure = inspect_file_structure(path)
     signature = inspect_authenticode_signature(path)
     if not expected:
         comparison = "not_provided"
@@ -174,6 +486,7 @@ def verify_download(path, expected_sha256=""):
         **hash_result,
         "expected_sha256_provided": bool(expected),
         "hash_comparison": comparison,
+        "structure": structure,
         "signature": signature,
         "verified_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -246,6 +559,8 @@ def scan_file_with_defender(path):
 def build_privacy_safe_receipt(result, defender=None):
     result = dict(result or {})
     signature = dict(result.get("signature") or {})
+    structure = dict(result.get("structure") or {})
+    archive = structure.get("archive") if isinstance(structure.get("archive"), dict) else None
     defender = dict(defender or {})
     return {
         "schema_version": 1,
@@ -259,13 +574,46 @@ def build_privacy_safe_receipt(result, defender=None):
         "signature_state": str(signature.get("state", "unknown")),
         "signature_status": str(signature.get("status", "Unknown"))[:80],
         "signer_subject": str(signature.get("signer_subject", ""))[:300],
+        "structure": {
+            "detected_type": str(structure.get("detected_type", "unknown"))[:80],
+            "extension_header_match": str(structure.get("extension_header_match", "not_mapped"))[:40],
+            "pe_architecture": str(structure.get("pe_architecture", "not_applicable"))[:40],
+            "double_extension": bool(structure.get("double_extension")),
+            "warning_ids": [
+                str(value)[:80]
+                for value in structure.get("warning_ids", [])
+                if isinstance(value, str)
+            ][:20],
+            "archive": (
+                {
+                    key: archive.get(key)
+                    for key in (
+                        "entry_count",
+                        "reviewed_entry_count",
+                        "declared_size_band",
+                        "traversal_entry_count",
+                        "link_entry_count",
+                        "encrypted_entry_count",
+                        "executable_entry_count",
+                        "nested_archive_count",
+                        "macro_entry_count",
+                        "high_compression_entry_count",
+                        "review_truncated",
+                        "warning_ids",
+                    )
+                }
+                if archive is not None
+                else None
+            ),
+        },
         "defender_state": str(defender.get("state", "not_run")),
         "defender_scan_mode": str(defender.get("scan_mode", "not run"))[:120],
-        "privacy_note": "The receipt excludes the filename, path, Windows username, file contents, and Defender command output.",
+        "privacy_note": "The receipt excludes the filename, path, Windows username, file contents, archive entry names, and Defender command output.",
         "limitations": [
             "A matching hash proves only that the bytes match the expected hash.",
             "A valid signature identifies a signer but does not guarantee the file is harmless.",
             "A Defender no-threat result is not proof that a file is safe.",
+            "Header and ZIP structure checks are bounded warning signals, not malware detection.",
             "VaultLink does not upload the selected file or this receipt automatically.",
         ],
     }
@@ -276,6 +624,8 @@ def verification_summary(result, defender=None):
     comparison = receipt["hash_comparison"].replace("_", " ").upper()
     signature = receipt["signature_state"].replace("_", " ").upper()
     defender_state = receipt["defender_state"].replace("_", " ").upper()
+    structure = receipt["structure"]
+    warning_count = len(structure["warning_ids"])
     return "\n".join(
         [
             "VaultLink Download Verification",
@@ -285,6 +635,9 @@ def verification_summary(result, defender=None):
             f"SHA-256: {receipt['sha256']}",
             f"Expected hash: {comparison}",
             f"Digital signature: {signature}",
+            f"Detected type: {structure['detected_type']}",
+            f"Extension/header: {structure['extension_header_match'].replace('_', ' ').upper()}",
+            f"Structural warnings: {warning_count}",
             f"Microsoft Defender: {defender_state}",
             "",
             "A matching hash, valid signature, or no-threat scan does not guarantee a file is safe.",
@@ -309,6 +662,9 @@ class DownloadVerificationCenter(tk.Tk):
         self.compare_var = tk.StringVar(value="Expected hash not provided")
         self.signature_var = tk.StringVar(value="Not inspected")
         self.signer_var = tk.StringVar(value="No signer information")
+        self.structure_var = tk.StringVar(value="Not inspected")
+        self.warning_var = tk.StringVar(value="No structural review yet")
+        self.archive_var = tk.StringVar(value="Not an inspected ZIP archive")
         self.defender_var = tk.StringVar(value="Not scanned")
         self.status_var = tk.StringVar(value="Choose one downloaded file to begin.")
         self.expected_var = tk.StringVar(value="")
@@ -471,6 +827,9 @@ class DownloadVerificationCenter(tk.Tk):
             ("EXPECTED HASH", self.compare_var),
             ("DIGITAL SIGNATURE", self.signature_var),
             ("SIGNER", self.signer_var),
+            ("FILE STRUCTURE", self.structure_var),
+            ("REVIEW SIGNALS", self.warning_var),
+            ("ARCHIVE REVIEW", self.archive_var),
             ("MICROSOFT DEFENDER", self.defender_var),
         ):
             row = tk.Frame(results, bg=locker.PANEL)
@@ -521,6 +880,9 @@ class DownloadVerificationCenter(tk.Tk):
             self.compare_var.set("Expected hash not provided")
             self.signature_var.set("Not inspected")
             self.signer_var.set("No signer information")
+            self.structure_var.set("Not inspected")
+            self.warning_var.set("No structural review yet")
+            self.archive_var.set("Not an inspected ZIP archive")
             self.defender_var.set("Not scanned")
             self.verify_button.configure(state="normal")
             self.defender_button.configure(state="normal")
@@ -555,7 +917,7 @@ class DownloadVerificationCenter(tk.Tk):
             messagebox.showerror("Expected hash is invalid", str(exc), parent=self)
             return
         selected = self.selected_path
-        self.set_busy(True, "Calculating SHA-256 and asking Windows to inspect the digital signature...")
+        self.set_busy(True, "Calculating SHA-256, reviewing bounded file structure, and asking Windows to inspect the digital signature...")
 
         def worker():
             try:
@@ -579,6 +941,26 @@ class DownloadVerificationCenter(tk.Tk):
         signature = result["signature"]
         self.signature_var.set(signature["label"])
         self.signer_var.set(signature["signer_subject"] or "No signer certificate reported")
+        structure = result["structure"]
+        warnings = structure["warning_ids"]
+        detected = structure["detected_type"].replace("_", " ").upper()
+        match_state = structure["extension_header_match"].replace("_", " ").upper()
+        architecture = structure["pe_architecture"]
+        architecture_text = "" if architecture == "not_applicable" else f" | {architecture}"
+        self.structure_var.set(
+            f"{detected}{architecture_text} | extension/header {match_state} | "
+            f"{len(warnings)} fixed warning(s)"
+        )
+        labels = warning_labels(warnings)
+        self.warning_var.set(" | ".join(labels) if labels else "No fixed structural warnings found")
+        archive = structure.get("archive")
+        if archive:
+            self.archive_var.set(
+                f"{archive['entry_count']} entries | {archive['reviewed_entry_count']} reviewed | "
+                f"{len(archive['warning_ids'])} warning type(s) | declared {archive['declared_size_band']}"
+            )
+        else:
+            self.archive_var.set("Not a ZIP-based format")
         self.copy_hash_button.configure(state="normal")
         self.copy_summary_button.configure(state="normal")
         self.export_button.configure(state="normal")

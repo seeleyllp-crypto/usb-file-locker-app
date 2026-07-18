@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import queue
+import stat
 import tempfile
 import threading
 import unittest
@@ -261,6 +262,82 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("-DisableRemediation", defender_args)
             self.assertNotIn("shell", run.call_args.kwargs)
             self.assertEqual(identity, download_verification_center._file_identity(path))
+
+    def test_download_verifier_detects_pe_architecture_and_misleading_double_extension(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "invoice.pdf.exe"
+            data = bytearray(512)
+            data[:2] = b"MZ"
+            data[60:64] = (128).to_bytes(4, "little")
+            data[128:132] = b"PE\x00\x00"
+            data[132:134] = (0x8664).to_bytes(2, "little")
+            path.write_bytes(data)
+            structure = download_verification_center.inspect_file_structure(path)
+            self.assertEqual(structure["detected_type"], "windows_pe")
+            self.assertEqual(structure["pe_architecture"], "x64")
+            self.assertEqual(structure["extension_header_match"], "match")
+            self.assertTrue(structure["double_extension"])
+            self.assertIn("misleading_double_extension", structure["warning_ids"])
+            self.assertIn("executable_or_script_extension", structure["warning_ids"])
+            labels = download_verification_center.warning_labels(structure["warning_ids"])
+            self.assertTrue(any("combines" in label.lower() for label in labels))
+
+    def test_download_verifier_reviews_zip_structure_without_extracting_or_exporting_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            archive_path = root / "review.zip"
+            escaped_target = root.parent / "vaultlink-test-escape.exe"
+            escaped_target.unlink(missing_ok=True)
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../vaultlink-test-escape.exe", b"harmless text fixture")
+                archive.writestr("nested.zip", b"not a real nested archive")
+                archive.writestr("word/vbaProject.bin", b"harmless macro-name fixture")
+                link = zipfile.ZipInfo("safe-link")
+                link.create_system = 3
+                link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(link, "target")
+            structure = download_verification_center.inspect_file_structure(archive_path)
+            self.assertFalse(escaped_target.exists())
+            self.assertEqual(structure["detected_type"], "zip_archive")
+            self.assertEqual(structure["archive"]["entry_count"], 4)
+            self.assertEqual(structure["archive"]["reviewed_entry_count"], 4)
+            self.assertTrue(
+                {
+                    "archive_traversal_paths",
+                    "archive_links",
+                    "archive_nested_archives",
+                    "archive_office_macros",
+                    "archive_executable_entries",
+                }.issubset(structure["warning_ids"])
+            )
+            result = {
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "size_band": "under 1 MB",
+                "extension": ".zip",
+                "expected_sha256_provided": False,
+                "hash_comparison": "not_provided",
+                "signature": {
+                    "state": "unsigned",
+                    "status": "NotSigned",
+                    "signer_subject": "",
+                },
+                "structure": structure,
+            }
+            receipt = download_verification_center.build_privacy_safe_receipt(result)
+            serialized = json.dumps(receipt)
+            self.assertNotIn("vaultlink-test-escape.exe", serialized)
+            self.assertNotIn("vbaProject.bin", serialized)
+            self.assertIsNone(receipt["structure"]["archive"].get("entry_names"))
+            self.assertEqual(receipt["structure"]["archive"]["traversal_entry_count"], 1)
+
+    def test_download_verifier_flags_extension_header_mismatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "report.pdf"
+            path.write_text("plain text fixture", encoding="utf-8")
+            structure = download_verification_center.inspect_file_structure(path)
+            self.assertEqual(structure["detected_type"], "text")
+            self.assertEqual(structure["extension_header_match"], "mismatch")
+            self.assertIn("extension_header_mismatch", structure["warning_ids"])
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(

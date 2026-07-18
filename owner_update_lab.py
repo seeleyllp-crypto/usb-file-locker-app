@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Download Verification Center checks one customer-selected ordinary file up to 8 GB without executing or uploading it.",
-    "Chunked SHA-256 calculation can compare an optional expected 64-character hash.",
-    "Links are rejected and verification stops if the file changes during hashing or signature inspection.",
-    "Windows Authenticode inspection reports valid, unsigned, unsupported, or attention states plus the signer subject when available.",
-    "Microsoft Defender scanning is a separate explicit action with remediation disabled and no exclusions.",
-    "Defender is called through an argument list instead of a shell command, so selected filenames cannot inject commands.",
-    "The app never claims that a matching hash, valid signature, or no-threat scan proves a file is safe.",
-    "Privacy-safe receipts omit the filename, path, Windows username, contents, expected hash, and raw Defender output.",
-    "Fixed audit events record only the action, UTC time, anonymous event ID, and success or failure.",
-    "The tool is available from Main Locker, Customer Hub, Apps Hub, same-PC Local Control, and its transparent launcher.",
-    "API 0.46.0 publishes companion metadata and accepts only seven fixed privacy-safe audit action names.",
+    "Download Verification Center now performs bounded local file-header and ZIP central-directory review.",
+    "Fixed signatures identify PE, shortcut, ZIP, PDF, images, 7z, RAR, GZIP, ELF, OLE, text, or unknown data.",
+    "Mapped extensions are compared with detected headers and PE architecture is read without loading executable code.",
+    "Fixed warnings cover executable or script extensions, misleading double extensions, malformed PE headers, shortcuts, and macro formats.",
+    "ZIP review never extracts or opens entries and reviews no more than 10,000 central-directory records.",
+    "Aggregate ZIP warnings cover traversal paths, links, encryption, executable extensions, nested archives, macro names, extreme compression, and declared size.",
+    "Privacy-safe receipts contain fixed warning IDs and counts but no filename, path, archive entry name, Windows username, or file contents.",
+    "Chunked SHA-256, expected-hash comparison, Authenticode inspection, and explicit Defender scanning remain available.",
+    "Links are rejected and verification stops if the selected file changes during review.",
+    "Structural checks are warning signals, not malware detection or proof that a file is safe.",
+    "API 0.47.0 publishes expanded companion metadata without receiving selected file information.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

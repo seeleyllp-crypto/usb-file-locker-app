@@ -18,6 +18,18 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.17.8 expands Download Verification Center with bounded
+  file-header and ZIP central-directory inspection.
+- It detects common fixed headers, compares mapped extensions, reads PE
+  architecture without loading code, and warns about misleading double
+  extensions, malformed PE headers, shortcuts, scripts, and macro formats.
+- ZIP review never extracts entries. It checks at most 10,000 central-directory
+  records for traversal paths, links, encryption, executable extensions,
+  nested archives, macro project names, extreme compression, and declared size.
+- Receipts contain fixed warning IDs and aggregate counts only. They never
+  contain archive entry names.
+- These are local warning signals, not malware detection or proof of safety.
+- API 0.47.0 publishes the expanded companion description.
 - Version 2026.07.17.7 adds Download Verification Center.
 - A customer chooses one ordinary file up to 8 GB. The app calculates SHA-256
   in chunks, compares an optional expected hash, and asks Windows to inspect
