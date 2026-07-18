@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now has filename search, fixed result filters, and deterministic sorting.",
-    "Customers can show all results, problems, valid seals, legacy receipts, skipped entries, or limit-stopped entries.",
-    "Sort choices are limited to filename or fixed result followed by filename.",
-    "Search text is capped at 80 characters and exists only in the open review window.",
-    "Search text, filter choices, sorting, and filenames are never logged, exported, persisted, or sent to the API.",
-    "CLEAR FILTERS restores the full local list without deleting it.",
-    "CLEAR LOCAL LIST removes receipt names from memory while the anonymous aggregate report remains available.",
-    "Names are sanitized, capped at 180 characters, and kept separate from the aggregate audit report.",
+    "Local Receipt Review now assigns fixed Action Required, Review, Info, or Valid triage levels to all eleven results.",
+    "A selected row shows a fixed meaning and a safe next step without making a malware verdict.",
+    "The new Needs Review filter shows only Action Required and Review results.",
+    "Priority sorting places Action Required items before Review, Info, and Valid results.",
+    "NEXT REVIEW ITEM cycles Action Required rows first, followed by Review rows.",
+    "Fixed row colors make local priority levels easier to scan without changing any result.",
+    "Triage meanings and next steps are fixed app text and never include receipt filenames.",
+    "Selections, navigation, triage state, searches, filters, sorting, and filenames are never logged, exported, persisted, or sent to the API.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
-    "The app still does not execute receipts, upload data, rescan original downloads, or prove that any file is safe.",
-    "API 0.53.0 advertises the local review controls without receiving filenames, searches, filters, sorting, or results.",
+    "The app still does not execute receipts, upload data, rescan original downloads, identify malware, or prove that any file is safe.",
+    "API 0.54.0 advertises local triage controls without receiving filenames, selections, navigation, guidance, or results.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

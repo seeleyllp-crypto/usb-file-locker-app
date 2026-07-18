@@ -161,8 +161,88 @@ FOLDER_REVIEW_STATUS_LABELS = {
     "valid_other_profile": "Valid seal from another Windows profile",
     "valid_this_profile": "Valid local integrity seal",
 }
+FOLDER_REVIEW_TRIAGE = {
+    "byte_limit_not_inspected": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "The folder audit stopped before reading this receipt because its cumulative byte limit was reached.",
+        "next_action": "Audit a smaller folder containing this receipt, or inspect this receipt by itself.",
+    },
+    "candidate_limit_not_inspected": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "The folder audit stopped before reading this receipt because its JSON candidate limit was reached.",
+        "next_action": "Audit a smaller folder containing this receipt, or inspect this receipt by itself.",
+    },
+    "invalid_or_tampered": {
+        "level": "critical",
+        "level_label": "ACTION REQUIRED",
+        "meaning": "The receipt is malformed, unsupported, changed, or has an invalid integrity seal.",
+        "next_action": "Do not rely on this receipt. Verify the original download again and export a new sealed receipt.",
+    },
+    "link_or_junction_skipped": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "The entry redirects to another location, so the bounded folder audit did not follow it.",
+        "next_action": "Open the real folder location yourself and audit that ordinary folder separately.",
+    },
+    "non_json_skipped": {
+        "level": "info",
+        "level_label": "INFO",
+        "meaning": "The entry is not a JSON receipt candidate.",
+        "next_action": "No receipt action is needed unless this file was expected to be a VaultLink JSON receipt.",
+    },
+    "oversized_skipped": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "The JSON file is larger than the 256 KB receipt inspection limit.",
+        "next_action": "Do not treat it as verified. Inspect its source and verify the original download again if needed.",
+    },
+    "read_error": {
+        "level": "critical",
+        "level_label": "ACTION REQUIRED",
+        "meaning": "Windows could not read the receipt during the bounded audit.",
+        "next_action": "Check file access and storage health, then inspect the receipt by itself.",
+    },
+    "subfolder_skipped": {
+        "level": "info",
+        "level_label": "INFO",
+        "meaning": "The audit is intentionally non-recursive and did not enter this subfolder.",
+        "next_action": "Audit that subfolder separately only if it contains receipts you want to review.",
+    },
+    "unsealed_legacy": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "This older receipt has no integrity seal and may have been edited after export.",
+        "next_action": "Verify the original download again and export a new locally sealed receipt.",
+    },
+    "valid_other_profile": {
+        "level": "review",
+        "level_label": "REVIEW",
+        "meaning": "The integrity seal is valid, but it was created by another Windows profile.",
+        "next_action": "Confirm the receipt came from a trusted profile, or re-verify the original file on this profile.",
+    },
+    "valid_this_profile": {
+        "level": "good",
+        "level_label": "VALID",
+        "meaning": "The receipt has a valid integrity seal created by this Windows profile.",
+        "next_action": "Keep it with the matching download and verify again if the original file changes.",
+    },
+}
+FOLDER_REVIEW_NEEDS_REVIEW_STATUSES = frozenset(
+    status
+    for status, guidance in FOLDER_REVIEW_TRIAGE.items()
+    if guidance["level"] in {"critical", "review"}
+)
+FOLDER_REVIEW_TRIAGE_PRIORITY = {
+    "critical": 0,
+    "review": 1,
+    "info": 2,
+    "good": 3,
+}
 FOLDER_REVIEW_FILTER_STATUSES = {
     "all": frozenset(FOLDER_REVIEW_STATUS_LABELS),
+    "needs_review": FOLDER_REVIEW_NEEDS_REVIEW_STATUSES,
     "problems": frozenset({"invalid_or_tampered", "read_error"}),
     "valid": frozenset({"valid_other_profile", "valid_this_profile"}),
     "legacy": frozenset({"unsealed_legacy"}),
@@ -178,7 +258,7 @@ FOLDER_REVIEW_FILTER_STATUSES = {
         {"byte_limit_not_inspected", "candidate_limit_not_inspected"}
     ),
 }
-FOLDER_REVIEW_SORT_MODES = frozenset({"filename", "result"})
+FOLDER_REVIEW_SORT_MODES = frozenset({"filename", "priority", "result"})
 RECEIPT_STRING_STATES = {
     "hash_comparison": {"match", "mismatch", "not_provided"},
     "signature_state": {"attention", "unknown", "unsigned", "valid"},
@@ -747,7 +827,15 @@ def filter_receipt_folder_local_details(
         if query_text and query_text not in name.casefold():
             continue
         filtered.append({"name": name, "status": status})
-    if sort_mode == "result":
+    if sort_mode == "priority":
+        def sort_key(item):
+            guidance = FOLDER_REVIEW_TRIAGE[item["status"]]
+            return (
+                FOLDER_REVIEW_TRIAGE_PRIORITY[guidance["level"]],
+                item["name"].casefold(),
+                FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
+            )
+    elif sort_mode == "result":
         def sort_key(item):
             return (
                 FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
@@ -760,6 +848,13 @@ def filter_receipt_folder_local_details(
                 FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
             )
     return sorted(filtered, key=sort_key)
+
+
+def receipt_folder_review_triage(status):
+    key = str(status or "")
+    if key not in FOLDER_REVIEW_TRIAGE:
+        raise ValueError("Choose a recognized local receipt-review result.")
+    return dict(FOLDER_REVIEW_TRIAGE[key])
 
 
 def _audit_receipt_folder_core(path, include_local_details):
@@ -2090,8 +2185,8 @@ class DownloadVerificationCenter(tk.Tk):
             return
         window = tk.Toplevel(self)
         window.title("VaultLink Local Receipt Review")
-        window.geometry("920x600")
-        window.minsize(760, 480)
+        window.geometry("960x720")
+        window.minsize(800, 600)
         window.configure(bg=locker.BG)
         window.transient(self)
         review_details = filter_receipt_folder_local_details(
@@ -2117,6 +2212,7 @@ class DownloadVerificationCenter(tk.Tk):
 
         filter_labels = {
             "All results": "all",
+            "Needs review": "needs_review",
             "Problems only": "problems",
             "Valid seals": "valid",
             "Legacy receipts": "legacy",
@@ -2125,12 +2221,20 @@ class DownloadVerificationCenter(tk.Tk):
         }
         sort_labels = {
             "Filename": "filename",
+            "Priority then filename": "priority",
             "Result then filename": "result",
         }
         search_var = tk.StringVar()
         filter_var = tk.StringVar(value="All results")
         sort_var = tk.StringVar(value="Filename")
         visible_count_var = tk.StringVar()
+        triage_title_var = tk.StringVar(value="NO RESULT SELECTED")
+        triage_meaning_var = tk.StringVar(
+            value="Select a row to see its fixed local meaning."
+        )
+        triage_action_var = tk.StringVar(
+            value="Next safe step: no action selected."
+        )
 
         controls = tk.Frame(window, bg=locker.PANEL)
         controls.pack(fill="x", padx=20, pady=(0, 12))
@@ -2194,14 +2298,16 @@ class DownloadVerificationCenter(tk.Tk):
         table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
         table = ttk.Treeview(
             table_frame,
-            columns=("receipt", "result"),
+            columns=("receipt", "priority", "result"),
             show="headings",
             selectmode="browse",
         )
         table.heading("receipt", text="Receipt filename")
+        table.heading("priority", text="Priority")
         table.heading("result", text="Local result")
-        table.column("receipt", width=500, minwidth=260, anchor="w")
-        table.column("result", width=300, minwidth=220, anchor="w")
+        table.column("receipt", width=390, minwidth=240, anchor="w")
+        table.column("priority", width=125, minwidth=105, anchor="w", stretch=False)
+        table.column("result", width=340, minwidth=230, anchor="w")
         scrollbar = ttk.Scrollbar(
             table_frame,
             orient="vertical",
@@ -2210,6 +2316,16 @@ class DownloadVerificationCenter(tk.Tk):
         table.configure(yscrollcommand=scrollbar.set)
         table.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        table.tag_configure("critical", foreground=locker.RED)
+        table.tag_configure("review", foreground=locker.YELLOW)
+        table.tag_configure("info", foreground=locker.BLUE)
+        table.tag_configure("good", foreground=locker.GREEN)
+        item_status = {}
+
+        def clear_triage_panel():
+            triage_title_var.set("NO RESULT SELECTED")
+            triage_meaning_var.set("Select a row to see its fixed local meaning.")
+            triage_action_var.set("Next safe step: no action selected.")
 
         def refresh_review(_event=None):
             rows = filter_receipt_folder_local_details(
@@ -2219,18 +2335,74 @@ class DownloadVerificationCenter(tk.Tk):
                 sort_mode=sort_labels[sort_var.get()],
             )
             table.delete(*table.get_children())
+            item_status.clear()
             for detail in rows:
-                table.insert(
+                guidance = receipt_folder_review_triage(detail["status"])
+                item_id = table.insert(
                     "",
                     "end",
                     values=(
                         detail["name"],
+                        guidance["level_label"],
                         FOLDER_REVIEW_STATUS_LABELS[detail["status"]],
                     ),
+                    tags=(guidance["level"],),
                 )
+                item_status[item_id] = detail["status"]
             visible_count_var.set(
                 f"{len(rows)} of {len(review_details)} shown"
             )
+            clear_triage_panel()
+
+        def show_selected_guidance(_event=None):
+            selected_items = table.selection()
+            if not selected_items:
+                clear_triage_panel()
+                return
+            status = item_status.get(selected_items[0])
+            if status not in FOLDER_REVIEW_TRIAGE:
+                clear_triage_panel()
+                return
+            guidance = receipt_folder_review_triage(status)
+            triage_title_var.set(
+                f"{guidance['level_label']} | {FOLDER_REVIEW_STATUS_LABELS[status]}"
+            )
+            triage_meaning_var.set(guidance["meaning"])
+            triage_action_var.set(f"Next safe step: {guidance['next_action']}")
+
+        def next_review_item():
+            review_items = [
+                item_id
+                for item_id in table.get_children()
+                if item_status.get(item_id) in FOLDER_REVIEW_NEEDS_REVIEW_STATUSES
+            ]
+            review_items.sort(
+                key=lambda item_id: (
+                    FOLDER_REVIEW_TRIAGE_PRIORITY[
+                        FOLDER_REVIEW_TRIAGE[item_status[item_id]]["level"]
+                    ],
+                    table.index(item_id),
+                )
+            )
+            if not review_items:
+                triage_title_var.set("NO REVIEW ITEMS SHOWN")
+                triage_meaning_var.set(
+                    "The current search and filter contain no Action Required or Review results."
+                )
+                triage_action_var.set(
+                    "Next safe step: change the search or filter only if you need to review other results."
+                )
+                return
+            selected_items = table.selection()
+            if selected_items and selected_items[0] in review_items:
+                selected_index = review_items.index(selected_items[0])
+                target = review_items[(selected_index + 1) % len(review_items)]
+            else:
+                target = review_items[0]
+            table.selection_set(target)
+            table.focus(target)
+            table.see(target)
+            show_selected_guidance()
 
         def clear_filters():
             search_var.set("")
@@ -2241,7 +2413,36 @@ class DownloadVerificationCenter(tk.Tk):
         search_entry.bind("<KeyRelease>", refresh_review)
         filter_box.bind("<<ComboboxSelected>>", refresh_review)
         sort_box.bind("<<ComboboxSelected>>", refresh_review)
+        table.bind("<<TreeviewSelect>>", show_selected_guidance)
         refresh_review()
+
+        triage_panel = tk.Frame(window, bg=locker.PANEL)
+        triage_panel.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(
+            triage_panel,
+            textvariable=triage_title_var,
+            bg=locker.PANEL,
+            fg=locker.TEXT,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 2))
+        tk.Label(
+            triage_panel,
+            textvariable=triage_meaning_var,
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 9),
+            wraplength=890,
+            justify="left",
+        ).pack(anchor="w", padx=12)
+        tk.Label(
+            triage_panel,
+            textvariable=triage_action_var,
+            bg=locker.PANEL,
+            fg=locker.BLUE,
+            font=("Segoe UI", 9, "bold"),
+            wraplength=890,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(2, 10))
 
         actions = tk.Frame(window, bg=locker.BG)
         actions.pack(fill="x", padx=20, pady=(0, 18))
@@ -2260,6 +2461,15 @@ class DownloadVerificationCenter(tk.Tk):
             command=clear_filters,
             bg="#252936",
             fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="NEXT REVIEW ITEM",
+            command=next_review_item,
+            bg=locker.BLUE,
+            fg=locker.BLACK,
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)

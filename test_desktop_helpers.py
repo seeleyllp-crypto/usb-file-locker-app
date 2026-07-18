@@ -703,6 +703,24 @@ class DesktopHelperTests(unittest.TestCase):
                     "subfolder_skipped",
                 }.issubset(skipped_statuses)
             )
+            needs_review_rows = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    category="needs_review",
+                )
+            )
+            self.assertTrue(needs_review_rows)
+            self.assertTrue(
+                all(
+                    item["status"]
+                    in download_verification_center.FOLDER_REVIEW_NEEDS_REVIEW_STATUSES
+                    for item in needs_review_rows
+                )
+            )
+            self.assertNotIn(
+                "valid_this_profile",
+                {item["status"] for item in needs_review_rows},
+            )
             result_sorted = (
                 download_verification_center.filter_receipt_folder_local_details(
                     local_details,
@@ -729,6 +747,51 @@ class DesktopHelperTests(unittest.TestCase):
                     for item in result_sorted
                 ),
             )
+            priority_sorted = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    sort_mode="priority",
+                )
+            )
+            priority_keys = [
+                (
+                    download_verification_center.FOLDER_REVIEW_TRIAGE_PRIORITY[
+                        download_verification_center.receipt_folder_review_triage(
+                            item["status"]
+                        )["level"]
+                    ],
+                    item["name"].casefold(),
+                )
+                for item in priority_sorted
+            ]
+            self.assertEqual(priority_keys, sorted(priority_keys))
+            self.assertEqual(
+                set(download_verification_center.FOLDER_REVIEW_STATUS_LABELS),
+                set(download_verification_center.FOLDER_REVIEW_TRIAGE),
+            )
+            for status in download_verification_center.FOLDER_REVIEW_STATUS_LABELS:
+                guidance = (
+                    download_verification_center.receipt_folder_review_triage(status)
+                )
+                self.assertIn(
+                    guidance["level"],
+                    download_verification_center.FOLDER_REVIEW_TRIAGE_PRIORITY,
+                )
+                self.assertTrue(guidance["level_label"])
+                self.assertTrue(guidance["meaning"])
+                self.assertTrue(guidance["next_action"])
+            critical_guidance = (
+                download_verification_center.receipt_folder_review_triage(
+                    "invalid_or_tampered"
+                )
+            )
+            self.assertEqual(critical_guidance["level"], "critical")
+            self.assertIn("Do not rely", critical_guidance["next_action"])
+            self.assertNotIn("private-invalid-receipt", json.dumps(critical_guidance))
+            with self.assertRaisesRegex(ValueError, "result"):
+                download_verification_center.receipt_folder_review_triage(
+                    "private-unknown-result"
+                )
             with self.assertRaisesRegex(ValueError, "filter"):
                 download_verification_center.filter_receipt_folder_local_details(
                     local_details,
@@ -863,12 +926,16 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="VIEW LOCAL REVIEW"', source)
         self.assertIn('text="CLEAR LOCAL LIST"', source)
         self.assertIn('text="SEARCH RECEIPT FILENAMES"', source)
+        self.assertIn('"Needs review": "needs_review"', source)
         self.assertIn('"Problems only": "problems"', source)
         self.assertIn('"Valid seals": "valid"', source)
         self.assertIn('"Legacy receipts": "legacy"', source)
         self.assertIn('"Skipped entries": "skipped"', source)
         self.assertIn('"Limit-stopped entries": "limits"', source)
+        self.assertIn('"Priority then filename": "priority"', source)
         self.assertIn('text="CLEAR FILTERS"', source)
+        self.assertIn('text="NEXT REVIEW ITEM"', source)
+        self.assertIn('table.heading("priority", text="Priority")', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -885,6 +952,8 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("filter_var", line)
             self.assertNotIn("sort_var", line)
             self.assertNotIn("folder_audit_local_details", line)
+            self.assertNotIn("item_status", line)
+            self.assertNotIn("triage_", line)
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(
