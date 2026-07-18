@@ -18,6 +18,22 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.17.6 adds Support Redactor for cleaning copied errors and logs
+  before a customer shares them with support.
+- It removes common license and receipt tokens, passwords and PINs, auth tokens,
+  emails, user-home paths, key filenames, machine IDs, IP and MAC addresses,
+  phone numbers, US SSNs, valid payment-card numbers, and secret URL queries.
+- The customer must explicitly paste text or open a text-style file up to 5 MB.
+  The original file is never changed and nothing is uploaded automatically.
+- COPY REDACTED and SAVE REDACTED stay disabled until a preview is generated.
+  Customers must still review the preview because no redactor can guarantee
+  that every secret was found.
+- Audit records contain fixed action names and success or failure only. They do
+  not contain pasted text, filenames, paths, previews, counts, or found values.
+- Open it from the main customer tools, Customer Hub, Apps Hub, Local Control,
+  or Run Support Redactor.bat.
+- API 0.45.0 publishes the companion and accepts its fixed privacy-safe audit
+  action names without receiving the customer text or redaction result.
 - Version 2026.07.17.5 expands Recovery Decision Wizard to 10 situations,
   30 yes-or-no decisions, 40 outcomes, and 160 action steps.
 - New paths cover failed backups, suspicious messages and phishing, and

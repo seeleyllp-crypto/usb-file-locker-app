@@ -148,6 +148,12 @@ CONTROL_ACTIONS = {
         "category": "Privacy",
         "summary": "Process pasted text logs without automatic file collection.",
     },
+    "support_redactor": {
+        "label": "Support Redactor",
+        "script": "support_redactor.py",
+        "category": "Privacy",
+        "summary": "Remove common secrets and personal details from explicitly pasted or opened support text.",
+    },
     "breach_guard": {
         "label": "Global Breach Guard",
         "script": "global_breach_guard.py",

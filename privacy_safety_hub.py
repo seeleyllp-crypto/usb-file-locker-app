@@ -99,10 +99,11 @@ class PrivacySafetyHub(tk.Tk):
         self.app_card(apps, "Public Retention Guide", "Review fixed retention policy and cleanup boundaries with current-tab-only progress and no remote cleanup.", self.open_public_retention, 7, 1, locker.BLUE, locker.BLACK)
         self.app_card(apps, "Security Maintenance", "Track fixed tasks, planning windows, priority coverage, snapshots, and verified local archives.", self.open_security_maintenance, 7, 2, locker.GREEN, locker.BLACK)
         self.app_card(apps, "Public Maintenance Planner", "Review fixed cadence horizons, coverage, and priorities with current-tab-only progress.", self.open_public_maintenance, 7, 3, locker.BLUE, locker.BLACK)
+        self.app_card(apps, "Support Redactor", "Remove common secrets and personal details from copied errors or logs locally before sharing.", self.open_support_redactor, 8, 0, locker.GREEN, locker.BLACK)
 
         for col in range(4):
             apps.grid_columnconfigure(col, weight=1)
-        for row in range(8):
+        for row in range(9):
             apps.grid_rowconfigure(row, weight=1)
 
         tk.Label(outer, textvariable=self.status, bg=locker.BG, fg=locker.MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
@@ -303,6 +304,14 @@ class PrivacySafetyHub(tk.Tk):
         except Exception as exc:
             self.status.set("Could not open Text Log Processor.")
             messagebox.showerror("Could not open Text Log Processor", str(exc))
+
+    def open_support_redactor(self):
+        try:
+            locker.launch_companion_script("support_redactor.py")
+            self.status.set("Opened Support Redactor.")
+        except Exception as exc:
+            self.status.set("Could not open Support Redactor.")
+            messagebox.showerror("Could not open Support Redactor", str(exc))
 
     def open_global_breach_guard(self):
         try:

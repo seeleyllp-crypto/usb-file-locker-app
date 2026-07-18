@@ -29,6 +29,7 @@ import recovery_drill_center
 import recovery_kit_builder
 import security_maintenance_center
 import storage_retention_center
+import support_redactor
 import trust_recovery_center
 import usb_file_locker as locker
 import vault_health_center
@@ -64,6 +65,85 @@ class FakeButton:
 class DesktopHelperTests(unittest.TestCase):
     def test_first_account_and_announcement_sync_starts_early(self):
         self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
+
+    def test_support_redactor_removes_sensitive_values_but_keeps_error_context(self):
+        source = "\n".join(
+            [
+                "ModuleNotFoundError: No module named 'cryptography'",
+                "license_key: vlk1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+                "receipt=vlr1.CCCCCCCCCCCCCCCC.DDDDDDDDDDDDDDDD",
+                "email: alice@example.com",
+                r"path: C:\Users\Alice Smith\Documents\private.txt",
+                r"key: F:\master_usb_file_locker.key",
+                "ip: 192.168.1.42",
+                "ipv6: 2001:db8::1",
+                "machine_id: 123e4567-e89b-12d3-a456-426614174000",
+                "url: https://example.test/support?token=secret&email=alice@example.com",
+                "phone: (312) 555-0199",
+                "card: 4111 1111 1111 1111",
+            ]
+        )
+        result = support_redactor.redact_support_text(source)
+        self.assertTrue(result["changed"])
+        self.assertGreaterEqual(result["total"], 10)
+        self.assertIn("ModuleNotFoundError: No module named 'cryptography'", result["text"])
+        self.assertIn(r"C:\Users\[USER]\Documents\private.txt", result["text"])
+        for secret in (
+            "vlk1.",
+            "vlr1.",
+            "alice@example.com",
+            r"F:\master_usb_file_locker.key",
+            "192.168.1.42",
+            "2001:db8::1",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "token=secret",
+            "(312) 555-0199",
+            "4111 1111 1111 1111",
+        ):
+            self.assertNotIn(secret, result["text"])
+
+    def test_support_redactor_handles_auth_tokens_and_secret_urls(self):
+        source = "\n".join(
+            [
+                "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+                "jwt=eyJabcdefghijk.eyJabcdefghijk.abcdefghijklmnop",
+                "repo_token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                "webhook=https://discord.com/api/webhooks/123456789/secret-token",
+                '{"password":"json-secret","machine_id":"TEST-MACHINE-PRIVATE"}',
+                "connection=Server=db.test;Password=connection-secret;Database=app",
+            ]
+        )
+        result = support_redactor.redact_support_text(source)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz", result["text"])
+        self.assertNotIn("eyJabcdefghijk", result["text"])
+        self.assertNotIn("ghp_", result["text"])
+        self.assertNotIn("discord.com/api/webhooks", result["text"])
+        self.assertNotIn("json-secret", result["text"])
+        self.assertNotIn("TEST-MACHINE-PRIVATE", result["text"])
+        self.assertNotIn("connection-secret", result["text"])
+        self.assertIn("[SECRET_URL]", result["text"])
+
+    def test_support_redactor_keeps_non_secret_versions_and_non_card_numbers(self):
+        source = "VaultLink 2026.07.17.6\nBuild 1234 5678 9012 3456\nHTTP 183 file already exists"
+        result = support_redactor.redact_support_text(source)
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["text"], source)
+        self.assertEqual(result["total"], 0)
+        self.assertIn("No known sensitive patterns", support_redactor.redaction_summary(result))
+
+    def test_support_redactor_enforces_bounded_input(self):
+        with self.assertRaisesRegex(ValueError, "5 MB"):
+            support_redactor.redact_support_text("x" * (support_redactor.MAX_INPUT_BYTES + 1))
+
+    def test_support_redactor_audit_calls_never_include_customer_text_or_paths(self):
+        source = Path(support_redactor.__file__).read_text(encoding="utf-8")
+        audit_lines = [line.strip() for line in source.splitlines() if "locker.log_event(" in line]
+        self.assertEqual(len(audit_lines), 9)
+        for line in audit_lines:
+            self.assertIn('"local"', line)
+            self.assertNotIn("path_text", line)
+            self.assertNotIn("source", line)
+            self.assertNotIn("self.result", line)
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(
@@ -210,14 +290,14 @@ class DesktopHelperTests(unittest.TestCase):
     def test_every_launcher_bootstraps_dependencies(self):
         app_dir = Path(__file__).resolve().parent
         launchers = sorted(app_dir.glob("Run *.bat"))
-        self.assertEqual(len(launchers), 24)
+        self.assertEqual(len(launchers), 25)
         for launcher in launchers:
             with self.subTest(launcher=launcher.name):
                 content = launcher.read_text(encoding="utf-8")
                 self.assertIn('call "%~dp0Ensure Dependencies.cmd"', content)
                 self.assertIn("%PYTHON_CMD%", content)
-        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 52)
-        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 52)
+        self.assertEqual(len(build_signed_update.PACKAGE_FILES), 54)
+        self.assertEqual(len(set(build_signed_update.PACKAGE_FILES)), 54)
         self.assertIn("security_maintenance_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Security Maintenance Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("storage_retention_center.py", build_signed_update.PACKAGE_FILES)
@@ -232,6 +312,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Run Customer Hub.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("diagnostics_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Diagnostics Center.bat", build_signed_update.PACKAGE_FILES)
+        self.assertIn("support_redactor.py", build_signed_update.PACKAGE_FILES)
+        self.assertIn("Run Support Redactor.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("incident_response_center.py", build_signed_update.PACKAGE_FILES)
         self.assertIn("Run Incident Response Center.bat", build_signed_update.PACKAGE_FILES)
         self.assertIn("recovery_drill_center.py", build_signed_update.PACKAGE_FILES)
@@ -247,6 +329,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(customer_hub.CustomerHub, customer_hub.tk.Tk))
         self.assertTrue(issubclass(backup_verification_center.BackupVerificationCenter, backup_verification_center.tk.Tk))
         self.assertTrue(issubclass(diagnostics_center.DiagnosticsCenter, diagnostics_center.tk.Tk))
+        self.assertTrue(issubclass(support_redactor.SupportRedactor, support_redactor.tk.Tk))
         self.assertTrue(issubclass(incident_response_center.IncidentResponseCenter, incident_response_center.tk.Tk))
         self.assertTrue(issubclass(recovery_drill_center.RecoveryDrillCenter, recovery_drill_center.tk.Tk))
         self.assertTrue(issubclass(recovery_kit_builder.RecoveryKitBuilder, recovery_kit_builder.tk.Tk))
@@ -257,8 +340,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertTrue(issubclass(storage_retention_center.StorageRetentionCenter, storage_retention_center.tk.Tk))
         self.assertTrue(issubclass(trust_recovery_center.TrustRecoveryCenter, trust_recovery_center.tk.Tk))
         hub_source = (app_dir / "privacy_safety_hub.py").read_text(encoding="utf-8")
-        self.assertEqual(hub_source.count("self.app_card(apps,"), 32)
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 21)
+        self.assertEqual(hub_source.count("self.app_card(apps,"), 33)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 22)
         self.assertIn("security_maintenance", local_control_center.CONTROL_ACTIONS)
         self.assertIn("storage_retention", local_control_center.CONTROL_ACTIONS)
         self.assertIn("data_control", local_control_center.CONTROL_ACTIONS)
@@ -300,9 +383,10 @@ class DesktopHelperTests(unittest.TestCase):
             "quick_lock_note.py",
             "privacy_safety_hub.py",
             "text_log_processor.py",
+            "support_redactor.py",
             "global_breach_guard.py",
         }
-        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 21)
+        self.assertEqual(len(local_control_center.CONTROL_ACTIONS), 22)
         self.assertEqual(
             {action["script"] for action in local_control_center.CONTROL_ACTIONS.values()},
             expected_scripts,
@@ -349,14 +433,14 @@ class DesktopHelperTests(unittest.TestCase):
         snapshot = state.dashboard_snapshot()
         self.assertEqual(snapshot["successful_launches"], 26)
         self.assertEqual(snapshot["failed_launches"], 0)
-        self.assertEqual(sum(snapshot["category_counts"].values()), 21)
+        self.assertEqual(sum(snapshot["category_counts"].values()), 22)
         self.assertEqual(local_control_center.normalized_category_filter("recovery"), "Recovery")
         self.assertEqual(local_control_center.normalized_category_filter("unknown-category"), "")
         state.session_token = "PRIVATE-SESSION-TOKEN-8842"
         state.session_csrf = "PRIVATE-CSRF-TOKEN-8842"
         with mock.patch.object(state, "usb_status", return_value=(True, "USB key verified locally.")):
             safe_report = state.safe_report("PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842")
-        self.assertEqual(safe_report["session"]["apps_total"], 21)
+        self.assertEqual(safe_report["session"]["apps_total"], 22)
         self.assertEqual(safe_report["session"]["successful_launches"], 26)
         safe_report_text = json.dumps(safe_report)
         for forbidden in ("D:/private", "PRIVATE-KEY-ID", "PRIVATE-SESSION-TOKEN-8842", "PRIVATE-CSRF-TOKEN-8842"):
@@ -497,7 +581,7 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn("Recovery Kit Builder", unlocked_page)
             self.assertIn("Storage &amp; Retention Center", unlocked_page)
             self.assertIn("Security Maintenance Center", unlocked_page)
-            self.assertIn("21 / 21", unlocked_page)
+            self.assertIn("22 / 22", unlocked_page)
             self.assertNotIn("SESSION-TOKEN", unlocked_page)
             self.assertNotIn("D:/master_usb_file_locker.key", unlocked_page)
 
@@ -558,7 +642,7 @@ class DesktopHelperTests(unittest.TestCase):
             report = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertIn("attachment", response.getheader("Content-Disposition"))
-            self.assertEqual(report["session"]["apps_total"], 21)
+            self.assertEqual(report["session"]["apps_total"], 22)
         finally:
             connection.close()
             server.shutdown()

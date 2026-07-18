@@ -16,6 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.17.6` adds Support Redactor, a practical local customer tool for cleaning copied error and log text before sharing it. It recognizes VaultLink license and receipt tokens, authentication tokens, labeled passwords and PINs, emails, user-home paths, key filenames, UUIDs, machine identifiers, IPv4 and IPv6 addresses, MAC addresses, phone numbers, US SSNs, valid payment-card numbers, and secret-bearing URL queries while preserving ordinary error context and line structure.
+
+Customers can paste text, open an explicit text-style file up to 5 MB, preview category counts, copy the reviewed result, or save a new redacted text file. Nothing is uploaded automatically, original files are never changed, and audit records contain only fixed action names with success or failure. The app clearly warns that automated redaction cannot guarantee every secret is found. Support Redactor is available from the main customer tools, Customer Hub, Apps Hub, same-PC Local Control, and `Run Support Redactor.bat`.
+
+API `0.45.0` publishes Support Redactor in product and companion metadata and recognizes only its fixed privacy-safe action names in uploaded audit reports. It receives no pasted text, source file, output file, filename, path, redaction preview, category count, or detected value.
+
 Release `2026.07.17.5` expands the Recovery Decision Wizard to ten situations, thirty fixed yes-or-no decision points, forty reviewed outcomes, and 160 ordered action steps. New paths cover failed backups, suspicious messages and phishing, and bounded low-storage cleanup. Choices and decision history stay only in the current browser tab.
 
 The wizard accepts no free-form description, license key, identity, machine identity, file, path, filename, PIN, USB secret, or local result. It cannot inspect, scan, lock, unlock, install, delete, quarantine, or control a customer PC. Customer Hub links directly to both the wizard and Customer Answers without placing license proof in either URL.
@@ -107,6 +113,7 @@ The Owner Update Lab also includes a 15-check read-only preflight, signed-packag
 - `audit_log_viewer.py` - signed audit trail viewer
 - `license_issuer.py` - owner-only API license issuer; the admin token is masked and never saved
 - `global_breach_guard.py` - topmost watcher for repeated risky events
+- `support_redactor.py` - locally removes common secrets and personal details from explicitly provided support text
 - `text_log_processor.py` - cleans up pasted text-style logs
 - `locked_file_browser.py` - finds locked files fast
 - `perm_unlock_workbench.py` - edit and relock workflow

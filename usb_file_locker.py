@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.17.5"
+DESKTOP_APP_VERSION = "2026.07.17.6"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -5010,6 +5010,19 @@ class USBFileLocker(tk.Tk):
         self.recovery_drill_button = tk.Button(local_control_row, text="RECOVERY DRILLS", command=self.open_recovery_drill_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.recovery_drill_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
+        support_privacy_row = tk.Frame(panel, bg=PANEL)
+        support_privacy_row.pack(fill="x", padx=18, pady=(0, 10))
+        tk.Label(support_privacy_row, text="PRIVACY BEFORE SUPPORT", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
+        self.support_redactor_button = tk.Button(support_privacy_row, text="SUPPORT REDACTOR", command=self.open_support_redactor, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
+        self.support_redactor_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
+        tk.Label(
+            support_privacy_row,
+            text="Remove common secrets and personal details from copied errors and logs locally before sharing.",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=(12, 0))
+
         maintenance_row = tk.Frame(panel, bg=PANEL)
         maintenance_row.pack(fill="x", padx=18, pady=(0, 10))
         tk.Label(maintenance_row, text="SECURITY ROUTINES", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
@@ -5835,6 +5848,16 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not open Diagnostics Center.")
             log_event("diagnostics_center_open", "local", "failed")
             messagebox.showerror("Could not open Diagnostics Center", str(exc), parent=self)
+
+    def open_support_redactor(self):
+        try:
+            launch_companion_script("support_redactor.py")
+            self.status.set("Opened Support Redactor.")
+            log_event("support_redactor_open", "local", "ok")
+        except Exception as exc:
+            self.status.set("Could not open Support Redactor.")
+            log_event("support_redactor_open", "local", "failed")
+            messagebox.showerror("Could not open Support Redactor", str(exc), parent=self)
 
     def open_incident_response_center(self):
         try:

@@ -46,18 +46,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Recovery Decision Wizard now covers ten customer situations with thirty fixed yes-or-no decisions.",
-    "Every branch ends in one of forty reviewed outcomes with 160 total ordered steps.",
-    "Customers can move back one answer or restart without uploading or storing their choices.",
-    "The current-tab decision trail shows only fixed questions and YES or NO labels.",
-    "Copy, print, and JSON export are enabled only after a fixed action plan is reached.",
-    "Exported plans contain fixed scenario IDs, decision IDs, yes-or-no choices, and reviewed public outcome fields only.",
-    "The wizard accepts no free-form description, license key, identity, machine identity, file, path, PIN, USB secret, or local result.",
-    "The wizard cannot inspect, scan, lock, unlock, install, delete, quarantine, or control a customer PC.",
-    "Customer Workspace and the Windows Customer Hub link directly to the wizard without placing license proof in the URL.",
-    "The existing Customer Answers and Diagnostics Center remain available as supporting guides.",
-    "Builds below the signed minimum automatically stage the verified update after active local work finishes.",
-    "Required updates still use Ed25519 manifest verification and SHA-256 package verification.",
+    "Support Redactor cleans copied error and log text locally before a customer shares it.",
+    "It removes common VaultLink secrets, authentication tokens, passwords, PINs, emails, and secret URL queries.",
+    "It also removes user identities in home paths, key filenames, machine IDs, IP and MAC addresses, phone numbers, US SSNs, and valid card numbers.",
+    "Ordinary error messages, line order, and non-secret version numbers remain visible for useful troubleshooting.",
+    "Customers can paste text or explicitly open a text-style file up to the fixed 5 MB safety limit.",
+    "Original files are never modified and no file, path, text, preview, or detected value is uploaded automatically.",
+    "Copy and save remain disabled until a redacted preview and category-count summary are ready.",
+    "A visible warning requires the customer to review the preview because automated redaction cannot guarantee every secret is found.",
+    "Audit records contain only fixed action names, UTC timestamps, anonymous event IDs, and success or failure.",
+    "The tool is available from Main Locker, Customer Hub, Apps Hub, same-PC Local Control, and its transparent launcher.",
+    "API 0.45.0 publishes companion metadata and accepts only the tool's fixed privacy-safe audit action names.",
+    "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
