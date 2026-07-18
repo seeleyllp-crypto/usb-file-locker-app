@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Receipt Folder Audit now offers a local review list that identifies each top-level entry by filename and fixed result.",
-    "Local filename details are stored separately from the aggregate audit report.",
-    "Receipt names never enter aggregate exports, audit-log details, API requests, or persisted app state.",
-    "The review list exists in memory only and has an explicit clear control.",
-    "Names are capped at 180 characters and control characters are replaced before local display.",
-    "Fixed local results distinguish valid local, valid external, legacy, invalid, skipped, unreadable, and limit states.",
-    "The review window has no copy or filename export action.",
-    "Clearing local names leaves the anonymous aggregate report available for export.",
+    "Local Receipt Review now has filename search, fixed result filters, and deterministic sorting.",
+    "Customers can show all results, problems, valid seals, legacy receipts, skipped entries, or limit-stopped entries.",
+    "Sort choices are limited to filename or fixed result followed by filename.",
+    "Search text is capped at 80 characters and exists only in the open review window.",
+    "Search text, filter choices, sorting, and filenames are never logged, exported, persisted, or sent to the API.",
+    "CLEAR FILTERS restores the full local list without deleting it.",
+    "CLEAR LOCAL LIST removes receipt names from memory while the anonymous aggregate report remains available.",
+    "Names are sanitized, capped at 180 characters, and kept separate from the aggregate audit report.",
     "The underlying audit remains top-level only and bounded to 1,000 entries, 250 JSON candidates, and 32 MB.",
     "The app still does not execute receipts, upload data, rescan original downloads, or prove that any file is safe.",
-    "API 0.52.0 recognizes fixed local-review view and clear actions without receiving filenames or results.",
+    "API 0.53.0 advertises the local review controls without receiving filenames, searches, filters, sorting, or results.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

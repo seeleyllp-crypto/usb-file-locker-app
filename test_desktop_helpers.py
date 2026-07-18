@@ -645,6 +645,100 @@ class DesktopHelperTests(unittest.TestCase):
                 ),
                 "private  receipt.json",
             )
+            all_rows = download_verification_center.filter_receipt_folder_local_details(
+                local_details
+            )
+            self.assertEqual(len(all_rows), len(local_details))
+            self.assertEqual(
+                [
+                    item["name"]
+                    for item in download_verification_center.filter_receipt_folder_local_details(
+                        local_details,
+                        query="EXTERNAL",
+                    )
+                ],
+                ["private-external-receipt.JSON"],
+            )
+            self.assertEqual(
+                {
+                    item["status"]
+                    for item in download_verification_center.filter_receipt_folder_local_details(
+                        local_details,
+                        category="problems",
+                    )
+                },
+                {"invalid_or_tampered"},
+            )
+            self.assertEqual(
+                {
+                    item["status"]
+                    for item in download_verification_center.filter_receipt_folder_local_details(
+                        local_details,
+                        category="valid",
+                    )
+                },
+                {"valid_other_profile", "valid_this_profile"},
+            )
+            self.assertEqual(
+                [
+                    item["status"]
+                    for item in download_verification_center.filter_receipt_folder_local_details(
+                        local_details,
+                        category="legacy",
+                    )
+                ],
+                ["unsealed_legacy"],
+            )
+            skipped_statuses = {
+                item["status"]
+                for item in download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    category="skipped",
+                )
+            }
+            self.assertTrue(
+                {
+                    "non_json_skipped",
+                    "oversized_skipped",
+                    "subfolder_skipped",
+                }.issubset(skipped_statuses)
+            )
+            result_sorted = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    sort_mode="result",
+                )
+            )
+            self.assertEqual(
+                [
+                    (
+                        download_verification_center.FOLDER_REVIEW_STATUS_LABELS[
+                            item["status"]
+                        ].casefold(),
+                        item["name"].casefold(),
+                    )
+                    for item in result_sorted
+                ],
+                sorted(
+                    (
+                        download_verification_center.FOLDER_REVIEW_STATUS_LABELS[
+                            item["status"]
+                        ].casefold(),
+                        item["name"].casefold(),
+                    )
+                    for item in result_sorted
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "filter"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    category="private-unknown-filter",
+                )
+            with self.assertRaisesRegex(ValueError, "sort mode"):
+                download_verification_center.filter_receipt_folder_local_details(
+                    local_details,
+                    sort_mode="private-unknown-sort",
+                )
             serialized = json.dumps(report)
             summary = download_verification_center.receipt_folder_audit_summary(report)
             for private_value in (
@@ -674,10 +768,25 @@ class DesktopHelperTests(unittest.TestCase):
                     return_value={"integrity_state": "unsealed_legacy"},
                 ),
             ):
-                capped_report = download_verification_center.audit_receipt_folder(capped)
+                capped_report, capped_details = (
+                    download_verification_center.audit_receipt_folder_with_local_details(
+                        capped
+                    )
+                )
             self.assertEqual(capped_report["counts"]["json_candidates"], 2)
             self.assertEqual(capped_report["counts"]["receipts_inspected"], 2)
             self.assertTrue(capped_report["candidate_limit_reached"])
+            limit_rows = (
+                download_verification_center.filter_receipt_folder_local_details(
+                    capped_details,
+                    category="limits",
+                )
+            )
+            self.assertEqual(len(limit_rows), 1)
+            self.assertEqual(
+                limit_rows[0]["status"],
+                "candidate_limit_not_inspected",
+            )
 
             receipt = download_verification_center.build_privacy_safe_receipt(
                 *download_verification_fixture()
@@ -753,6 +862,13 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="EXPORT FOLDER AUDIT"', source)
         self.assertIn('text="VIEW LOCAL REVIEW"', source)
         self.assertIn('text="CLEAR LOCAL LIST"', source)
+        self.assertIn('text="SEARCH RECEIPT FILENAMES"', source)
+        self.assertIn('"Problems only": "problems"', source)
+        self.assertIn('"Valid seals": "valid"', source)
+        self.assertIn('"Legacy receipts": "legacy"', source)
+        self.assertIn('"Skipped entries": "skipped"', source)
+        self.assertIn('"Limit-stopped entries": "limits"', source)
+        self.assertIn('text="CLEAR FILTERS"', source)
         self.assertIn('text="COMPARE PRIOR RECEIPT"', source)
         self.assertIn('text="EXPORT COMPARISON"', source)
         self.assertIn('state="disabled"', source)
@@ -765,6 +881,10 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("prior", line)
             self.assertNotIn("self.comparison_result", line)
             self.assertNotIn("self.selected_path", line)
+            self.assertNotIn("search_var", line)
+            self.assertNotIn("filter_var", line)
+            self.assertNotIn("sort_var", line)
+            self.assertNotIn("folder_audit_local_details", line)
 
     def test_customer_workspace_uses_composite_api_without_receipt_or_machine_identity(self):
         state = locker.normalize_license_state(

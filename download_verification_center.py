@@ -161,6 +161,24 @@ FOLDER_REVIEW_STATUS_LABELS = {
     "valid_other_profile": "Valid seal from another Windows profile",
     "valid_this_profile": "Valid local integrity seal",
 }
+FOLDER_REVIEW_FILTER_STATUSES = {
+    "all": frozenset(FOLDER_REVIEW_STATUS_LABELS),
+    "problems": frozenset({"invalid_or_tampered", "read_error"}),
+    "valid": frozenset({"valid_other_profile", "valid_this_profile"}),
+    "legacy": frozenset({"unsealed_legacy"}),
+    "skipped": frozenset(
+        {
+            "link_or_junction_skipped",
+            "non_json_skipped",
+            "oversized_skipped",
+            "subfolder_skipped",
+        }
+    ),
+    "limits": frozenset(
+        {"byte_limit_not_inspected", "candidate_limit_not_inspected"}
+    ),
+}
+FOLDER_REVIEW_SORT_MODES = frozenset({"filename", "result"})
 RECEIPT_STRING_STATES = {
     "hash_comparison": {"match", "mismatch", "not_provided"},
     "signature_state": {"attention", "unknown", "unsigned", "valid"},
@@ -701,6 +719,47 @@ def _local_receipt_display_name(value):
         for character in str(value or "")
     ).strip()
     return text[:180] or "[unnamed]"
+
+
+def filter_receipt_folder_local_details(
+    details,
+    query="",
+    category="all",
+    sort_mode="filename",
+):
+    if category not in FOLDER_REVIEW_FILTER_STATUSES:
+        raise ValueError("Choose a recognized local receipt-review filter.")
+    if sort_mode not in FOLDER_REVIEW_SORT_MODES:
+        raise ValueError("Choose a recognized local receipt-review sort mode.")
+    query_text = "".join(
+        character if character.isprintable() and character not in "\r\n\t" else " "
+        for character in str(query or "")[:80]
+    ).strip().casefold()
+    allowed_statuses = FOLDER_REVIEW_FILTER_STATUSES[category]
+    filtered = []
+    for raw_detail in list(details or [])[:MAX_RECEIPT_FOLDER_ENTRIES]:
+        if not isinstance(raw_detail, dict):
+            continue
+        status = str(raw_detail.get("status", ""))
+        if status not in FOLDER_REVIEW_STATUS_LABELS or status not in allowed_statuses:
+            continue
+        name = _local_receipt_display_name(raw_detail.get("name"))
+        if query_text and query_text not in name.casefold():
+            continue
+        filtered.append({"name": name, "status": status})
+    if sort_mode == "result":
+        def sort_key(item):
+            return (
+                FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
+                item["name"].casefold(),
+            )
+    else:
+        def sort_key(item):
+            return (
+                item["name"].casefold(),
+                FOLDER_REVIEW_STATUS_LABELS[item["status"]].casefold(),
+            )
+    return sorted(filtered, key=sort_key)
 
 
 def _audit_receipt_folder_core(path, include_local_details):
@@ -2031,10 +2090,13 @@ class DownloadVerificationCenter(tk.Tk):
             return
         window = tk.Toplevel(self)
         window.title("VaultLink Local Receipt Review")
-        window.geometry("880x540")
-        window.minsize(700, 420)
+        window.geometry("920x600")
+        window.minsize(760, 480)
         window.configure(bg=locker.BG)
         window.transient(self)
+        review_details = filter_receipt_folder_local_details(
+            self.folder_audit_local_details
+        )
 
         tk.Label(
             window,
@@ -2045,13 +2107,88 @@ class DownloadVerificationCenter(tk.Tk):
         ).pack(anchor="w", padx=20, pady=(18, 2))
         tk.Label(
             window,
-            text="Receipt names stay in this window only and are never added to exports, audit logs, or API requests.",
+            text="Receipt names and searches stay in this app's memory only and are never added to exports, audit logs, or API requests.",
             bg=locker.BG,
             fg=locker.MUTED,
             font=("Segoe UI", 9),
             wraplength=820,
             justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        filter_labels = {
+            "All results": "all",
+            "Problems only": "problems",
+            "Valid seals": "valid",
+            "Legacy receipts": "legacy",
+            "Skipped entries": "skipped",
+            "Limit-stopped entries": "limits",
+        }
+        sort_labels = {
+            "Filename": "filename",
+            "Result then filename": "result",
+        }
+        search_var = tk.StringVar()
+        filter_var = tk.StringVar(value="All results")
+        sort_var = tk.StringVar(value="Filename")
+        visible_count_var = tk.StringVar()
+
+        controls = tk.Frame(window, bg=locker.PANEL)
+        controls.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(
+            controls,
+            text="SEARCH RECEIPT FILENAMES",
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(12, 8), pady=(10, 3))
+        tk.Label(
+            controls,
+            text="SHOW",
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=1, sticky="w", padx=8, pady=(10, 3))
+        tk.Label(
+            controls,
+            text="SORT",
+            bg=locker.PANEL,
+            fg=locker.MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=2, sticky="w", padx=8, pady=(10, 3))
+        search_entry = tk.Entry(
+            controls,
+            textvariable=search_var,
+            bg=locker.FIELD,
+            fg=locker.TEXT,
+            insertbackground=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        search_entry.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=(12, 8),
+            pady=(0, 12),
+            ipady=6,
+        )
+        filter_box = ttk.Combobox(
+            controls,
+            textvariable=filter_var,
+            values=tuple(filter_labels),
+            state="readonly",
+            width=22,
+        )
+        filter_box.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 12), ipady=4)
+        sort_box = ttk.Combobox(
+            controls,
+            textvariable=sort_var,
+            values=tuple(sort_labels),
+            state="readonly",
+            width=22,
+        )
+        sort_box.grid(row=1, column=2, sticky="ew", padx=8, pady=(0, 12), ipady=4)
+        controls.columnconfigure(0, weight=1)
 
         table_frame = tk.Frame(window, bg=locker.PANEL)
         table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
@@ -2073,21 +2210,38 @@ class DownloadVerificationCenter(tk.Tk):
         table.configure(yscrollcommand=scrollbar.set)
         table.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        for detail in sorted(
-            self.folder_audit_local_details,
-            key=lambda item: str(item.get("name", "")).casefold(),
-        ):
-            table.insert(
-                "",
-                "end",
-                values=(
-                    detail.get("name", "[unnamed]"),
-                    FOLDER_REVIEW_STATUS_LABELS.get(
-                        detail.get("status"),
-                        "Unknown local result",
-                    ),
-                ),
+
+        def refresh_review(_event=None):
+            rows = filter_receipt_folder_local_details(
+                review_details,
+                query=search_var.get(),
+                category=filter_labels[filter_var.get()],
+                sort_mode=sort_labels[sort_var.get()],
             )
+            table.delete(*table.get_children())
+            for detail in rows:
+                table.insert(
+                    "",
+                    "end",
+                    values=(
+                        detail["name"],
+                        FOLDER_REVIEW_STATUS_LABELS[detail["status"]],
+                    ),
+                )
+            visible_count_var.set(
+                f"{len(rows)} of {len(review_details)} shown"
+            )
+
+        def clear_filters():
+            search_var.set("")
+            filter_var.set("All results")
+            sort_var.set("Filename")
+            refresh_review()
+
+        search_entry.bind("<KeyRelease>", refresh_review)
+        filter_box.bind("<<ComboboxSelected>>", refresh_review)
+        sort_box.bind("<<ComboboxSelected>>", refresh_review)
+        refresh_review()
 
         actions = tk.Frame(window, bg=locker.BG)
         actions.pack(fill="x", padx=20, pady=(0, 18))
@@ -2100,6 +2254,22 @@ class DownloadVerificationCenter(tk.Tk):
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="CLEAR FILTERS",
+            command=clear_filters,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Label(
+            actions,
+            textvariable=visible_count_var,
+            bg=locker.BG,
+            fg=locker.MUTED,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=14)
         tk.Button(
             actions,
             text="CLOSE",
