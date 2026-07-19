@@ -245,6 +245,32 @@ FOLDER_REVIEW_TRIAGE_PRIORITY = {
 }
 FOLDER_REVIEW_LEVELS = frozenset({"all", *FOLDER_REVIEW_TRIAGE_PRIORITY})
 FOLDER_REVIEW_SESSION_STATES = frozenset({"all", "pending", "reviewed"})
+FOLDER_REVIEW_SCOPE_CATEGORY_LABELS = {
+    "all": "",
+    "needs_review": "Needs review",
+    "problems": "Problems only",
+    "valid": "Valid seals",
+    "legacy": "Legacy receipts",
+    "skipped": "Skipped entries",
+    "limits": "Limit-stopped entries",
+}
+FOLDER_REVIEW_SCOPE_LEVEL_LABELS = {
+    "all": "",
+    "critical": "Action Required",
+    "review": "Review",
+    "info": "Info",
+    "good": "Valid",
+}
+FOLDER_REVIEW_SCOPE_SESSION_LABELS = {
+    "all": "",
+    "pending": "Pending only",
+    "reviewed": "Reviewed only",
+}
+FOLDER_REVIEW_SCOPE_SORT_LABELS = {
+    "filename": "",
+    "priority": "Priority sort",
+    "result": "Result sort",
+}
 FOLDER_REVIEW_FILTER_STATUSES = {
     "all": frozenset(FOLDER_REVIEW_STATUS_LABELS),
     "needs_review": FOLDER_REVIEW_NEEDS_REVIEW_STATUSES,
@@ -804,6 +830,37 @@ def _local_receipt_display_name(value):
         for character in str(value or "")
     ).strip()
     return text[:180] or "[unnamed]"
+
+
+def receipt_folder_review_scope_text(
+    query="",
+    category="all",
+    level="all",
+    session_state="all",
+    sort_mode="filename",
+):
+    if category not in FOLDER_REVIEW_SCOPE_CATEGORY_LABELS:
+        raise ValueError("Choose a recognized local receipt-review filter.")
+    if level not in FOLDER_REVIEW_SCOPE_LEVEL_LABELS:
+        raise ValueError("Choose a recognized local receipt-review priority level.")
+    if session_state not in FOLDER_REVIEW_SCOPE_SESSION_LABELS:
+        raise ValueError("Choose a recognized local receipt-review session state.")
+    if sort_mode not in FOLDER_REVIEW_SCOPE_SORT_LABELS:
+        raise ValueError("Choose a recognized local receipt-review sort mode.")
+    active = []
+    if str(query or "").strip():
+        active.append("Search active")
+    for value in (
+        FOLDER_REVIEW_SCOPE_CATEGORY_LABELS[category],
+        FOLDER_REVIEW_SCOPE_LEVEL_LABELS[level],
+        FOLDER_REVIEW_SCOPE_SESSION_LABELS[session_state],
+        FOLDER_REVIEW_SCOPE_SORT_LABELS[sort_mode],
+    ):
+        if value:
+            active.append(value)
+    if not active:
+        return "Default view"
+    return f"{len(active)} active: " + " | ".join(active)
 
 
 def filter_receipt_folder_local_details(
@@ -2371,8 +2428,12 @@ class DownloadVerificationCenter(tk.Tk):
         window = tk.Toplevel(self)
         self.folder_review_window = window
         window.title("VaultLink Local Receipt Review")
-        window.geometry("1040x760")
-        window.minsize(880, 650)
+        screen_width = max(window.winfo_screenwidth(), 760)
+        screen_height = max(window.winfo_screenheight(), 520)
+        window_width = min(1040, max(760, screen_width - 80))
+        window_height = min(760, max(520, screen_height - 140))
+        window.geometry(f"{window_width}x{window_height}")
+        window.minsize(760, 520)
         window.configure(bg=locker.BG)
         window.transient(self)
         window.protocol(
@@ -2380,6 +2441,46 @@ class DownloadVerificationCenter(tk.Tk):
             lambda: self.close_receipt_folder_review(window),
         )
         window._vaultlink_search_after_id = None
+        receipt_canvas = tk.Canvas(
+            window,
+            bg=locker.BG,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        receipt_scrollbar = ttk.Scrollbar(
+            window,
+            orient="vertical",
+            command=receipt_canvas.yview,
+        )
+        receipt_canvas.configure(yscrollcommand=receipt_scrollbar.set)
+        receipt_scrollbar.pack(side="right", fill="y")
+        receipt_canvas.pack(side="left", fill="both", expand=True)
+        content = tk.Frame(receipt_canvas, bg=locker.BG)
+        content_window = receipt_canvas.create_window(
+            (0, 0),
+            window=content,
+            anchor="nw",
+        )
+
+        def resize_receipt_content(event):
+            receipt_canvas.itemconfigure(content_window, width=event.width)
+
+        def update_receipt_scroll_region(_event=None):
+            receipt_canvas.configure(scrollregion=receipt_canvas.bbox("all"))
+
+        def scroll_receipt_window(event):
+            target = window.winfo_containing(event.x_root, event.y_root)
+            if target is table:
+                return None
+            receipt_canvas.yview_scroll(
+                -1 if event.delta > 0 else 1,
+                "units",
+            )
+            return "break"
+
+        receipt_canvas.bind("<Configure>", resize_receipt_content)
+        content.bind("<Configure>", update_receipt_scroll_region)
+        window.bind("<MouseWheel>", scroll_receipt_window, add="+")
         review_details = [
             dict(detail, review_id=index)
             for index, detail in enumerate(
@@ -2392,14 +2493,14 @@ class DownloadVerificationCenter(tk.Tk):
         review_history = []
 
         tk.Label(
-            window,
+            content,
             text="Local Receipt Review",
             bg=locker.BG,
             fg=locker.TEXT,
             font=("Segoe UI", 22, "bold"),
         ).pack(anchor="w", padx=20, pady=(18, 2))
         tk.Label(
-            window,
+            content,
             text="Receipt names, searches, and review marks stay in this app's memory only and are never added to exports, audit logs, or API requests.",
             bg=locker.BG,
             fg=locker.MUTED,
@@ -2444,6 +2545,7 @@ class DownloadVerificationCenter(tk.Tk):
         session_breakdown_var = tk.StringVar()
         review_percent_var = tk.DoubleVar(value=0.0)
         selection_position_var = tk.StringVar(value="No row selected")
+        scope_var = tk.StringVar(value="Default view")
         triage_title_var = tk.StringVar(value="NO RESULT SELECTED")
         triage_meaning_var = tk.StringVar(
             value="Select a row to see its fixed local meaning."
@@ -2454,7 +2556,7 @@ class DownloadVerificationCenter(tk.Tk):
         review_action_var = tk.StringVar(value="MARK REVIEWED")
         copy_guidance_button = None
 
-        controls = tk.Frame(window, bg=locker.PANEL)
+        controls = tk.Frame(content, bg=locker.PANEL)
         controls.pack(fill="x", padx=20, pady=(0, 12))
         tk.Label(
             controls,
@@ -2553,9 +2655,24 @@ class DownloadVerificationCenter(tk.Tk):
             pady=(0, 10),
             ipady=4,
         )
+        tk.Label(
+            controls,
+            textvariable=scope_var,
+            bg=locker.PANEL,
+            fg=locker.BLUE,
+            font=("Segoe UI", 8, "bold"),
+            anchor="w",
+        ).grid(
+            row=2,
+            column=2,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(0, 10),
+        )
         controls.columnconfigure(0, weight=1)
 
-        table_frame = tk.Frame(window, bg=locker.PANEL)
+        table_frame = tk.Frame(content, bg=locker.PANEL)
         table_frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
         table = ttk.Treeview(
             table_frame,
@@ -2635,14 +2752,27 @@ class DownloadVerificationCenter(tk.Tk):
                 selected_items = table.selection()
                 if selected_items:
                     preferred_review_id = item_review_ids.get(selected_items[0])
+            category = filter_labels[filter_var.get()]
+            level = level_labels[level_var.get()]
+            sort_mode = sort_labels[sort_var.get()]
+            session_state = session_labels[session_var.get()]
+            scope_var.set(
+                receipt_folder_review_scope_text(
+                    query=search_var.get(),
+                    category=category,
+                    level=level,
+                    session_state=session_state,
+                    sort_mode=sort_mode,
+                )
+            )
             rows = filter_receipt_folder_local_details(
                 review_details,
                 query=search_var.get(),
-                category=filter_labels[filter_var.get()],
-                level=level_labels[level_var.get()],
-                sort_mode=sort_labels[sort_var.get()],
+                category=category,
+                level=level,
+                sort_mode=sort_mode,
                 reviewed_ids=reviewed_ids,
-                session_state=session_labels[session_var.get()],
+                session_state=session_state,
             )
             table.delete(*table.get_children())
             item_status.clear()
@@ -2718,9 +2848,16 @@ class DownloadVerificationCenter(tk.Tk):
             review_action_var.set(
                 "MARK UNREVIEWED" if review_id in reviewed_ids else "MARK REVIEWED"
             )
+            pending_items = ordered_pending_items()
+            queue_text = "not pending"
+            if selected_items[0] in pending_items:
+                queue_text = (
+                    f"pending {pending_items.index(selected_items[0]) + 1} "
+                    f"of {len(pending_items)}"
+                )
             selection_position_var.set(
                 f"Selected {table.index(selected_items[0]) + 1} of "
-                f"{len(table.get_children())} shown"
+                f"{len(table.get_children())} shown | {queue_text}"
             )
             if copy_guidance_button is not None:
                 copy_guidance_button.configure(state="normal")
@@ -2948,6 +3085,29 @@ class DownloadVerificationCenter(tk.Tk):
             )
             return pending_items
 
+        def review_selected_and_next():
+            selected_items = table.selection()
+            if not selected_items:
+                next_pending_item()
+                return
+            review_id = item_review_ids.get(selected_items[0])
+            if review_id is None or review_id in reviewed_ids:
+                next_pending_item()
+                return
+            pending_review_ids = [
+                item_review_ids[item_id]
+                for item_id in ordered_pending_items()
+            ]
+            next_review_id = -1
+            if len(pending_review_ids) > 1 and review_id in pending_review_ids:
+                current_index = pending_review_ids.index(review_id)
+                next_review_id = pending_review_ids[
+                    (current_index + 1) % len(pending_review_ids)
+                ]
+            changes = apply_review_mark_action((review_id,), True)
+            if changes:
+                refresh_review(preferred_review_id=next_review_id)
+
         def cycle_pending_item(step):
             pending_items = ordered_pending_items()
             if not pending_items:
@@ -3017,12 +3177,14 @@ class DownloadVerificationCenter(tk.Tk):
         table.bind("<<TreeviewSelect>>", show_selected_guidance)
         table.bind("<Return>", shortcut(toggle_selected_reviewed))
         table.bind("<space>", shortcut(toggle_selected_reviewed))
+        table.bind("<Control-Return>", shortcut(review_selected_and_next))
         window.bind("<Control-f>", focus_receipt_search)
+        window.bind("<Control-z>", shortcut(undo_last_review_mark))
         window.bind("<F3>", shortcut(next_pending_item))
         window.bind("<Shift-F3>", shortcut(previous_pending_item))
         refresh_review()
 
-        triage_panel = tk.Frame(window, bg=locker.PANEL)
+        triage_panel = tk.Frame(content, bg=locker.PANEL)
         triage_panel.pack(fill="x", padx=20, pady=(0, 12))
         tk.Label(
             triage_panel,
@@ -3139,6 +3301,15 @@ class DownloadVerificationCenter(tk.Tk):
         )
         tk.Button(
             copy_controls,
+            text="REVIEW & NEXT",
+            command=review_selected_and_next,
+            bg=locker.BLUE,
+            fg=locker.BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", ipadx=10, ipady=5)
+        tk.Button(
+            copy_controls,
             text="COPY SAFE SUMMARY",
             command=copy_safe_summary,
             bg="#252936",
@@ -3156,10 +3327,14 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
 
-        actions = tk.Frame(window, bg=locker.BG)
+        actions = tk.Frame(content, bg=locker.BG)
         actions.pack(fill="x", padx=20, pady=(0, 18))
+        action_commands = tk.Frame(actions, bg=locker.BG)
+        action_commands.pack(fill="x")
+        action_status = tk.Frame(actions, bg=locker.BG)
+        action_status.pack(fill="x", pady=(10, 0))
         tk.Button(
-            actions,
+            action_commands,
             text="CLEAR LOCAL LIST",
             command=lambda: self.clear_receipt_folder_review(window),
             bg=locker.YELLOW,
@@ -3168,7 +3343,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", ipadx=12, ipady=7)
         tk.Button(
-            actions,
+            action_commands,
             text="CLEAR FILTERS",
             command=clear_filters,
             bg="#252936",
@@ -3177,7 +3352,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            actions,
+            action_commands,
             text="NEXT REVIEW ITEM",
             command=next_review_item,
             bg=locker.BLUE,
@@ -3186,7 +3361,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            actions,
+            action_commands,
             text="PREVIOUS PENDING",
             command=previous_pending_item,
             bg="#252936",
@@ -3195,7 +3370,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            actions,
+            action_commands,
             text="NEXT PENDING ITEM",
             command=next_pending_item,
             bg="#252936",
@@ -3204,14 +3379,14 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
-            actions,
+            action_status,
             textvariable=visible_count_var,
             bg=locker.BG,
             fg=locker.MUTED,
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=14)
         tk.Button(
-            actions,
+            action_status,
             text="CLOSE",
             command=lambda: self.close_receipt_folder_review(window),
             bg="#252936",

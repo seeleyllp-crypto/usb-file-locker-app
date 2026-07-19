@@ -715,6 +715,36 @@ class DesktopHelperTests(unittest.TestCase):
                 len(session_rows),
             )
             self.assertEqual(
+                download_verification_center.receipt_folder_review_scope_text(),
+                "Default view",
+            )
+            private_scope = (
+                download_verification_center.receipt_folder_review_scope_text(
+                    query="PRIVATE-SECRET-QUERY",
+                    category="needs_review",
+                    level="critical",
+                    session_state="pending",
+                    sort_mode="priority",
+                )
+            )
+            self.assertEqual(
+                private_scope,
+                "5 active: Search active | Needs review | Action Required | "
+                "Pending only | Priority sort",
+            )
+            self.assertNotIn("PRIVATE-SECRET-QUERY", private_scope)
+            for invalid_kwargs, expected_error in (
+                ({"category": "private-category"}, "filter"),
+                ({"level": "private-level"}, "priority level"),
+                ({"session_state": "private-session"}, "session state"),
+                ({"sort_mode": "private-sort"}, "sort mode"),
+            ):
+                with self.subTest(invalid_kwargs=invalid_kwargs):
+                    with self.assertRaisesRegex(ValueError, expected_error):
+                        download_verification_center.receipt_folder_review_scope_text(
+                            **invalid_kwargs
+                        )
+            self.assertEqual(
                 len(
                     download_verification_center.filter_receipt_folder_local_details(
                         session_rows,
@@ -1204,23 +1234,35 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="UNDO LAST CHANGE"', source)
         self.assertIn('text="COPY SAFE GUIDANCE"', source)
         self.assertIn('text="COPY SAFE SUMMARY"', source)
+        self.assertIn('text="REVIEW & NEXT"', source)
         self.assertIn('text="RESET REVIEW MARKS"', source)
         self.assertIn('text="NEXT PENDING ITEM"', source)
         self.assertIn('table.heading("priority", text="Priority")', source)
         self.assertIn('table.heading("session", text="Session")', source)
         self.assertIn("self.folder_review_window = None", source)
+        self.assertIn("window.minsize(760, 520)", source)
+        self.assertIn("receipt_canvas = tk.Canvas(", source)
+        self.assertIn("receipt_scrollbar = ttk.Scrollbar(", source)
+        self.assertIn('window.bind("<MouseWheel>", scroll_receipt_window, add="+")', source)
         self.assertIn("MAX_RECEIPT_REVIEW_HISTORY = 100", source)
         self.assertIn("RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS = 180", source)
         self.assertIn('search_entry.bind("<KeyRelease>", schedule_search_refresh)', source)
         self.assertIn("session_breakdown_var", source)
         self.assertIn("review_percent_var", source)
         self.assertIn("selection_position_var", source)
+        self.assertIn("scope_var", source)
+        self.assertIn("receipt_folder_review_scope_text", source)
         self.assertIn("download_verify_copy_review_guidance", source)
         self.assertIn("download_verify_copy_review_summary", source)
         self.assertIn("ttk.Progressbar(", source)
         self.assertIn('table.bind("<Return>", shortcut(toggle_selected_reviewed))', source)
         self.assertIn('table.bind("<space>", shortcut(toggle_selected_reviewed))', source)
+        self.assertIn(
+            'table.bind("<Control-Return>", shortcut(review_selected_and_next))',
+            source,
+        )
         self.assertIn('window.bind("<Control-f>", focus_receipt_search)', source)
+        self.assertIn('window.bind("<Control-z>", shortcut(undo_last_review_mark))', source)
         self.assertIn('window.bind("<F3>", shortcut(next_pending_item))', source)
         self.assertIn('window.bind("<Shift-F3>", shortcut(previous_pending_item))', source)
         self.assertIn('triage_title_var.set("REVIEW PASS COMPLETE")', source)
@@ -1279,6 +1321,7 @@ class DesktopHelperTests(unittest.TestCase):
                 "visible_reviewed",
                 "review_percent_var",
                 "selection_position_var",
+                "scope_var",
                 "safe_text",
                 "clipboard",
             ):

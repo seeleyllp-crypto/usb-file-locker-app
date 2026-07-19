@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "COPY SAFE SUMMARY copies aggregate review totals, completion percentage, and four fixed pending-level counts.",
-    "The summary formatter rejects missing, non-numeric, out-of-range, or inconsistent counts.",
-    "Safe summaries contain no filenames, paths, hashes, timestamps, selected folders, receipt contents, or free-form text.",
-    "Summary copy records only a coarse success or failure audit event and never records clipboard contents.",
-    "An unmatched search or filter now shows a clear NO RESULTS SHOWN state with a safe next step.",
-    "A fully reviewed queue now shows REVIEW PASS COMPLETE without implying integrity, malware detection, or file safety.",
-    "The completion state survives the Treeview selection event emitted when its last visible pending row disappears.",
-    "Ctrl+F focuses and selects the receipt search field for faster review.",
-    "F3 and Shift+F3 navigate forward and backward through the filtered pending queue.",
-    "Enter or Space toggles the selected row's temporary review mark.",
-    "API 0.61.0 advertises aggregate safe summary, keyboard review controls, and stable empty and complete states without local data.",
+    "REVIEW & NEXT marks the selected pending receipt Reviewed and moves directly to the next pending row.",
+    "Ctrl+Enter runs REVIEW & NEXT from the receipt table.",
+    "Ctrl+Z restores the latest temporary review-mark change.",
+    "The selected-row line now shows its position in the filtered pending queue.",
+    "A fixed active-view indicator names the enabled result, priority, session, and sort controls.",
+    "An active filename query is shown only as Search active; the query itself is never repeated in the indicator.",
+    "A page scrollbar keeps every bottom action reachable at the supported 760x520 minimum review size.",
+    "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
+    "These temporary values are never logged, exported, persisted, or sent to the API.",
+    "COPY SAFE SUMMARY continues to export aggregate counts without filenames, paths, hashes, or receipt contents.",
+    "API 0.62.0 advertises the faster review workflow without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
