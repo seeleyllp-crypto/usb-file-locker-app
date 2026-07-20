@@ -4959,6 +4959,12 @@ class USBFileLocker(tk.Tk):
         self.pin_mode = tk.StringVar(value="USB KEY ONLY")
         self.progress_value = tk.DoubleVar(value=0)
         self.progress_text = tk.StringVar(value="Ready")
+        self.overview_access_var = tk.StringVar(value="NO USB KEY LOADED")
+        self.overview_queue_var = tk.StringVar(value="0 ITEMS | 0 SELECTED")
+        self.overview_pin_var = tk.StringVar(value="USB KEY ONLY")
+        self.overview_license_var = tk.StringVar(value="CHECKING LICENSE")
+        self.overview_activity_var = tk.StringVar(value="READY")
+        self.overview_refresh_after_id = None
         self.busy = False
         self.cancel_event = threading.Event()
         self.busy_buttons = []
@@ -4969,6 +4975,11 @@ class USBFileLocker(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
         self.apply_access_state()
+        self.update_overview_status()
+        self.overview_refresh_after_id = self.after(
+            750,
+            self.refresh_overview_loop,
+        )
         self.refresh_breach_status()
         self.schedule_license_refresh(INITIAL_LICENSE_REFRESH_MS)
         self.after(20000, self.periodic_breach_refresh)
@@ -5091,6 +5102,7 @@ class USBFileLocker(tk.Tk):
 
         main_tabs = ttk.Notebook(outer, style="VaultLink.TNotebook")
         main_tabs.pack(fill="both", expand=True)
+        overview_panel = tk.Frame(main_tabs, bg=PANEL)
         key_panel = tk.Frame(main_tabs, bg=PANEL)
         panel = tk.Frame(main_tabs, bg=PANEL)
         queue_panel = tk.Frame(main_tabs, bg=PANEL)
@@ -5098,6 +5110,7 @@ class USBFileLocker(tk.Tk):
         recovery_panel = tk.Frame(main_tabs, bg=PANEL)
         data_panel = tk.Frame(main_tabs, bg=PANEL)
         account_panel = tk.Frame(main_tabs, bg=PANEL)
+        main_tabs.add(overview_panel, text="OVERVIEW")
         main_tabs.add(key_panel, text="KEY")
         main_tabs.add(panel, text="LOCKER")
         main_tabs.add(queue_panel, text="QUEUE")
@@ -5106,6 +5119,217 @@ class USBFileLocker(tk.Tk):
         main_tabs.add(data_panel, text="DATA")
         main_tabs.add(account_panel, text="ACCOUNT")
         self.main_tabs = main_tabs
+        for tab_number in range(1, 9):
+            self.bind(
+                f"<Control-Key-{tab_number}>",
+                lambda _event, index=tab_number - 1: self.select_main_tab(index),
+            )
+
+        tk.Label(
+            overview_panel,
+            text="AT A GLANCE",
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w", padx=18, pady=(18, 10))
+        overview_metrics = tk.Frame(overview_panel, bg=PANEL)
+        overview_metrics.pack(fill="x", padx=18)
+        for column in range(4):
+            overview_metrics.columnconfigure(column, weight=1, uniform="overview")
+
+        def add_overview_metric(column, heading, variable, accent):
+            metric = tk.Frame(
+                overview_metrics,
+                bg=FIELD,
+                highlightbackground=BORDER,
+                highlightthickness=1,
+            )
+            metric.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 5, 0 if column == 3 else 5),
+            )
+            tk.Label(
+                metric,
+                text=heading,
+                bg=FIELD,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=11, pady=(9, 3))
+            tk.Label(
+                metric,
+                textvariable=variable,
+                bg=FIELD,
+                fg=accent,
+                font=("Segoe UI", 9, "bold"),
+                wraplength=175,
+                justify="left",
+            ).pack(anchor="w", padx=11, pady=(0, 10))
+
+        add_overview_metric(0, "ACCESS", self.overview_access_var, YELLOW)
+        add_overview_metric(1, "QUEUE", self.overview_queue_var, BLUE)
+        add_overview_metric(2, "PIN MODE", self.overview_pin_var, GREEN)
+        add_overview_metric(3, "LICENSE", self.overview_license_var, GREEN)
+
+        tk.Label(
+            overview_panel,
+            text="WORKSPACES",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=18, pady=(16, 6))
+        overview_nav = tk.Frame(overview_panel, bg=PANEL)
+        overview_nav.pack(fill="x", padx=18)
+        for label, target in (
+            ("LOCKER", panel),
+            ("QUEUE", queue_panel),
+            ("TOOLS", tools_panel),
+            ("RECOVERY", recovery_panel),
+            ("DATA", data_panel),
+            ("ACCOUNT", account_panel),
+        ):
+            tk.Button(
+                overview_nav,
+                text=label,
+                command=lambda tab=target: self.main_tabs.select(tab),
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BORDER,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+            ).pack(side="left", padx=(0, 8), ipadx=10, ipady=6)
+
+        overview_actions = tk.Frame(overview_panel, bg=PANEL)
+        overview_actions.pack(fill="x", padx=18, pady=(14, 0))
+        self.overview_load_key_button = tk.Button(
+            overview_actions,
+            text="LOAD USB KEY",
+            command=self.load_key,
+            bg=WHITE,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.overview_load_key_button.pack(side="left", ipadx=12, ipady=7)
+        self.overview_panic_button = tk.Button(
+            overview_actions,
+            text="PANIC LOCK NOW",
+            command=self.panic_lock_now,
+            bg=RED,
+            fg=WHITE,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.overview_panic_button.pack(
+            side="left",
+            padx=(10, 0),
+            ipadx=12,
+            ipady=7,
+        )
+        tk.Button(
+            overview_actions,
+            text="LICENSE CENTER",
+            command=self.open_license_center,
+            bg=BLUE,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+        tk.Button(
+            overview_actions,
+            text="REFRESH STATUS",
+            command=self.update_overview_status,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
+
+        overview_quick_tools = tk.Frame(overview_panel, bg=PANEL)
+        overview_quick_tools.pack(fill="x", padx=18, pady=(12, 0))
+        for label, command in (
+            ("VERIFY DOWNLOAD", self.open_download_verification_center),
+            ("AUDIT LOG", self.open_log),
+            ("CUSTOMER CENTER", self.open_customer_center),
+            ("OPEN DATA FOLDER", self.open_data_folder),
+        ):
+            tk.Button(
+                overview_quick_tools,
+                text=label,
+                command=command,
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BORDER,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+            ).pack(side="left", padx=(0, 8), ipadx=10, ipady=6)
+        overview_more = tk.Menubutton(
+            overview_quick_tools,
+            text="MORE TOOLS",
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+            direction="below",
+        )
+        overview_more.pack(side="left", ipadx=10, ipady=6)
+        overview_more_menu = tk.Menu(
+            overview_more,
+            tearoff=False,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BLUE,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        overview_more_menu.add_command(
+            label="Copy safe status",
+            command=self.copy_overview_summary,
+        )
+        overview_more_menu.add_command(
+            label="Clear queue selection",
+            command=self.clear_queue_selection,
+        )
+        overview_more_menu.add_separator()
+        overview_more_menu.add_command(
+            label="Update Center",
+            command=self.open_update_center,
+        )
+        overview_more_menu.add_command(
+            label="Bug Center",
+            command=self.open_support_center,
+        )
+        overview_more_menu.add_command(
+            label="Owner News",
+            command=self.open_owner_news,
+        )
+        overview_more_menu.add_command(label="Shop", command=self.open_shop)
+        overview_more.configure(menu=overview_more_menu)
+        overview_activity = tk.Frame(overview_panel, bg=FIELD)
+        overview_activity.pack(fill="x", padx=18, pady=(12, 0))
+        tk.Label(
+            overview_activity,
+            text="CURRENT ACTIVITY",
+            bg=FIELD,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(12, 10), pady=8)
+        tk.Label(
+            overview_activity,
+            textvariable=self.overview_activity_var,
+            bg=FIELD,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
 
         top = tk.Frame(key_panel, bg=PANEL)
         top.pack(fill="x", padx=18, pady=(18, 10))
@@ -5372,6 +5596,11 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 10),
         )
         self.file_list.pack(fill="both", expand=True, padx=18)
+        self.file_list.bind(
+            "<<ListboxSelect>>",
+            lambda _event: self.update_overview_status(),
+            add="+",
+        )
 
         action_row = tk.Frame(panel, bg=PANEL)
         action_row.pack(fill="x", padx=18, pady=(14, 8), before=self.file_list)
@@ -5467,6 +5696,88 @@ class USBFileLocker(tk.Tk):
             self.perm_unlock_folder_button: "perm-unlock",
             self.personal_vault_button: "personal-vault",
         }
+
+    def select_main_tab(self, index):
+        try:
+            self.main_tabs.select(int(index))
+            self.update_overview_status()
+        except (AttributeError, IndexError, tk.TclError, ValueError):
+            pass
+        return "break"
+
+    def update_overview_status(self):
+        try:
+            key_ready = self.key is not None
+            queued = self.file_list.size()
+            selected = len(self.file_list.curselection())
+            pin_mode = str(self.pin_mode.get() or "USB KEY ONLY").strip()
+            license_text = str(
+                self.license_status.get() or "No active license"
+            ).strip()
+            if license_text.lower().startswith("license active:"):
+                license_text = license_text.split(":", 1)[1].strip()
+            self.overview_access_var.set(
+                "USB KEY READY" if key_ready else "NO USB KEY LOADED"
+            )
+            self.overview_queue_var.set(
+                f"{queued} ITEM{'S' if queued != 1 else ''} | "
+                f"{selected} SELECTED"
+            )
+            self.overview_pin_var.set(pin_mode.upper())
+            self.overview_license_var.set(license_text.upper()[:56])
+            self.overview_activity_var.set(
+                str(self.progress_text.get() or "Ready").strip().upper()[:72]
+            )
+        except (AttributeError, tk.TclError):
+            return
+
+    def refresh_overview_loop(self):
+        self.overview_refresh_after_id = None
+        if not self.winfo_exists():
+            return
+        self.update_overview_status()
+        self.overview_refresh_after_id = self.after(
+            750,
+            self.refresh_overview_loop,
+        )
+
+    def copy_overview_summary(self):
+        self.update_overview_status()
+        safe_text = "\n".join(
+            [
+                "VaultLink Local Overview",
+                f"Access: {self.overview_access_var.get()}",
+                f"Queue: {self.overview_queue_var.get()}",
+                f"PIN mode: {self.overview_pin_var.get()}",
+                f"License: {self.overview_license_var.get()}",
+                f"Current activity: {self.overview_activity_var.get()}",
+                (
+                    "Scope: aggregate local app state only; no filenames, paths, "
+                    "PINs, key IDs, secrets, or file contents."
+                ),
+            ]
+        )
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(safe_text)
+            self.update_idletasks()
+        except tk.TclError:
+            self.status.set("Could not copy the local overview.")
+            log_event("copy_overview_summary", "local", "failed")
+            return
+        self.status.set(
+            "Privacy-safe overview copied without filenames, paths, PINs, or key details."
+        )
+        log_event("copy_overview_summary", "local", "ok")
+
+    def clear_queue_selection(self):
+        try:
+            self.file_list.selection_clear(0, tk.END)
+            self.update_overview_status()
+        except tk.TclError:
+            self.status.set("Could not clear the queue selection.")
+            return
+        self.status.set("Queue selection cleared. No files were removed.")
 
     def toggle_pin_visibility(self):
         self.pin_entry.configure(show="" if self.pin_visible.get() else "*")
@@ -7017,6 +7328,12 @@ class USBFileLocker(tk.Tk):
                 "Wait for the current item to finish, or click CANCEL AFTER CURRENT.",
             )
             return
+        if self.overview_refresh_after_id is not None:
+            try:
+                self.after_cancel(self.overview_refresh_after_id)
+            except tk.TclError:
+                pass
+            self.overview_refresh_after_id = None
         self.destroy()
 
     def cancel_current_job(self):

@@ -72,11 +72,14 @@ def download_verification_fixture():
 
 
 class FakeVar:
-    def __init__(self):
-        self.value = ""
+    def __init__(self, value=""):
+        self.value = value
 
     def set(self, value):
         self.value = value
+
+    def get(self):
+        return self.value
 
 
 class FakeButton:
@@ -104,6 +107,7 @@ class DesktopHelperTests(unittest.TestCase):
             'main_tabs = ttk.Notebook(outer, style="VaultLink.TNotebook")',
             source,
         )
+        self.assertIn('main_tabs.add(overview_panel, text="OVERVIEW")', source)
         self.assertIn('main_tabs.add(key_panel, text="KEY")', source)
         self.assertIn('main_tabs.add(panel, text="LOCKER")', source)
         self.assertIn('main_tabs.add(queue_panel, text="QUEUE")', source)
@@ -115,9 +119,42 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('style="VaultLink.TNotebook"', source)
         self.assertIn("status_panel = tk.Frame(", source)
         self.assertIn("configure_vaultlink_ttk_styles(self)", source)
+        self.assertIn("self.overview_access_var", source)
+        self.assertIn("def update_overview_status(self):", source)
+        self.assertIn("def copy_overview_summary(self):", source)
+        self.assertIn('text="MORE TOOLS"', source)
         self.assertNotIn("main_canvas", source)
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
+
+    def test_overview_copy_contains_aggregate_local_status_only(self):
+        clipboard = {}
+        app = SimpleNamespace(
+            overview_access_var=FakeVar("USB KEY READY"),
+            overview_queue_var=FakeVar("3 ITEMS | 1 SELECTED"),
+            overview_pin_var=FakeVar("USB KEY + PIN"),
+            overview_license_var=FakeVar("PRO"),
+            overview_activity_var=FakeVar("READY"),
+            status=FakeVar(),
+            update_overview_status=lambda: None,
+            clipboard_clear=lambda: clipboard.clear(),
+            clipboard_append=lambda text: clipboard.update(text=text),
+            update_idletasks=lambda: None,
+        )
+
+        with mock.patch.object(locker, "log_event") as log_event:
+            locker.USBFileLocker.copy_overview_summary(app)
+
+        copied = clipboard["text"]
+        self.assertIn("Access: USB KEY READY", copied)
+        self.assertIn("Queue: 3 ITEMS | 1 SELECTED", copied)
+        self.assertIn("PIN mode: USB KEY + PIN", copied)
+        self.assertIn("License: PRO", copied)
+        self.assertIn("no filenames, paths, PINs, key IDs, secrets", copied)
+        self.assertNotIn("C:\\", copied)
+        self.assertNotIn(".locked", copied)
+        self.assertIn("Privacy-safe overview copied", app.status.get())
+        log_event.assert_called_once_with("copy_overview_summary", "local", "ok")
 
     def test_support_redactor_removes_sensitive_values_but_keeps_error_context(self):
         source = "\n".join(

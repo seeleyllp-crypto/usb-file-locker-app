@@ -53,7 +53,7 @@ DEFAULT_NOTES = [
     "Ctrl+Z restores the latest temporary review-mark change.",
     "The selected-row line now shows its position in the filtered pending queue.",
     "A fixed active-view indicator names enabled controls and represents a filename query only as Search active.",
-    "Main-app, verifier, and receipt-review vertical scrolling keeps remaining bottom actions reachable on shorter displays.",
+    "A live local-only Overview shows aggregate access, queue, selection, PIN mode, license, and activity without paths, names, secrets, or contents.",
     "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
     "These temporary values are never logged, exported, persisted, or sent to the API.",
     "COPY SAFE SUMMARY continues to export aggregate counts without filenames, paths, hashes, or receipt contents.",
