@@ -46,15 +46,12 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now keeps CLOSE in the top header where it is immediately reachable.",
-    "The duplicate bottom CLOSE action was removed.",
+    "Local Receipt Review now keeps its only CLOSE action in the top header where it is immediately reachable.",
     "The main app no longer shows a sideways scrollbar; crowded controls stay arranged in normal separate rows.",
-    "REVIEW & NEXT marks the selected pending receipt Reviewed and moves directly to the next pending row.",
-    "Ctrl+Enter runs REVIEW & NEXT from the receipt table.",
+    "REVIEW & NEXT marks the selected pending receipt Reviewed and moves to the next pending row; Ctrl+Enter does the same.",
     "Ctrl+Z restores the latest temporary review-mark change.",
     "The selected-row line now shows its position in the filtered pending queue.",
-    "A fixed active-view indicator names the enabled result, priority, session, and sort controls.",
-    "An active filename query is shown only as Search active; the query itself is never repeated in the indicator.",
+    "A fixed active-view indicator names enabled controls and represents a filename query only as Search active.",
     "Main-app, verifier, and receipt-review vertical scrolling keeps remaining bottom actions reachable on shorter displays.",
     "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
     "These temporary values are never logged, exported, persisted, or sent to the API.",
