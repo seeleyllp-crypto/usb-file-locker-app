@@ -18,7 +18,10 @@ The app checks the API at startup when its daily update check is due. License st
 
 Release `2026.07.18.13` speeds up Local Receipt Review with `REVIEW & NEXT`: it marks the selected pending row Reviewed and immediately moves to the next pending row in priority order. Ctrl+Enter runs the same action, while Ctrl+Z restores the latest temporary mark change.
 
-The review window now adapts to available screen height and includes a page scrollbar, keeping every bottom action reachable at the supported `760x520` minimum. The selected-row line shows its pending queue position. A fixed active-view indicator names the enabled filter, priority, session, and sort controls; a filename query is represented only as `Search active`, never by its text.
+The main app, Download Verification Center, and receipt-review window now adapt to available screen height and include page scrollbars, keeping every bottom action reachable on shorter displays. The main app supports an `860x520` minimum; receipt review supports `760x520`.
+The normal dark interface is preserved. A fixed horizontal scrollbar remains as a fallback for crowded tool rows, preventing buttons or status text from becoming unreachable when Windows display scaling is high.
+
+The selected-row line shows its pending queue position. A fixed active-view indicator names the enabled filter, priority, session, and sort controls; a filename query is represented only as `Search active`, never by its text.
 
 Query text, active-view state, queue position, selections, and review marks stay in memory and are never logged, exported, persisted, or sent to the API. API `0.62.0` advertises these controls without receiving local review data.
 

@@ -97,6 +97,16 @@ class DesktopHelperTests(unittest.TestCase):
     def test_first_account_and_announcement_sync_starts_early(self):
         self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
 
+    def test_main_window_has_short_screen_scroll_support(self):
+        source = Path(locker.__file__).read_text(encoding="utf-8")
+        self.assertIn("self.minsize(860, 520)", source)
+        self.assertIn("main_canvas = tk.Canvas(", source)
+        self.assertIn("main_scrollbar = ttk.Scrollbar(", source)
+        self.assertIn('self.bind("<MouseWheel>", scroll_main_window, add="+")', source)
+        self.assertIn("self.main_canvas = main_canvas", source)
+        self.assertIn("self.main_scrollbar = main_scrollbar", source)
+        self.assertIn("self.main_horizontal_scrollbar = main_horizontal_scrollbar", source)
+
     def test_support_redactor_removes_sensitive_values_but_keeps_error_context(self):
         source = "\n".join(
             [
@@ -1206,6 +1216,9 @@ class DesktopHelperTests(unittest.TestCase):
     def test_download_verifier_receipt_comparison_ui_and_audit_are_privacy_safe(self):
         source = Path(download_verification_center.__file__).read_text(encoding="utf-8")
         self.assertIn('text="EXPORT SEALED RECEIPT"', source)
+        self.assertIn("self.minsize(1050, 520)", source)
+        self.assertIn("self.main_canvas = main_canvas", source)
+        self.assertIn("self.main_scrollbar = main_scrollbar", source)
         self.assertIn('text="INSPECT RECEIPT"', source)
         self.assertIn('text="COPY RECEIPT CHECK"', source)
         self.assertIn('text="AUDIT RECEIPT FOLDER"', source)

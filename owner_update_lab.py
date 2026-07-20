@@ -52,7 +52,7 @@ DEFAULT_NOTES = [
     "The selected-row line now shows its position in the filtered pending queue.",
     "A fixed active-view indicator names the enabled result, priority, session, and sort controls.",
     "An active filename query is shown only as Search active; the query itself is never repeated in the indicator.",
-    "A page scrollbar keeps every bottom action reachable at the supported 760x520 minimum review size.",
+    "Main-app, verifier, and receipt-review page scrollbars keep bottom actions reachable on shorter displays.",
     "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
     "These temporary values are never logged, exported, persisted, or sent to the API.",
     "COPY SAFE SUMMARY continues to export aggregate counts without filenames, paths, hashes, or receipt contents.",

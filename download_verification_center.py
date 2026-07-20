@@ -1721,8 +1721,12 @@ class DownloadVerificationCenter(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("VaultLink Download Verification Center")
-        self.geometry("1120x960")
-        self.minsize(1050, 950)
+        screen_width = max(self.winfo_screenwidth(), 1050)
+        screen_height = max(self.winfo_screenheight(), 520)
+        window_width = min(1120, max(1050, screen_width - 80))
+        window_height = min(960, max(520, screen_height - 140))
+        self.geometry(f"{window_width}x{window_height}")
+        self.minsize(1050, 520)
         self.configure(bg=locker.BG)
         self.selected_path = None
         self.result = None
@@ -1765,7 +1769,46 @@ class DownloadVerificationCenter(tk.Tk):
         self.build_ui()
 
     def build_ui(self):
-        outer = tk.Frame(self, bg=locker.BG)
+        main_canvas = tk.Canvas(
+            self,
+            bg=locker.BG,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        main_scrollbar = ttk.Scrollbar(
+            self,
+            orient="vertical",
+            command=main_canvas.yview,
+        )
+        main_canvas.configure(yscrollcommand=main_scrollbar.set)
+        main_scrollbar.pack(side="right", fill="y")
+        main_canvas.pack(side="left", fill="both", expand=True)
+        outer_host = tk.Frame(main_canvas, bg=locker.BG)
+        outer_window = main_canvas.create_window(
+            (0, 0),
+            window=outer_host,
+            anchor="nw",
+        )
+
+        def fit_main_content(event):
+            main_canvas.itemconfigure(outer_window, width=event.width)
+
+        def update_main_scroll_region(_event=None):
+            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+
+        main_canvas.bind("<Configure>", fit_main_content)
+        outer_host.bind("<Configure>", update_main_scroll_region)
+        self.bind(
+            "<MouseWheel>",
+            lambda event: (
+                main_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+                "break",
+            )[-1],
+            add="+",
+        )
+        self.main_canvas = main_canvas
+        self.main_scrollbar = main_scrollbar
+        outer = tk.Frame(outer_host, bg=locker.BG)
         outer.pack(fill="both", expand=True, padx=24, pady=16)
 
         tk.Label(
