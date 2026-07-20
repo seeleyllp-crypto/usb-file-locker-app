@@ -2535,13 +2535,24 @@ class DownloadVerificationCenter(tk.Tk):
         reviewed_ids = set()
         review_history = []
 
+        review_header = tk.Frame(content, bg=locker.BG)
+        review_header.pack(fill="x", padx=20, pady=(18, 2))
         tk.Label(
-            content,
+            review_header,
             text="Local Receipt Review",
             bg=locker.BG,
             fg=locker.TEXT,
             font=("Segoe UI", 22, "bold"),
-        ).pack(anchor="w", padx=20, pady=(18, 2))
+        ).pack(side="left")
+        tk.Button(
+            review_header,
+            text="CLOSE",
+            command=lambda: self.close_receipt_folder_review(window),
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=12, ipady=7)
         tk.Label(
             content,
             text="Receipt names, searches, and review marks stay in this app's memory only and are never added to exports, audit logs, or API requests.",
@@ -3428,15 +3439,6 @@ class DownloadVerificationCenter(tk.Tk):
             fg=locker.MUTED,
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=14)
-        tk.Button(
-            action_status,
-            text="CLOSE",
-            command=lambda: self.close_receipt_folder_review(window),
-            bg="#252936",
-            fg=locker.TEXT,
-            relief="flat",
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side="right", ipadx=12, ipady=7)
         locker.log_event("download_verify_view_receipt_folder_review", "local", "ok")
 
     def close_receipt_folder_review(self, window=None):

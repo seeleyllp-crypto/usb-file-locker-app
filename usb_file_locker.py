@@ -4913,17 +4913,8 @@ class USBFileLocker(tk.Tk):
             orient="vertical",
             command=main_canvas.yview,
         )
-        main_horizontal_scrollbar = ttk.Scrollbar(
-            self,
-            orient="horizontal",
-            command=main_canvas.xview,
-        )
-        main_canvas.configure(
-            yscrollcommand=main_scrollbar.set,
-            xscrollcommand=main_horizontal_scrollbar.set,
-        )
+        main_canvas.configure(yscrollcommand=main_scrollbar.set)
         main_scrollbar.pack(side="right", fill="y")
-        main_horizontal_scrollbar.pack(side="bottom", fill="x")
         main_canvas.pack(side="left", fill="both", expand=True)
         outer = tk.Frame(main_canvas, bg=BG)
         outer_window = main_canvas.create_window(
@@ -4933,10 +4924,7 @@ class USBFileLocker(tk.Tk):
         )
 
         def fit_main_content(event):
-            main_canvas.itemconfigure(
-                outer_window,
-                width=max(event.width, outer.winfo_reqwidth()),
-            )
+            main_canvas.itemconfigure(outer_window, width=event.width)
 
         def update_main_scroll_region(_event=None):
             main_canvas.configure(scrollregion=main_canvas.bbox("all"))
@@ -4953,7 +4941,6 @@ class USBFileLocker(tk.Tk):
         self.bind("<MouseWheel>", scroll_main_window, add="+")
         self.main_canvas = main_canvas
         self.main_scrollbar = main_scrollbar
-        self.main_horizontal_scrollbar = main_horizontal_scrollbar
 
         content = tk.Frame(outer, bg=BG)
         content.pack(fill="both", expand=True, padx=26, pady=22)

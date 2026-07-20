@@ -105,7 +105,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('self.bind("<MouseWheel>", scroll_main_window, add="+")', source)
         self.assertIn("self.main_canvas = main_canvas", source)
         self.assertIn("self.main_scrollbar = main_scrollbar", source)
-        self.assertIn("self.main_horizontal_scrollbar = main_horizontal_scrollbar", source)
+        self.assertNotIn("self.main_horizontal_scrollbar", source)
 
     def test_support_redactor_removes_sensitive_values_but_keeps_error_context(self):
         source = "\n".join(
@@ -1254,6 +1254,15 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('table.heading("session", text="Session")', source)
         self.assertIn("self.folder_review_window = None", source)
         self.assertIn("window.minsize(760, 520)", source)
+        self.assertIn("review_header = tk.Frame(content, bg=locker.BG)", source)
+        self.assertIn(
+            'command=lambda: self.close_receipt_folder_review(window)',
+            source,
+        )
+        self.assertNotIn(
+            'tk.Button(\n            action_status,\n            text="CLOSE"',
+            source,
+        )
         self.assertIn("receipt_canvas = tk.Canvas(", source)
         self.assertIn("receipt_scrollbar = ttk.Scrollbar(", source)
         self.assertIn('window.bind("<MouseWheel>", scroll_receipt_window, add="+")', source)
