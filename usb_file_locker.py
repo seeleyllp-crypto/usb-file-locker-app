@@ -39,12 +39,14 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.17"
+DESKTOP_APP_VERSION = "2026.07.18.18"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 TOOL_FINDER_VISIBLE_LIMIT = 10
+MAX_TOOL_FINDER_FAVORITES = 8
+MAX_TOOL_FINDER_RECENT = 8
 TOOL_FINDER_ACTIONS = (
     ("Access", "Load USB Key", "load_key"),
     ("Access", "Panic Lock Now", "panic_lock_now"),
@@ -1397,6 +1399,14 @@ def save_settings(settings):
     else:
         normalized.pop("recent_key_paths", None)
     normalized["security_profile"] = normalize_security_profile_name(normalized.get("security_profile", DEFAULT_SECURITY_PROFILE))
+    favorites = normalize_tool_finder_method_ids(
+        normalized.get("tool_finder_favorites", []),
+        MAX_TOOL_FINDER_FAVORITES,
+    )
+    if favorites:
+        normalized["tool_finder_favorites"] = favorites
+    else:
+        normalized.pop("tool_finder_favorites", None)
     write_text_atomic(SETTINGS_FILE, json.dumps(normalized, indent=2))
 
 
@@ -2047,6 +2057,58 @@ def filter_tool_finder_actions(query, limit=TOOL_FINDER_VISIBLE_LIMIT):
         ranked.append((score, index, action))
     ranked.sort(key=lambda item: (item[0], item[1]))
     return [action for _score, _index, action in ranked[:limit]]
+
+
+def normalize_tool_finder_method_ids(values, limit):
+    if type(limit) is not int or not 1 <= limit <= len(TOOL_FINDER_ACTIONS):
+        raise ValueError("Tool Finder saved-item limit is invalid.")
+    if not isinstance(values, (list, tuple)):
+        return []
+    allowed = {method_name for _category, _label, method_name in TOOL_FINDER_ACTIONS}
+    normalized = []
+    for value in values:
+        if (
+            isinstance(value, str)
+            and value in allowed
+            and value not in normalized
+        ):
+            normalized.append(value)
+            if len(normalized) >= limit:
+                break
+    return normalized
+
+
+def tool_finder_actions_for_mode(
+    query,
+    mode,
+    favorites=(),
+    recent=(),
+    limit=TOOL_FINDER_VISIBLE_LIMIT,
+):
+    if mode not in {"all", "favorites", "recent"}:
+        raise ValueError("Tool Finder mode is invalid.")
+    if type(limit) is not int or not 1 <= limit <= len(TOOL_FINDER_ACTIONS):
+        raise ValueError("Tool Finder mode result limit is invalid.")
+    matches = filter_tool_finder_actions(
+        query,
+        limit=len(TOOL_FINDER_ACTIONS),
+    )
+    if mode == "all":
+        return matches[:limit]
+    method_ids = normalize_tool_finder_method_ids(
+        favorites if mode == "favorites" else recent,
+        MAX_TOOL_FINDER_FAVORITES
+        if mode == "favorites"
+        else MAX_TOOL_FINDER_RECENT,
+    )
+    order = {method_name: index for index, method_name in enumerate(method_ids)}
+    filtered = [
+        action
+        for action in matches
+        if action[2] in order
+    ]
+    filtered.sort(key=lambda action: order[action[2]])
+    return filtered[:limit]
 
 
 def customer_center_details(state, settings=None):
@@ -5111,6 +5173,7 @@ class USBFileLocker(tk.Tk):
         self.license_gated_buttons = {}
         self.secondary_windows = []
         self.tool_finder_window = None
+        self.tool_finder_recent_methods = []
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -5958,26 +6021,56 @@ class USBFileLocker(tk.Tk):
         window.transient(self)
 
         search_var = tk.StringVar(window, value="")
+        mode_var = tk.StringVar(window, value="all")
         count_var = tk.StringVar(window, value="")
         selected_var = tk.StringVar(window, value="NO TOOL SELECTED")
+        favorites = normalize_tool_finder_method_ids(
+            self.settings.get("tool_finder_favorites", []),
+            MAX_TOOL_FINDER_FAVORITES,
+        )
         visible_actions = []
 
         outer = tk.Frame(window, bg=BG)
         outer.pack(fill="both", expand=True, padx=24, pady=20)
+        header_row = tk.Frame(outer, bg=BG)
+        header_row.pack(fill="x", pady=(0, 14))
+        title_block = tk.Frame(header_row, bg=BG)
+        title_block.pack(side="left")
         tk.Label(
-            outer,
+            title_block,
             text="Tool Finder",
             bg=BG,
             fg=TEXT,
             font=("Segoe UI", 22, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            outer,
+            title_block,
             text="LOCAL CUSTOMER COMMANDS",
             bg=BG,
             fg=GREEN,
             font=("Segoe UI", 8, "bold"),
-        ).pack(anchor="w", pady=(1, 14))
+        ).pack(anchor="w", pady=(1, 0))
+
+        mode_row = tk.Frame(header_row, bg=BG)
+        mode_row.pack(side="right", anchor="s")
+        mode_buttons = {}
+        for mode_name, label in (
+            ("all", "ALL"),
+            ("favorites", "FAVORITES"),
+            ("recent", "RECENT"),
+        ):
+            button = tk.Button(
+                mode_row,
+                text=label,
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BORDER,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+            )
+            button.pack(side="left", padx=(0, 8), ipadx=13, ipady=6)
+            mode_buttons[mode_name] = button
 
         search_row = tk.Frame(outer, bg=BG)
         search_row.pack(fill="x")
@@ -6043,6 +6136,18 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         )
         open_button.pack(side="left", ipadx=18, ipady=8)
+        pin_button = tk.Button(
+            action_row,
+            text="PIN",
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            disabledforeground=MUTED,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        pin_button.pack(side="left", padx=(10, 0), ipadx=16, ipady=8)
         tk.Button(
             action_row,
             text="CLOSE",
@@ -6060,14 +6165,27 @@ class USBFileLocker(tk.Tk):
             if not selection or selection[0] >= len(visible_actions):
                 selected_var.set("NO TOOL SELECTED")
                 open_button.configure(state="disabled")
+                pin_button.configure(state="disabled", text="PIN")
                 return
-            category, label, _method_name = visible_actions[selection[0]]
-            selected_var.set(f"{category.upper()}  |  {label.upper()}")
+            category, label, method_name = visible_actions[selection[0]]
+            pinned = method_name in favorites
+            selected_var.set(
+                f"{category.upper()}  |  {label.upper()}"
+                f"{'  |  PINNED' if pinned else ''}"
+            )
             open_button.configure(state="normal")
+            pin_button.configure(
+                state="normal",
+                text="UNPIN" if pinned else "PIN",
+            )
 
         def refresh_results(_event=None):
-            all_matches = filter_tool_finder_actions(
+            current_mode = mode_var.get()
+            all_matches = tool_finder_actions_for_mode(
                 search_var.get(),
+                current_mode,
+                favorites=favorites,
+                recent=self.tool_finder_recent_methods,
                 limit=len(TOOL_FINDER_ACTIONS),
             )
             visible_actions[:] = all_matches[:TOOL_FINDER_VISIBLE_LIMIT]
@@ -6078,10 +6196,59 @@ class USBFileLocker(tk.Tk):
                 f"{len(visible_actions)} SHOWN  |  {len(all_matches)} MATCH"
                 f"{'ES' if len(all_matches) != 1 else ''}"
             )
+            for mode_name, button in mode_buttons.items():
+                selected_mode = mode_name == current_mode
+                button.configure(
+                    bg=GREEN if selected_mode else SURFACE,
+                    fg=BLACK if selected_mode else TEXT,
+                    activebackground=GREEN if selected_mode else BORDER,
+                    activeforeground=BLACK if selected_mode else TEXT,
+                )
             if visible_actions:
                 results.selection_set(0)
                 results.activate(0)
             update_selected()
+
+        def set_mode(mode):
+            if mode not in mode_buttons:
+                return
+            mode_var.set(mode)
+            refresh_results()
+
+        def toggle_pin():
+            selection = results.curselection()
+            if not selection or selection[0] >= len(visible_actions):
+                return
+            _category, label, method_name = visible_actions[selection[0]]
+            previous = list(favorites)
+            if method_name in favorites:
+                favorites.remove(method_name)
+                result_text = f"Unpinned {label}."
+            else:
+                if len(favorites) >= MAX_TOOL_FINDER_FAVORITES:
+                    self.status.set(
+                        "Tool Finder supports up to 8 favorites. Unpin one first."
+                    )
+                    return
+                favorites.append(method_name)
+                result_text = f"Pinned {label}."
+            if favorites:
+                self.settings["tool_finder_favorites"] = list(favorites)
+            else:
+                self.settings.pop("tool_finder_favorites", None)
+            try:
+                save_settings(self.settings)
+            except Exception:
+                favorites[:] = previous
+                if previous:
+                    self.settings["tool_finder_favorites"] = list(previous)
+                else:
+                    self.settings.pop("tool_finder_favorites", None)
+                self.status.set("Could not save Tool Finder favorites.")
+                refresh_results()
+                return
+            self.status.set(result_text)
+            refresh_results()
 
         def move_selection(delta):
             if not visible_actions:
@@ -6105,6 +6272,14 @@ class USBFileLocker(tk.Tk):
             if not callable(command):
                 self.status.set("That customer tool is unavailable.")
                 return "break"
+            self.tool_finder_recent_methods = [
+                method_name,
+                *(
+                    saved_method
+                    for saved_method in self.tool_finder_recent_methods
+                    if saved_method != method_name
+                ),
+            ][:MAX_TOOL_FINDER_RECENT]
             window.destroy()
             self.status.set(f"Opening {label}.")
             self.after(0, command)
@@ -6120,7 +6295,12 @@ class USBFileLocker(tk.Tk):
             except ValueError:
                 pass
 
+        for mode_name, button in mode_buttons.items():
+            button.configure(
+                command=lambda selected_mode=mode_name: set_mode(selected_mode)
+            )
         open_button.configure(command=run_selected)
+        pin_button.configure(command=toggle_pin)
         search_entry.bind("<KeyRelease>", refresh_results)
         results.bind("<<ListboxSelect>>", update_selected)
         results.bind("<Double-Button-1>", run_selected)

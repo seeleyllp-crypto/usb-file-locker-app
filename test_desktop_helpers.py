@@ -187,6 +187,94 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("Scrollbar", source)
         self.assertNotIn("log_event", source)
 
+    def test_tool_finder_saved_method_ids_are_allowlisted_deduplicated_and_bounded(self):
+        valid_ids = [
+            action[2]
+            for action in locker.TOOL_FINDER_ACTIONS[:10]
+        ]
+        normalized = locker.normalize_tool_finder_method_ids(
+            [
+                valid_ids[0],
+                "run_arbitrary_script",
+                valid_ids[0],
+                *valid_ids[1:],
+                123,
+            ],
+            locker.MAX_TOOL_FINDER_FAVORITES,
+        )
+        self.assertEqual(
+            normalized,
+            valid_ids[:locker.MAX_TOOL_FINDER_FAVORITES],
+        )
+        self.assertEqual(
+            locker.normalize_tool_finder_method_ids(
+                "load_key",
+                locker.MAX_TOOL_FINDER_FAVORITES,
+            ),
+            [],
+        )
+
+    def test_tool_finder_favorite_and_recent_modes_preserve_fixed_id_order(self):
+        favorites = [
+            "open_shop",
+            "open_download_verification_center",
+        ]
+        recent = [
+            "open_backup_verification_center",
+            "open_shop",
+        ]
+        favorite_results = locker.tool_finder_actions_for_mode(
+            "",
+            "favorites",
+            favorites=favorites,
+        )
+        recent_results = locker.tool_finder_actions_for_mode(
+            "",
+            "recent",
+            recent=recent,
+        )
+        self.assertEqual(
+            [action[2] for action in favorite_results],
+            favorites,
+        )
+        self.assertEqual(
+            [action[2] for action in recent_results],
+            recent,
+        )
+        self.assertEqual(
+            [
+                action[2]
+                for action in locker.tool_finder_actions_for_mode(
+                    "shop",
+                    "favorites",
+                    favorites=favorites,
+                )
+            ],
+            ["open_shop"],
+        )
+        with self.assertRaises(ValueError):
+            locker.tool_finder_actions_for_mode("", "unknown")
+
+    def test_save_settings_keeps_only_fixed_tool_finder_favorite_ids(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            with mock.patch.object(locker, "SETTINGS_FILE", settings_path):
+                locker.save_settings(
+                    {
+                        "tool_finder_favorites": [
+                            "open_shop",
+                            "run_arbitrary_script",
+                            "open_shop",
+                            "open_log",
+                        ]
+                    }
+                )
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["tool_finder_favorites"],
+            ["open_shop", "open_log"],
+        )
+
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(
             key_ready=True,
