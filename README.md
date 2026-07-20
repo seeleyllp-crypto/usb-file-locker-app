@@ -16,10 +16,12 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
+Release `2026.07.18.14` keeps the Local Receipt Review `CLOSE` action in the top header and removes its duplicate bottom button. The main app no longer shows a sideways scrollbar; crowded controls remain arranged in separate normal rows while vertical scrolling keeps the complete tool set reachable on short displays.
+
 Release `2026.07.18.13` speeds up Local Receipt Review with `REVIEW & NEXT`: it marks the selected pending row Reviewed and immediately moves to the next pending row in priority order. Ctrl+Enter runs the same action, while Ctrl+Z restores the latest temporary mark change.
 
 The main app, Download Verification Center, and receipt-review window now adapt to available screen height and include page scrollbars, keeping every bottom action reachable on shorter displays. The main app supports an `860x520` minimum; receipt review supports `760x520`.
-The normal dark interface is preserved. A fixed horizontal scrollbar remains as a fallback for crowded tool rows, preventing buttons or status text from becoming unreachable when Windows display scaling is high.
+The normal dark interface is preserved. Crowded tool rows are split so controls and status text remain reachable when Windows display scaling is high.
 
 The selected-row line shows its pending queue position. A fixed active-view indicator names the enabled filter, priority, session, and sort controls; a filename query is represented only as `Search active`, never by its text.
 
