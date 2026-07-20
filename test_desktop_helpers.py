@@ -121,11 +121,63 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("configure_vaultlink_ttk_styles(self)", source)
         self.assertIn("self.overview_access_var", source)
         self.assertIn("def update_overview_status(self):", source)
+        self.assertIn("def show_local_readiness(self):", source)
         self.assertIn("def copy_overview_summary(self):", source)
         self.assertIn('text="MORE TOOLS"', source)
+        self.assertIn('"Security & privacy"', source)
+        self.assertIn('"Recovery"', source)
+        self.assertIn('"Data & local tools"', source)
+        self.assertIn('"Service"', source)
         self.assertNotIn("main_canvas", source)
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
+
+    def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
+        summary = locker.local_readiness_summary(
+            key_ready=True,
+            owner_policy_enabled=True,
+            owner_verified=True,
+            queue_count=4,
+            selected_count=2,
+            pin_enabled=True,
+            license_active=True,
+            license_saved=True,
+            auto_updates=True,
+            busy=False,
+        )
+
+        self.assertIn("Overall: READY FOR LOCAL WORK", summary)
+        self.assertIn("Owner policy: VERIFIED", summary)
+        self.assertIn("Queue: 4 items; 2 selected", summary)
+        self.assertIn("PIN mode: USB KEY + PIN", summary)
+        self.assertIn("License: ACTIVE", summary)
+        self.assertIn("Verified auto-updates: ON", summary)
+        self.assertIn("not a malware scan or a security guarantee", summary)
+        self.assertIn("No filenames, paths, PIN values, key IDs", summary)
+        self.assertNotIn("C:\\", summary)
+        self.assertNotIn(".locked", summary)
+
+    def test_local_readiness_summary_rejects_invalid_counts_and_flags(self):
+        valid = {
+            "key_ready": False,
+            "owner_policy_enabled": False,
+            "owner_verified": False,
+            "queue_count": 0,
+            "selected_count": 0,
+            "pin_enabled": False,
+            "license_active": False,
+            "license_saved": False,
+            "auto_updates": False,
+            "busy": False,
+        }
+        with self.assertRaises(ValueError):
+            locker.local_readiness_summary(
+                **{**valid, "selected_count": 1},
+            )
+        with self.assertRaises(ValueError):
+            locker.local_readiness_summary(
+                **{**valid, "key_ready": 1},
+            )
 
     def test_overview_copy_contains_aggregate_local_status_only(self):
         clipboard = {}

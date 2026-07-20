@@ -39,7 +39,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.15"
+DESKTOP_APP_VERSION = "2026.07.18.16"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -1908,6 +1908,83 @@ def license_status_text(state):
         status = current.get("status", "saved").replace("_", " ").upper()
         return f"License saved: {status}"
     return "License inactive: open License Center"
+
+
+def local_readiness_summary(
+    *,
+    key_ready,
+    owner_policy_enabled,
+    owner_verified,
+    queue_count,
+    selected_count,
+    pin_enabled,
+    license_active,
+    license_saved,
+    auto_updates,
+    busy,
+):
+    boolean_values = (
+        key_ready,
+        owner_policy_enabled,
+        owner_verified,
+        pin_enabled,
+        license_active,
+        license_saved,
+        auto_updates,
+        busy,
+    )
+    if any(type(value) is not bool for value in boolean_values):
+        raise ValueError("Local readiness flags must be true or false.")
+    if (
+        type(queue_count) is not int
+        or type(selected_count) is not int
+        or not 0 <= queue_count <= 1_000_000
+        or not 0 <= selected_count <= queue_count
+    ):
+        raise ValueError("Local readiness queue counts are invalid.")
+
+    access_ready = key_ready and (
+        not owner_policy_enabled or owner_verified
+    )
+    if busy:
+        overall = "WAIT FOR CURRENT JOB"
+    elif access_ready:
+        overall = "READY FOR LOCAL WORK"
+    else:
+        overall = "LOAD THE REQUIRED USB KEY"
+    if owner_policy_enabled:
+        owner_state = "VERIFIED" if owner_verified else "OWNER USB REQUIRED"
+    else:
+        owner_state = "STANDARD MODE"
+    if license_active:
+        license_state = "ACTIVE"
+    elif license_saved:
+        license_state = "SAVED - ONLINE CHECK NEEDED"
+    else:
+        license_state = "INACTIVE"
+
+    lines = [
+        "VaultLink Local Readiness",
+        f"Overall: {overall}",
+        f"USB access: {'READY' if key_ready else 'NOT LOADED'}",
+        f"Owner policy: {owner_state}",
+        f"Queue: {queue_count} item{'s' if queue_count != 1 else ''}; "
+        f"{selected_count} selected",
+        f"PIN mode: {'USB KEY + PIN' if pin_enabled else 'USB KEY ONLY'}",
+        f"License: {license_state}",
+        f"Verified auto-updates: {'ON' if auto_updates else 'OFF'}",
+        f"Current job: {'RUNNING' if busy else 'IDLE'}",
+        "",
+        (
+            "This aggregate check does not inspect files and is not a malware "
+            "scan or a security guarantee."
+        ),
+        (
+            "No filenames, paths, PIN values, key IDs, license keys, secrets, "
+            "or file contents are included."
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def customer_center_details(state, settings=None):
@@ -5291,6 +5368,10 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 9),
         )
         overview_more_menu.add_command(
+            label="Run local readiness check",
+            command=self.show_local_readiness,
+        )
+        overview_more_menu.add_command(
             label="Copy safe status",
             command=self.copy_overview_summary,
         )
@@ -5299,19 +5380,65 @@ class USBFileLocker(tk.Tk):
             command=self.clear_queue_selection,
         )
         overview_more_menu.add_separator()
-        overview_more_menu.add_command(
-            label="Update Center",
-            command=self.open_update_center,
+
+        def add_overview_submenu(label, commands):
+            submenu = tk.Menu(
+                overview_more_menu,
+                tearoff=False,
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BLUE,
+                activeforeground=BLACK,
+                relief="flat",
+                font=("Segoe UI", 9),
+            )
+            for command_label, command in commands:
+                submenu.add_command(label=command_label, command=command)
+            overview_more_menu.add_cascade(label=label, menu=submenu)
+
+        add_overview_submenu(
+            "Security & privacy",
+            (
+                ("Verify Download", self.open_download_verification_center),
+                ("Audit Log", self.open_log),
+                ("Support Redactor", self.open_support_redactor),
+                ("Diagnostics Center", self.open_diagnostics_center),
+                ("Security Maintenance", self.open_security_maintenance_center),
+                ("Incident Response", self.open_incident_response_center),
+                ("Global Breach Guard", self.open_global_breach_guard),
+            ),
         )
-        overview_more_menu.add_command(
-            label="Bug Center",
-            command=self.open_support_center,
+        add_overview_submenu(
+            "Recovery",
+            (
+                ("Recovery Readiness", self.open_recovery_readiness),
+                ("Trust & Recovery", self.open_trust_recovery_center),
+                ("Backup Verification", self.open_backup_verification_center),
+                ("Recovery Drills", self.open_recovery_drill_center),
+                ("Recovery Kit", self.open_recovery_kit_builder),
+            ),
         )
-        overview_more_menu.add_command(
-            label="Owner News",
-            command=self.open_owner_news,
+        add_overview_submenu(
+            "Data & local tools",
+            (
+                ("Data Control", self.open_data_control_center),
+                ("Storage & Retention", self.open_storage_retention_center),
+                ("Local Control Center", self.open_local_control_center),
+                ("Open Data Folder", self.open_data_folder),
+            ),
         )
-        overview_more_menu.add_command(label="Shop", command=self.open_shop)
+        add_overview_submenu(
+            "Service",
+            (
+                ("Customer Center", self.open_customer_center),
+                ("Customer Workspace", self.open_customer_workspace),
+                ("Public Status", self.open_customer_status),
+                ("Update Center", self.open_update_center),
+                ("Bug Center", self.open_support_center),
+                ("Owner News", self.open_owner_news),
+                ("Shop", self.open_shop),
+            ),
+        )
         overview_more.configure(menu=overview_more_menu)
         overview_activity = tk.Frame(overview_panel, bg=FIELD)
         overview_activity.pack(fill="x", padx=18, pady=(12, 0))
@@ -5740,6 +5867,40 @@ class USBFileLocker(tk.Tk):
             750,
             self.refresh_overview_loop,
         )
+
+    def show_local_readiness(self):
+        try:
+            current_license = normalize_license_state(self.license_state)
+            summary = local_readiness_summary(
+                key_ready=self.key is not None,
+                owner_policy_enabled=bool(self.owner_policy),
+                owner_verified=bool(
+                    self.owner_policy
+                    and self.active_key_matches_owner_policy()
+                ),
+                queue_count=int(self.file_list.size()),
+                selected_count=len(self.file_list.curselection()),
+                pin_enabled=self.pin_mode.get() != "USB KEY ONLY",
+                license_active=license_is_active(current_license),
+                license_saved=bool(current_license.get("license_key")),
+                auto_updates=bool(
+                    self.settings.get("auto_install_signed_updates", False)
+                ),
+                busy=bool(self.busy),
+            )
+        except (AttributeError, tk.TclError, ValueError):
+            self.status.set("Could not build the local readiness summary.")
+            log_event("local_readiness_check", "aggregate", "failed")
+            return
+        messagebox.showinfo(
+            "Local readiness check",
+            summary,
+            parent=self,
+        )
+        self.status.set(
+            "Local readiness checked without inspecting or naming files."
+        )
+        log_event("local_readiness_check", "aggregate", "ok")
 
     def copy_overview_summary(self):
         self.update_overview_status()
