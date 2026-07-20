@@ -22,6 +22,7 @@ import urllib.request
 import zipfile
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -39,7 +40,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.18"
+DESKTOP_APP_VERSION = "2026.07.18.19"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -47,11 +48,13 @@ UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 TOOL_FINDER_VISIBLE_LIMIT = 10
 MAX_TOOL_FINDER_FAVORITES = 8
 MAX_TOOL_FINDER_RECENT = 8
+MAX_SAFE_LOCK_PREVIEW_ITEMS = 1000
 TOOL_FINDER_ACTIONS = (
     ("Access", "Load USB Key", "load_key"),
     ("Access", "Panic Lock Now", "panic_lock_now"),
     ("Access", "License Center", "open_license_center"),
     ("Access", "Local Readiness Check", "show_local_readiness"),
+    ("Locking", "Safe Lock Preview", "open_safe_lock_preview"),
     ("Security & privacy", "Verify Download", "open_download_verification_center"),
     ("Security & privacy", "Audit Log", "open_log"),
     ("Security & privacy", "Support Redactor", "open_support_redactor"),
@@ -2109,6 +2112,203 @@ def tool_finder_actions_for_mode(
     ]
     filtered.sort(key=lambda action: order[action[2]])
     return filtered[:limit]
+
+
+def build_safe_lock_preview(
+    entries,
+    *,
+    key_ready,
+    owner_policy_enabled,
+    owner_verified,
+    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
+):
+    if any(
+        type(value) is not bool
+        for value in (key_ready, owner_policy_enabled, owner_verified)
+    ):
+        raise ValueError("Safe Lock Preview access flags must be true or false.")
+    if (
+        type(max_items) is not int
+        or not 1 <= max_items <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+    ):
+        raise ValueError("Safe Lock Preview item limit is invalid.")
+    try:
+        iterator = iter(entries)
+    except TypeError as exc:
+        raise ValueError("Safe Lock Preview needs a bounded queue.") from exc
+
+    supplied = list(islice(iterator, max_items + 1))
+    truncated = len(supplied) > max_items
+    queued = supplied[:max_items]
+    counters = {
+        "files": 0,
+        "folders": 0,
+        "missing": 0,
+        "duplicates": 0,
+        "already_locked": 0,
+        "links_or_junctions": 0,
+        "unsupported": 0,
+        "invalid": 0,
+        "inaccessible": 0,
+    }
+    seen = set()
+    for raw_entry in queued:
+        try:
+            raw_path = os.fspath(raw_entry)
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("Empty path")
+            path = Path(raw_path)
+            canonical = os.path.normcase(os.path.abspath(raw_path))
+        except (TypeError, ValueError, OSError):
+            counters["invalid"] += 1
+            continue
+        if canonical in seen:
+            counters["duplicates"] += 1
+            continue
+        seen.add(canonical)
+        try:
+            if path_is_link_or_junction(path):
+                counters["links_or_junctions"] += 1
+            elif not path.exists():
+                counters["missing"] += 1
+            elif path.name.lower().endswith((".locked", ".lookeed")):
+                counters["already_locked"] += 1
+            elif path.is_file():
+                counters["files"] += 1
+            elif path.is_dir():
+                counters["folders"] += 1
+            else:
+                counters["unsupported"] += 1
+        except OSError:
+            counters["inaccessible"] += 1
+
+    checked_items = len(queued)
+    ready_items = counters["files"] + counters["folders"]
+    review_items = sum(
+        counters[name]
+        for name in (
+            "missing",
+            "duplicates",
+            "already_locked",
+            "links_or_junctions",
+            "unsupported",
+            "invalid",
+            "inaccessible",
+        )
+    )
+    access_ready = key_ready and (
+        not owner_policy_enabled or owner_verified
+    )
+    if checked_items == 0:
+        status = "QUEUE EMPTY"
+    elif not access_ready:
+        status = "USB KEY REQUIRED"
+    elif review_items or truncated:
+        status = "REVIEW REQUIRED"
+    else:
+        status = "READY TO CONTINUE"
+    return {
+        "schema_version": 1,
+        "status": status,
+        "access_ready": access_ready,
+        "owner_policy_enabled": owner_policy_enabled,
+        "owner_verified": owner_verified,
+        "checked_items": checked_items,
+        "ready_items": ready_items,
+        "review_items": review_items,
+        "truncated": truncated,
+        **counters,
+        "can_continue": (
+            access_ready
+            and ready_items > 0
+            and review_items == 0
+            and not truncated
+        ),
+    }
+
+
+def safe_lock_preview_summary(report):
+    current = dict(report or {})
+    count_names = (
+        "checked_items",
+        "ready_items",
+        "review_items",
+        "files",
+        "folders",
+        "missing",
+        "duplicates",
+        "already_locked",
+        "links_or_junctions",
+        "unsupported",
+        "invalid",
+        "inaccessible",
+    )
+    counts = {}
+    for name in count_names:
+        value = current.get(name)
+        if (
+            type(value) is not int
+            or not 0 <= value <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+        ):
+            raise ValueError("Safe Lock Preview summary counts are invalid.")
+        counts[name] = value
+    if counts["ready_items"] != counts["files"] + counts["folders"]:
+        raise ValueError("Safe Lock Preview ready counts are inconsistent.")
+    if counts["review_items"] != sum(
+        counts[name]
+        for name in (
+            "missing",
+            "duplicates",
+            "already_locked",
+            "links_or_junctions",
+            "unsupported",
+            "invalid",
+            "inaccessible",
+        )
+    ):
+        raise ValueError("Safe Lock Preview review counts are inconsistent.")
+    if counts["checked_items"] != (
+        counts["ready_items"] + counts["review_items"]
+    ):
+        raise ValueError("Safe Lock Preview checked counts are inconsistent.")
+    status = current.get("status")
+    if status not in {
+        "USB KEY REQUIRED",
+        "QUEUE EMPTY",
+        "REVIEW REQUIRED",
+        "READY TO CONTINUE",
+    }:
+        raise ValueError("Safe Lock Preview status is invalid.")
+    if type(current.get("truncated")) is not bool:
+        raise ValueError("Safe Lock Preview truncation state is invalid.")
+
+    lines = [
+        "VaultLink Safe Lock Preview",
+        f"Status: {status}",
+        f"Queue items checked: {counts['checked_items']}",
+        f"Ready items: {counts['ready_items']}",
+        f"Items needing review: {counts['review_items']}",
+        f"Files: {counts['files']}",
+        f"Folders: {counts['folders']}",
+        f"Missing: {counts['missing']}",
+        f"Duplicates: {counts['duplicates']}",
+        f"Already locked: {counts['already_locked']}",
+        f"Links or junctions: {counts['links_or_junctions']}",
+        f"Unsupported: {counts['unsupported']}",
+        f"Invalid: {counts['invalid']}",
+        f"Inaccessible: {counts['inaccessible']}",
+        f"Queue limit reached: {'YES' if current['truncated'] else 'NO'}",
+        "",
+        (
+            "Preview only: no file contents were read and no files were locked, "
+            "deleted, renamed, copied, or uploaded."
+        ),
+        (
+            "This aggregate summary excludes filenames, paths, PINs, key IDs, "
+            "secrets, and file contents."
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def customer_center_details(state, settings=None):
@@ -5174,6 +5374,7 @@ class USBFileLocker(tk.Tk):
         self.secondary_windows = []
         self.tool_finder_window = None
         self.tool_finder_recent_methods = []
+        self.safe_lock_preview_window = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -5328,6 +5529,7 @@ class USBFileLocker(tk.Tk):
                 lambda _event, index=tab_number - 1: self.select_main_tab(index),
             )
         self.bind("<Control-k>", self.open_tool_finder)
+        self.bind("<Control-Shift-P>", self.open_safe_lock_preview)
 
         tk.Label(
             overview_panel,
@@ -5497,6 +5699,10 @@ class USBFileLocker(tk.Tk):
         overview_more_menu.add_command(
             label="Find a tool",
             command=self.open_tool_finder,
+        )
+        overview_more_menu.add_command(
+            label="Preview lock queue",
+            command=self.open_safe_lock_preview,
         )
         overview_more_menu.add_command(
             label="Run local readiness check",
@@ -5998,6 +6204,267 @@ class USBFileLocker(tk.Tk):
             750,
             self.refresh_overview_loop,
         )
+
+    def open_safe_lock_preview(self, _event=None):
+        if self.safe_lock_preview_window is not None:
+            try:
+                if self.safe_lock_preview_window.winfo_exists():
+                    self.safe_lock_preview_window.deiconify()
+                    self.safe_lock_preview_window.lift()
+                    self.safe_lock_preview_window.focus_set()
+                    return "break"
+            except tk.TclError:
+                pass
+            self.safe_lock_preview_window = None
+
+        window = tk.Toplevel(self)
+        self.safe_lock_preview_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Safe Lock Preview")
+        window.geometry("760x480")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        report_state = {}
+        status_var = tk.StringVar(window, value="CHECKING")
+        queued_var = tk.StringVar(window, value="0")
+        ready_var = tk.StringVar(window, value="0")
+        review_var = tk.StringVar(window, value="0")
+        access_var = tk.StringVar(window, value="CHECKING")
+        ready_detail_var = tk.StringVar(window, value="")
+        issue_detail_var = tk.StringVar(window, value="")
+        issue_detail_two_var = tk.StringVar(window, value="")
+        limit_var = tk.StringVar(window, value="")
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Safe Lock Preview",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(side="left")
+        status_label = tk.Label(
+            header,
+            textvariable=status_var,
+            bg=BG,
+            fg=YELLOW,
+            font=("Segoe UI", 9, "bold"),
+        )
+        status_label.pack(side="right")
+        tk.Label(
+            outer,
+            text="LOCAL QUEUE PREFLIGHT",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(1, 14))
+
+        metrics = tk.Frame(outer, bg=BG)
+        metrics.pack(fill="x")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1, uniform="preview")
+
+        def add_metric(column, heading, variable, accent):
+            metric = tk.Frame(
+                metrics,
+                bg=FIELD,
+                highlightbackground=BORDER,
+                highlightthickness=1,
+            )
+            metric.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 5, 0 if column == 3 else 5),
+            )
+            tk.Label(
+                metric,
+                text=heading,
+                bg=FIELD,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=11, pady=(9, 3))
+            tk.Label(
+                metric,
+                textvariable=variable,
+                bg=FIELD,
+                fg=accent,
+                font=("Segoe UI", 11, "bold"),
+                wraplength=150,
+                justify="left",
+            ).pack(anchor="w", padx=11, pady=(0, 10))
+
+        add_metric(0, "CHECKED", queued_var, BLUE)
+        add_metric(1, "READY ITEMS", ready_var, GREEN)
+        add_metric(2, "REVIEW ITEMS", review_var, YELLOW)
+        add_metric(3, "USB ACCESS", access_var, GREEN)
+
+        details = tk.Frame(
+            outer,
+            bg=PANEL,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        details.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            details,
+            text="QUEUE BREAKDOWN",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=13, pady=(10, 4))
+        for variable, color in (
+            (ready_detail_var, GREEN),
+            (issue_detail_var, TEXT),
+            (issue_detail_two_var, TEXT),
+            (limit_var, YELLOW),
+        ):
+            tk.Label(
+                details,
+                textvariable=variable,
+                bg=PANEL,
+                fg=color,
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+            ).pack(fill="x", padx=13, pady=(0, 5))
+        tk.Label(
+            details,
+            text=(
+                "Preview only. File contents are not read and nothing is "
+                "locked, deleted, renamed, copied, or uploaded."
+            ),
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            wraplength=680,
+            justify="left",
+        ).pack(anchor="w", padx=13, pady=(4, 10))
+
+        actions = tk.Frame(outer, bg=BG)
+        actions.pack(fill="x", pady=(14, 0))
+
+        def refresh_preview(_event=None):
+            try:
+                report = build_safe_lock_preview(
+                    self.file_list.get(0, tk.END),
+                    key_ready=self.key is not None,
+                    owner_policy_enabled=bool(self.owner_policy),
+                    owner_verified=bool(
+                        self.owner_policy
+                        and self.active_key_matches_owner_policy()
+                    ),
+                )
+            except (AttributeError, tk.TclError, ValueError):
+                self.status.set("Could not build Safe Lock Preview.")
+                status_var.set("CHECK FAILED")
+                status_label.configure(fg=RED)
+                log_event("safe_lock_preview", "aggregate", "failed")
+                return
+            report_state.clear()
+            report_state.update(report)
+            status_var.set(report["status"])
+            status_label.configure(
+                fg=GREEN if report["can_continue"] else YELLOW
+            )
+            queued_var.set(str(report["checked_items"]))
+            ready_var.set(str(report["ready_items"]))
+            review_var.set(str(report["review_items"]))
+            access_var.set("READY" if report["access_ready"] else "KEY REQUIRED")
+            ready_detail_var.set(
+                f"FILES {report['files']}   |   FOLDERS {report['folders']}"
+            )
+            issue_detail_var.set(
+                f"MISSING {report['missing']}   |   DUPLICATES {report['duplicates']}"
+                f"   |   ALREADY LOCKED {report['already_locked']}"
+            )
+            issue_detail_two_var.set(
+                f"LINKS/JUNCTIONS {report['links_or_junctions']}"
+                f"   |   UNSUPPORTED {report['unsupported']}"
+                f"   |   INVALID {report['invalid']}"
+                f"   |   INACCESSIBLE {report['inaccessible']}"
+            )
+            limit_var.set(
+                "QUEUE LIMIT REACHED - REVIEW A SMALLER QUEUE"
+                if report["truncated"]
+                else "QUEUE LIMIT NOT REACHED"
+            )
+            self.status.set(
+                "Safe Lock Preview finished without reading file contents."
+            )
+            log_event("safe_lock_preview", "aggregate", "ok")
+
+        def copy_summary():
+            if not report_state:
+                self.status.set("Run Safe Lock Preview before copying.")
+                return
+            try:
+                summary = safe_lock_preview_summary(report_state)
+                self.clipboard_clear()
+                self.clipboard_append(summary)
+                self.update_idletasks()
+            except (ValueError, tk.TclError):
+                self.status.set("Could not copy the Safe Lock Preview summary.")
+                return
+            self.status.set(
+                "Privacy-safe lock preview summary copied without names or paths."
+            )
+
+        def open_queue():
+            window.destroy()
+            self.select_main_tab(3)
+            self.deiconify()
+            self.lift()
+            self.focus_set()
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if self.safe_lock_preview_window is window:
+                self.safe_lock_preview_window = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        for label, command, background, foreground in (
+            ("REFRESH", refresh_preview, SURFACE, TEXT),
+            ("COPY SAFE SUMMARY", copy_summary, BLUE, BLACK),
+            ("OPEN QUEUE", open_queue, GREEN, BLACK),
+        ):
+            tk.Button(
+                actions,
+                text=label,
+                command=command,
+                bg=background,
+                fg=foreground,
+                activebackground=background,
+                activeforeground=foreground,
+                relief="flat",
+                font=("Segoe UI", 9, "bold"),
+            ).pack(side="left", padx=(0, 10), ipadx=14, ipady=8)
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=15, ipady=8)
+        window.bind("<F5>", refresh_preview)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        refresh_preview()
+        window.lift()
+        return "break"
 
     def open_tool_finder(self, _event=None):
         if self.tool_finder_window is not None:

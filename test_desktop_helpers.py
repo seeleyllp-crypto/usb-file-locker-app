@@ -124,9 +124,14 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("def update_overview_status(self):", source)
         self.assertIn("def show_local_readiness(self):", source)
         self.assertIn("def open_tool_finder(self, _event=None):", source)
+        self.assertIn("def open_safe_lock_preview(self, _event=None):", source)
         self.assertIn("def copy_overview_summary(self):", source)
         self.assertIn('text="MORE TOOLS"', source)
         self.assertIn('self.bind("<Control-k>", self.open_tool_finder)', source)
+        self.assertIn(
+            'self.bind("<Control-Shift-P>", self.open_safe_lock_preview)',
+            source,
+        )
         self.assertIn('"Security & privacy"', source)
         self.assertIn('"Recovery"', source)
         self.assertIn('"Data & local tools"', source)
@@ -136,7 +141,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("self.main_horizontal_scrollbar", source)
 
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
-        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 27)
+        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 28)
         self.assertEqual(
             len({action[1] for action in locker.TOOL_FINDER_ACTIONS}),
             len(locker.TOOL_FINDER_ACTIONS),
@@ -274,6 +279,122 @@ class DesktopHelperTests(unittest.TestCase):
             saved["tool_finder_favorites"],
             ["open_shop", "open_log"],
         )
+
+    def test_safe_lock_preview_classifies_queue_without_reading_contents(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_path = root / "private-name.txt"
+            file_path.write_text("content must not be read", encoding="utf-8")
+            folder_path = root / "folder-name"
+            folder_path.mkdir()
+            locked_path = root / "already.locked"
+            locked_path.write_text("locked fixture", encoding="utf-8")
+            missing_path = root / "missing-name.txt"
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("contents were read"),
+            ), mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("contents were read"),
+            ):
+                report = locker.build_safe_lock_preview(
+                    [
+                        file_path,
+                        folder_path,
+                        locked_path,
+                        missing_path,
+                        file_path,
+                        "",
+                    ],
+                    key_ready=True,
+                    owner_policy_enabled=False,
+                    owner_verified=False,
+                )
+
+        self.assertEqual(report["checked_items"], 6)
+        self.assertEqual(report["files"], 1)
+        self.assertEqual(report["folders"], 1)
+        self.assertEqual(report["already_locked"], 1)
+        self.assertEqual(report["missing"], 1)
+        self.assertEqual(report["duplicates"], 1)
+        self.assertEqual(report["invalid"], 1)
+        self.assertEqual(report["ready_items"], 2)
+        self.assertEqual(report["review_items"], 4)
+        self.assertEqual(report["status"], "REVIEW REQUIRED")
+        self.assertFalse(report["can_continue"])
+        self.assertNotIn("private-name", json.dumps(report))
+        self.assertNotIn(temp_dir, json.dumps(report))
+
+    def test_safe_lock_preview_clean_queue_and_owner_policy_gate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "item.txt"
+            file_path.write_text("fixture", encoding="utf-8")
+            clean = locker.build_safe_lock_preview(
+                [file_path],
+                key_ready=True,
+                owner_policy_enabled=False,
+                owner_verified=False,
+            )
+            owner_blocked = locker.build_safe_lock_preview(
+                [file_path],
+                key_ready=True,
+                owner_policy_enabled=True,
+                owner_verified=False,
+            )
+            empty = locker.build_safe_lock_preview(
+                [],
+                key_ready=False,
+                owner_policy_enabled=True,
+                owner_verified=False,
+            )
+        self.assertEqual(clean["status"], "READY TO CONTINUE")
+        self.assertTrue(clean["can_continue"])
+        self.assertEqual(owner_blocked["status"], "USB KEY REQUIRED")
+        self.assertFalse(owner_blocked["can_continue"])
+        self.assertEqual(empty["status"], "QUEUE EMPTY")
+
+    def test_safe_lock_preview_is_bounded_and_summary_is_privacy_safe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = []
+            for index in range(3):
+                path = root / f"secret-{index}.txt"
+                path.write_text("fixture", encoding="utf-8")
+                paths.append(path)
+            report = locker.build_safe_lock_preview(
+                paths,
+                key_ready=True,
+                owner_policy_enabled=False,
+                owner_verified=False,
+                max_items=2,
+            )
+        self.assertEqual(report["checked_items"], 2)
+        self.assertTrue(report["truncated"])
+        self.assertEqual(report["status"], "REVIEW REQUIRED")
+        summary = locker.safe_lock_preview_summary(report)
+        self.assertIn("Queue limit reached: YES", summary)
+        self.assertIn("no file contents were read", summary)
+        self.assertIn("excludes filenames, paths, PINs, key IDs", summary)
+        self.assertNotIn("secret-", summary)
+        self.assertNotIn(temp_dir, summary)
+        with self.assertRaises(ValueError):
+            locker.safe_lock_preview_summary(
+                {**report, "ready_items": 999},
+            )
+
+    def test_safe_lock_preview_window_has_no_page_scroller_or_file_reader(self):
+        source = inspect.getsource(locker.USBFileLocker.open_safe_lock_preview)
+        self.assertIn('window.geometry("760x480")', source)
+        self.assertIn("self.file_list.get(0, tk.END)", source)
+        self.assertNotIn("tk.Canvas", source)
+        self.assertNotIn("Scrollbar", source)
+        self.assertNotIn(".read_bytes", source)
+        self.assertNotIn(".read_text", source)
+        self.assertNotIn("unlink(", source)
+        self.assertNotIn("os.remove(", source)
+        self.assertNotIn("shutil.", source)
 
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(

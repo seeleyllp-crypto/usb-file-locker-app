@@ -48,15 +48,15 @@ PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git
 DEFAULT_NOTES = [
     "The main app and Local Receipt Review use fixed task tabs with no page canvas, page scrollbar, or page-scroll behavior.",
     "A live local-only Overview shows aggregate access, queue, selection, PIN mode, license, and activity without paths, names, secrets, or contents.",
-    "MORE TOOLS groups 23 existing destinations into Security and privacy, Recovery, Data and local tools, and Service menus.",
+    "Safe Lock Preview opens from MORE TOOLS, Tool Finder, or Ctrl+Shift+P without changing queued files.",
+    "Preview checks up to 1,000 entries for missing, duplicate, already-locked, linked, unsupported, invalid, inaccessible, and truncated work.",
+    "Preview never reads file contents or locks, deletes, renames, copies, or uploads anything.",
+    "Its copied aggregate summary excludes filenames, paths, PINs, key IDs, secrets, and file contents.",
     "The local readiness check reports aggregate access, policy, queue, PIN mode, license, auto-update, and current-job states.",
-    "Readiness never inspects or names files and clearly states that it is not a malware scan or security guarantee.",
-    "Tool Finder opens 27 fixed customer commands from MORE TOOLS or Ctrl+K.",
-    "Tool Finder shows at most ten ranked matches in a fixed window with no canvas or scrollbar.",
+    "Tool Finder opens 28 fixed customer commands from MORE TOOLS or Ctrl+K and cannot execute free-form commands.",
     "ALL, FAVORITES, and RECENT modes keep frequently used customer tools easy to reach.",
     "Up to eight favorites persist as fixed allowlisted command IDs; unknown, duplicate, malformed, and excess values are discarded.",
     "Up to eight recent tools and all finder queries remain session memory and are never logged, persisted, exported, or sent to the API.",
-    "Finder results use a fixed internal catalog and cannot execute free-form text, scripts, file paths, or downloaded commands.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
