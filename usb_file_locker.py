@@ -39,11 +39,41 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.16"
+DESKTOP_APP_VERSION = "2026.07.18.17"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
+TOOL_FINDER_VISIBLE_LIMIT = 10
+TOOL_FINDER_ACTIONS = (
+    ("Access", "Load USB Key", "load_key"),
+    ("Access", "Panic Lock Now", "panic_lock_now"),
+    ("Access", "License Center", "open_license_center"),
+    ("Access", "Local Readiness Check", "show_local_readiness"),
+    ("Security & privacy", "Verify Download", "open_download_verification_center"),
+    ("Security & privacy", "Audit Log", "open_log"),
+    ("Security & privacy", "Support Redactor", "open_support_redactor"),
+    ("Security & privacy", "Diagnostics Center", "open_diagnostics_center"),
+    ("Security & privacy", "Security Maintenance", "open_security_maintenance_center"),
+    ("Security & privacy", "Incident Response", "open_incident_response_center"),
+    ("Security & privacy", "Global Breach Guard", "open_global_breach_guard"),
+    ("Recovery", "Recovery Readiness", "open_recovery_readiness"),
+    ("Recovery", "Trust & Recovery", "open_trust_recovery_center"),
+    ("Recovery", "Backup Verification", "open_backup_verification_center"),
+    ("Recovery", "Recovery Drills", "open_recovery_drill_center"),
+    ("Recovery", "Recovery Kit", "open_recovery_kit_builder"),
+    ("Data & local tools", "Data Control", "open_data_control_center"),
+    ("Data & local tools", "Storage & Retention", "open_storage_retention_center"),
+    ("Data & local tools", "Local Control Center", "open_local_control_center"),
+    ("Data & local tools", "Open Data Folder", "open_data_folder"),
+    ("Service", "Customer Center", "open_customer_center"),
+    ("Service", "Customer Workspace", "open_customer_workspace"),
+    ("Service", "Public Status", "open_customer_status"),
+    ("Service", "Update Center", "open_update_center"),
+    ("Service", "Bug Center", "open_support_center"),
+    ("Service", "Owner News", "open_owner_news"),
+    ("Service", "Shop", "open_shop"),
+)
 MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
 MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_FILES = 5000
@@ -1985,6 +2015,38 @@ def local_readiness_summary(
         ),
     ]
     return "\n".join(lines)
+
+
+def filter_tool_finder_actions(query, limit=TOOL_FINDER_VISIBLE_LIMIT):
+    if type(limit) is not int or not 1 <= limit <= len(TOOL_FINDER_ACTIONS):
+        raise ValueError("Tool Finder result limit is invalid.")
+    query_text = "".join(
+        character
+        if character.isprintable() and character not in "\r\n\t"
+        else " "
+        for character in str(query or "")[:80]
+    ).strip().casefold()
+    if not query_text:
+        return list(TOOL_FINDER_ACTIONS[:limit])
+
+    ranked = []
+    for index, action in enumerate(TOOL_FINDER_ACTIONS):
+        category, label, _method_name = action
+        label_text = label.casefold()
+        category_text = category.casefold()
+        if label_text.startswith(query_text):
+            score = 0
+        elif query_text in label_text:
+            score = 1
+        elif category_text.startswith(query_text):
+            score = 2
+        elif query_text in category_text:
+            score = 3
+        else:
+            continue
+        ranked.append((score, index, action))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [action for _score, _index, action in ranked[:limit]]
 
 
 def customer_center_details(state, settings=None):
@@ -5048,6 +5110,7 @@ class USBFileLocker(tk.Tk):
         self.key_required_buttons = []
         self.license_gated_buttons = {}
         self.secondary_windows = []
+        self.tool_finder_window = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -5201,6 +5264,7 @@ class USBFileLocker(tk.Tk):
                 f"<Control-Key-{tab_number}>",
                 lambda _event, index=tab_number - 1: self.select_main_tab(index),
             )
+        self.bind("<Control-k>", self.open_tool_finder)
 
         tk.Label(
             overview_panel,
@@ -5366,6 +5430,10 @@ class USBFileLocker(tk.Tk):
             activeforeground=BLACK,
             relief="flat",
             font=("Segoe UI", 9),
+        )
+        overview_more_menu.add_command(
+            label="Find a tool",
+            command=self.open_tool_finder,
         )
         overview_more_menu.add_command(
             label="Run local readiness check",
@@ -5867,6 +5935,205 @@ class USBFileLocker(tk.Tk):
             750,
             self.refresh_overview_loop,
         )
+
+    def open_tool_finder(self, _event=None):
+        if self.tool_finder_window is not None:
+            try:
+                if self.tool_finder_window.winfo_exists():
+                    self.tool_finder_window.deiconify()
+                    self.tool_finder_window.lift()
+                    self.tool_finder_window.focus_set()
+                    return "break"
+            except tk.TclError:
+                pass
+            self.tool_finder_window = None
+
+        window = tk.Toplevel(self)
+        self.tool_finder_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Tool Finder")
+        window.geometry("720x460")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        search_var = tk.StringVar(window, value="")
+        count_var = tk.StringVar(window, value="")
+        selected_var = tk.StringVar(window, value="NO TOOL SELECTED")
+        visible_actions = []
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        tk.Label(
+            outer,
+            text="Tool Finder",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="LOCAL CUSTOMER COMMANDS",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(1, 14))
+
+        search_row = tk.Frame(outer, bg=BG)
+        search_row.pack(fill="x")
+        tk.Label(
+            search_row,
+            text="SEARCH",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        search_entry = tk.Entry(
+            search_row,
+            textvariable=search_var,
+            bg=FIELD,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 11),
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=(12, 0), ipady=7)
+        tk.Label(
+            outer,
+            textvariable=count_var,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(9, 6))
+
+        results = tk.Listbox(
+            outer,
+            height=10,
+            bg=FIELD,
+            fg=TEXT,
+            selectbackground=GREEN,
+            selectforeground=BLACK,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            bd=0,
+            activestyle="none",
+            exportselection=False,
+            font=("Segoe UI", 10),
+        )
+        results.pack(fill="both", expand=True)
+        tk.Label(
+            outer,
+            textvariable=selected_var,
+            bg=BG,
+            fg=BLUE,
+            font=("Segoe UI", 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(8, 0))
+
+        action_row = tk.Frame(outer, bg=BG)
+        action_row.pack(fill="x", pady=(12, 0))
+        open_button = tk.Button(
+            action_row,
+            text="OPEN",
+            bg=GREEN,
+            fg=BLACK,
+            disabledforeground=MUTED,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        open_button.pack(side="left", ipadx=18, ipady=8)
+        tk.Button(
+            action_row,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=16, ipady=8)
+
+        def update_selected(_event=None):
+            selection = results.curselection()
+            if not selection or selection[0] >= len(visible_actions):
+                selected_var.set("NO TOOL SELECTED")
+                open_button.configure(state="disabled")
+                return
+            category, label, _method_name = visible_actions[selection[0]]
+            selected_var.set(f"{category.upper()}  |  {label.upper()}")
+            open_button.configure(state="normal")
+
+        def refresh_results(_event=None):
+            all_matches = filter_tool_finder_actions(
+                search_var.get(),
+                limit=len(TOOL_FINDER_ACTIONS),
+            )
+            visible_actions[:] = all_matches[:TOOL_FINDER_VISIBLE_LIMIT]
+            results.delete(0, tk.END)
+            for category, label, _method_name in visible_actions:
+                results.insert(tk.END, f"{category.upper()}  |  {label}")
+            count_var.set(
+                f"{len(visible_actions)} SHOWN  |  {len(all_matches)} MATCH"
+                f"{'ES' if len(all_matches) != 1 else ''}"
+            )
+            if visible_actions:
+                results.selection_set(0)
+                results.activate(0)
+            update_selected()
+
+        def move_selection(delta):
+            if not visible_actions:
+                return "break"
+            selection = results.curselection()
+            current = selection[0] if selection else 0
+            next_index = (current + delta) % len(visible_actions)
+            results.selection_clear(0, tk.END)
+            results.selection_set(next_index)
+            results.activate(next_index)
+            results.see(next_index)
+            update_selected()
+            return "break"
+
+        def run_selected(_event=None):
+            selection = results.curselection()
+            if not selection or selection[0] >= len(visible_actions):
+                return "break"
+            _category, label, method_name = visible_actions[selection[0]]
+            command = getattr(self, method_name, None)
+            if not callable(command):
+                self.status.set("That customer tool is unavailable.")
+                return "break"
+            window.destroy()
+            self.status.set(f"Opening {label}.")
+            self.after(0, command)
+            return "break"
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if self.tool_finder_window is window:
+                self.tool_finder_window = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        open_button.configure(command=run_selected)
+        search_entry.bind("<KeyRelease>", refresh_results)
+        results.bind("<<ListboxSelect>>", update_selected)
+        results.bind("<Double-Button-1>", run_selected)
+        window.bind("<Return>", run_selected)
+        window.bind("<Down>", lambda _event: move_selection(1))
+        window.bind("<Up>", lambda _event: move_selection(-1))
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        refresh_results()
+        search_entry.focus_set()
+        window.lift()
+        return "break"
 
     def show_local_readiness(self):
         try:

@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review moves its former bottom actions, result count, and only CLOSE action into a fixed top toolbar.",
-    "The review window has no page scrollbar or page-scroll behavior; fixed Results and Review Details tabs keep content reachable.",
-    "The main app has no page scrolling and adds polished dark task tabs, a compact status dashboard, and clearer visual hierarchy.",
+    "The main app and Local Receipt Review use fixed task tabs with no page canvas, page scrollbar, or page-scroll behavior.",
     "A live local-only Overview shows aggregate access, queue, selection, PIN mode, license, and activity without paths, names, secrets, or contents.",
     "Overview navigation and Ctrl+1 through Ctrl+8 open the eight fixed customer workspaces without page scrolling.",
     "MORE TOOLS groups 23 existing destinations into Security and privacy, Recovery, Data and local tools, and Service menus.",
     "The local readiness check reports aggregate access, policy, queue, PIN mode, license, auto-update, and current-job states.",
     "Readiness never inspects or names files and clearly states that it is not a malware scan or security guarantee.",
-    "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
-    "These temporary values are never logged, exported, persisted, or sent to the API.",
-    "COPY SAFE SUMMARY continues to export aggregate counts without filenames, paths, hashes, or receipt contents.",
+    "Tool Finder opens 27 fixed customer commands from MORE TOOLS or Ctrl+K.",
+    "Tool Finder shows at most ten ranked matches in a fixed window with no canvas or scrollbar.",
+    "Finder queries remain temporary window memory and are never logged, persisted, exported, or sent to the API.",
+    "Finder results use a fixed internal catalog and cannot execute free-form text, scripts, file paths, or downloaded commands.",
+    "Copied summaries continue to exclude filenames, paths, hashes, PINs, key IDs, secrets, and file contents.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

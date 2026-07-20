@@ -2,6 +2,7 @@ import ast
 import base64
 import hashlib
 import http.client
+import inspect
 import json
 import os
 import queue
@@ -122,8 +123,10 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("self.overview_access_var", source)
         self.assertIn("def update_overview_status(self):", source)
         self.assertIn("def show_local_readiness(self):", source)
+        self.assertIn("def open_tool_finder(self, _event=None):", source)
         self.assertIn("def copy_overview_summary(self):", source)
         self.assertIn('text="MORE TOOLS"', source)
+        self.assertIn('self.bind("<Control-k>", self.open_tool_finder)', source)
         self.assertIn('"Security & privacy"', source)
         self.assertIn('"Recovery"', source)
         self.assertIn('"Data & local tools"', source)
@@ -131,6 +134,58 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("main_canvas", source)
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
+
+    def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
+        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 27)
+        self.assertEqual(
+            len({action[1] for action in locker.TOOL_FINDER_ACTIONS}),
+            len(locker.TOOL_FINDER_ACTIONS),
+        )
+        for category, label, method_name in locker.TOOL_FINDER_ACTIONS:
+            self.assertTrue(category)
+            self.assertTrue(label)
+            self.assertTrue(
+                callable(getattr(locker.USBFileLocker, method_name, None)),
+                method_name,
+            )
+
+    def test_tool_finder_search_is_bounded_ranked_and_case_insensitive(self):
+        default_results = locker.filter_tool_finder_actions("")
+        self.assertEqual(
+            len(default_results),
+            locker.TOOL_FINDER_VISIBLE_LIMIT,
+        )
+        self.assertEqual(default_results[0][1], "Load USB Key")
+
+        backup_results = locker.filter_tool_finder_actions("BACKUP")
+        self.assertEqual(backup_results[0][1], "Backup Verification")
+        recovery_results = locker.filter_tool_finder_actions(
+            "recovery\n",
+            limit=len(locker.TOOL_FINDER_ACTIONS),
+        )
+        self.assertTrue(recovery_results)
+        self.assertTrue(
+            all(
+                "recovery" in f"{category} {label}".casefold()
+                for category, label, _method_name in recovery_results
+            )
+        )
+        self.assertEqual(locker.filter_tool_finder_actions("not-a-tool"), [])
+
+    def test_tool_finder_rejects_invalid_limits_and_has_no_page_scroller(self):
+        with self.assertRaises(ValueError):
+            locker.filter_tool_finder_actions("", limit=0)
+        with self.assertRaises(ValueError):
+            locker.filter_tool_finder_actions(
+                "",
+                limit=len(locker.TOOL_FINDER_ACTIONS) + 1,
+            )
+        source = inspect.getsource(locker.USBFileLocker.open_tool_finder)
+        self.assertIn('window.geometry("720x460")', source)
+        self.assertIn("TOOL_FINDER_VISIBLE_LIMIT", source)
+        self.assertNotIn("tk.Canvas", source)
+        self.assertNotIn("Scrollbar", source)
+        self.assertNotIn("log_event", source)
 
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(
