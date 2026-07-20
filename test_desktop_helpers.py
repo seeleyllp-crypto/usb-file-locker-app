@@ -97,14 +97,20 @@ class DesktopHelperTests(unittest.TestCase):
     def test_first_account_and_announcement_sync_starts_early(self):
         self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
 
-    def test_main_window_has_short_screen_scroll_support(self):
+    def test_main_window_uses_fixed_tabs_without_page_scrolling(self):
         source = Path(locker.__file__).read_text(encoding="utf-8")
         self.assertIn("self.minsize(860, 520)", source)
-        self.assertIn("main_canvas = tk.Canvas(", source)
-        self.assertIn("main_scrollbar = ttk.Scrollbar(", source)
-        self.assertIn('self.bind("<MouseWheel>", scroll_main_window, add="+")', source)
-        self.assertIn("self.main_canvas = main_canvas", source)
-        self.assertIn("self.main_scrollbar = main_scrollbar", source)
+        self.assertIn("main_tabs = ttk.Notebook(outer)", source)
+        self.assertIn('main_tabs.add(key_panel, text="KEY")', source)
+        self.assertIn('main_tabs.add(panel, text="LOCKER")', source)
+        self.assertIn('main_tabs.add(queue_panel, text="QUEUE")', source)
+        self.assertIn('main_tabs.add(tools_panel, text="TOOLS")', source)
+        self.assertIn('main_tabs.add(recovery_panel, text="RECOVERY")', source)
+        self.assertIn('main_tabs.add(data_panel, text="DATA")', source)
+        self.assertIn('main_tabs.add(account_panel, text="ACCOUNT")', source)
+        self.assertIn("self.main_tabs = main_tabs", source)
+        self.assertNotIn("main_canvas", source)
+        self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
 
     def test_support_redactor_removes_sensitive_values_but_keeps_error_context(self):

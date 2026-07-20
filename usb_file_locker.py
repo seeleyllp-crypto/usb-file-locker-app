@@ -4902,49 +4902,8 @@ class USBFileLocker(tk.Tk):
             )
 
     def build_ui(self):
-        main_canvas = tk.Canvas(
-            self,
-            bg=BG,
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        main_scrollbar = ttk.Scrollbar(
-            self,
-            orient="vertical",
-            command=main_canvas.yview,
-        )
-        main_canvas.configure(yscrollcommand=main_scrollbar.set)
-        main_scrollbar.pack(side="right", fill="y")
-        main_canvas.pack(side="left", fill="both", expand=True)
-        outer = tk.Frame(main_canvas, bg=BG)
-        outer_window = main_canvas.create_window(
-            (0, 0),
-            window=outer,
-            anchor="nw",
-        )
-
-        def fit_main_content(event):
-            main_canvas.itemconfigure(outer_window, width=event.width)
-
-        def update_main_scroll_region(_event=None):
-            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-
-        def scroll_main_window(event):
-            main_canvas.yview_scroll(
-                -1 if event.delta > 0 else 1,
-                "units",
-            )
-            return "break"
-
-        main_canvas.bind("<Configure>", fit_main_content)
-        outer.bind("<Configure>", update_main_scroll_region)
-        self.bind("<MouseWheel>", scroll_main_window, add="+")
-        self.main_canvas = main_canvas
-        self.main_scrollbar = main_scrollbar
-
-        content = tk.Frame(outer, bg=BG)
-        content.pack(fill="both", expand=True, padx=26, pady=22)
-        outer = content
+        outer = tk.Frame(self, bg=BG)
+        outer.pack(fill="both", expand=True, padx=26, pady=18)
 
         tk.Label(outer, text="USB File Locker", bg=BG, fg=TEXT, font=("Segoe UI", 25, "bold")).pack(anchor="w")
         if LAB_MODE:
@@ -4992,12 +4951,25 @@ class USBFileLocker(tk.Tk):
         )
         self.license_status_label.pack(anchor="w", pady=(0, 12))
 
-        panel = tk.Frame(outer, bg=PANEL)
-        panel.pack(fill="both", expand=True)
-        tools_panel = panel
-        account_panel = panel
+        main_tabs = ttk.Notebook(outer)
+        main_tabs.pack(fill="both", expand=True)
+        key_panel = tk.Frame(main_tabs, bg=PANEL)
+        panel = tk.Frame(main_tabs, bg=PANEL)
+        queue_panel = tk.Frame(main_tabs, bg=PANEL)
+        tools_panel = tk.Frame(main_tabs, bg=PANEL)
+        recovery_panel = tk.Frame(main_tabs, bg=PANEL)
+        data_panel = tk.Frame(main_tabs, bg=PANEL)
+        account_panel = tk.Frame(main_tabs, bg=PANEL)
+        main_tabs.add(key_panel, text="KEY")
+        main_tabs.add(panel, text="LOCKER")
+        main_tabs.add(queue_panel, text="QUEUE")
+        main_tabs.add(tools_panel, text="TOOLS")
+        main_tabs.add(recovery_panel, text="RECOVERY")
+        main_tabs.add(data_panel, text="DATA")
+        main_tabs.add(account_panel, text="ACCOUNT")
+        self.main_tabs = main_tabs
 
-        top = tk.Frame(panel, bg=PANEL)
+        top = tk.Frame(key_panel, bg=PANEL)
         top.pack(fill="x", padx=18, pady=(18, 10))
         self.create_key_button = tk.Button(top, text="CREATE MASTER USB KEY", command=self.create_key, bg=WHITE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.create_key_button.pack(side="left", ipadx=10, ipady=8)
@@ -5005,7 +4977,7 @@ class USBFileLocker(tk.Tk):
         self.load_key_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         self.panic_button = tk.Button(top, text="PANIC LOCK NOW", command=self.panic_lock_now, bg=RED, fg=WHITE, relief="flat", font=("Segoe UI", 9, "bold"))
         self.panic_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
-        top_secondary = tk.Frame(panel, bg=PANEL)
+        top_secondary = tk.Frame(key_panel, bg=PANEL)
         top_secondary.pack(fill="x", padx=18, pady=(0, 10))
         self.register_button = tk.Button(top_secondary, text="REGISTER .LOCKED", command=self.register_association_from_gui, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.register_button.pack(side="left", ipadx=10, ipady=8)
@@ -5074,7 +5046,7 @@ class USBFileLocker(tk.Tk):
         self.diagnostics_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.incident_button = tk.Button(local_control_row, text="INCIDENT RESPONSE", command=self.open_incident_response_center, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.incident_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
-        local_recovery_row = tk.Frame(tools_panel, bg=PANEL)
+        local_recovery_row = tk.Frame(recovery_panel, bg=PANEL)
         local_recovery_row.pack(fill="x", padx=18, pady=(0, 10))
         self.backup_verification_button = tk.Button(local_recovery_row, text="BACKUP VERIFY", command=self.open_backup_verification_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.backup_verification_button.pack(side="left", ipadx=10, ipady=6)
@@ -5100,7 +5072,7 @@ class USBFileLocker(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=18, pady=(0, 10))
 
-        maintenance_row = tk.Frame(tools_panel, bg=PANEL)
+        maintenance_row = tk.Frame(recovery_panel, bg=PANEL)
         maintenance_row.pack(fill="x", padx=18, pady=(0, 10))
         tk.Label(maintenance_row, text="SECURITY ROUTINES", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.maintenance_button = tk.Button(maintenance_row, text="MAINTENANCE CENTER", command=self.open_security_maintenance_center, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
@@ -5108,7 +5080,7 @@ class USBFileLocker(tk.Tk):
         self.public_maintenance_button = tk.Button(maintenance_row, text="PUBLIC PLANNER", command=self.open_public_maintenance, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.public_maintenance_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         tk.Label(
-            tools_panel,
+            recovery_panel,
             text="32 fixed tasks, 6 routines, 7/30/90-day planning, local snapshots, verified archives, and no free-form notes.",
             bg=PANEL,
             fg=MUTED,
@@ -5117,7 +5089,7 @@ class USBFileLocker(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=18, pady=(0, 10))
         tk.Label(
-            tools_panel,
+            recovery_panel,
             text="Read-only checks, recovery drills, and fixed response playbooks stay local. Local Control listens only on 127.0.0.1.",
             bg=PANEL,
             fg=MUTED,
@@ -5126,7 +5098,7 @@ class USBFileLocker(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=18, pady=(0, 10))
 
-        storage_row = tk.Frame(tools_panel, bg=PANEL)
+        storage_row = tk.Frame(data_panel, bg=PANEL)
         storage_row.pack(fill="x", padx=18, pady=(0, 10))
         tk.Label(storage_row, text="DATA AND BACKUPS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.recent_keys_button = tk.Button(storage_row, text="RECENT KEYS", command=self.open_recent_keys, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"))
@@ -5135,7 +5107,7 @@ class USBFileLocker(tk.Tk):
         self.open_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.backup_data_button = tk.Button(storage_row, text="BACK UP APP DATA", command=self.backup_app_data, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.backup_data_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
-        storage_services_row = tk.Frame(tools_panel, bg=PANEL)
+        storage_services_row = tk.Frame(data_panel, bg=PANEL)
         storage_services_row.pack(fill="x", padx=18, pady=(0, 10))
         self.data_control_button = tk.Button(storage_services_row, text="DATA CONTROL", command=self.open_data_control_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.data_control_button.pack(side="left", ipadx=10, ipady=6)
@@ -5169,14 +5141,14 @@ class USBFileLocker(tk.Tk):
         tk.Label(pin_status_row, textvariable=self.pin_mode, bg=PANEL, fg=GREEN, font=("Segoe UI", 8, "bold")).pack(side="left")
         tk.Label(pin_status_row, text="Exact and case-sensitive.", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
 
-        files_row = tk.Frame(panel, bg=PANEL)
+        files_row = tk.Frame(queue_panel, bg=PANEL)
         files_row.pack(fill="x", padx=18, pady=(4, 6))
         tk.Label(files_row, text="FILES AND FOLDERS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.add_files_button = tk.Button(files_row, text="ADD FILES", command=self.add_files, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.add_files_button.pack(side="left", padx=(12, 0), ipadx=10, ipady=6)
         self.add_folder_button = tk.Button(files_row, text="ADD FOLDER", command=self.add_folder, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.add_folder_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
-        files_manage_row = tk.Frame(panel, bg=PANEL)
+        files_manage_row = tk.Frame(queue_panel, bg=PANEL)
         files_manage_row.pack(fill="x", padx=18, pady=(0, 6))
         self.add_perm_unlock_items_button = tk.Button(files_manage_row, text="ADD PERM UNLOCK ITEMS", command=self.add_perm_unlock_items, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.add_perm_unlock_items_button.pack(side="left", ipadx=10, ipady=6)
@@ -5185,7 +5157,7 @@ class USBFileLocker(tk.Tk):
         self.clear_files_button = tk.Button(files_manage_row, text="CLEAR", command=self.clear_files, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.clear_files_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
-        queue_row = tk.Frame(panel, bg=PANEL)
+        queue_row = tk.Frame(queue_panel, bg=PANEL)
         queue_row.pack(fill="x", padx=18, pady=(0, 6))
         tk.Label(queue_row, text="QUEUE TOOLS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.open_selected_button = tk.Button(queue_row, text="OPEN SELECTED", command=self.open_selected_items, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
@@ -5194,7 +5166,7 @@ class USBFileLocker(tk.Tk):
         self.open_selected_folder_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
         self.remove_missing_button = tk.Button(queue_row, text="REMOVE MISSING", command=self.remove_missing_files, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.remove_missing_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
-        queue_secondary_row = tk.Frame(panel, bg=PANEL)
+        queue_secondary_row = tk.Frame(queue_panel, bg=PANEL)
         queue_secondary_row.pack(fill="x", padx=18, pady=(0, 6))
         self.sort_list_button = tk.Button(queue_secondary_row, text="SORT LIST", command=self.sort_file_list, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.sort_list_button.pack(side="left", ipadx=10, ipady=6)
@@ -5203,7 +5175,7 @@ class USBFileLocker(tk.Tk):
         self.load_list_button = tk.Button(queue_secondary_row, text="LOAD LIST", command=self.load_file_list, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.load_list_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
 
-        tools_row = tk.Frame(panel, bg=PANEL)
+        tools_row = tk.Frame(queue_panel, bg=PANEL)
         tools_row.pack(fill="x", padx=18, pady=(0, 6))
         self.find_locked_button = tk.Button(tools_row, text="FIND LOCKED", command=self.find_locked_files_gui, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.find_locked_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=6)
@@ -5230,7 +5202,7 @@ class USBFileLocker(tk.Tk):
         self.file_list.pack(fill="both", expand=True, padx=18)
 
         action_row = tk.Frame(panel, bg=PANEL)
-        action_row.pack(fill="x", padx=18, pady=(14, 8))
+        action_row.pack(fill="x", padx=18, pady=(14, 8), before=self.file_list)
         self.lock_button = tk.Button(action_row, text="LOCK COPY", command=self.lock_selected, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 10, "bold"))
         self.lock_button.pack(side="left", ipadx=18, ipady=10)
         self.lock_remove_button = tk.Button(
@@ -5250,7 +5222,7 @@ class USBFileLocker(tk.Tk):
         self.busy_buttons = [self.lock_button, self.lock_remove_button, self.unlock_button, self.perm_unlock_button]
 
         secondary_row = tk.Frame(panel, bg=PANEL)
-        secondary_row.pack(fill="x", padx=18, pady=(0, 8))
+        secondary_row.pack(fill="x", padx=18, pady=(0, 8), before=self.file_list)
         self.unlock_to_folder_button = tk.Button(secondary_row, text="UNLOCK TO FOLDER", command=self.unlock_selected_to_folder, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 10, "bold"))
         self.unlock_to_folder_button.pack(side="left", ipadx=14, ipady=8)
         self.perm_unlock_folder_button = tk.Button(secondary_row, text="PERM UNLOCK FOLDER", command=self.perm_unlock_selected_to_perm_folder, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 10, "bold"))
