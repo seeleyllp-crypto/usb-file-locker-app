@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections import Counter
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 from itertools import islice
@@ -40,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.20"
+DESKTOP_APP_VERSION = "2026.07.18.21"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2277,6 +2278,73 @@ def safe_lock_queue_cleanup_plan(
     }
 
 
+def safe_lock_queue_checkpoint_report(
+    checkpoint,
+    current_entries,
+    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
+):
+    if (
+        type(max_items) is not int
+        or not 1 <= max_items <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+    ):
+        raise ValueError("Queue checkpoint item limit is invalid.")
+
+    def bounded_snapshot(entries, label):
+        try:
+            iterator = iter(entries)
+        except TypeError as exc:
+            raise ValueError(f"{label} needs a bounded queue.") from exc
+        supplied = list(islice(iterator, max_items + 1))
+        snapshot = []
+        for raw_entry in supplied[:max_items]:
+            try:
+                value = os.fspath(raw_entry)
+            except TypeError as exc:
+                raise ValueError(f"{label} contains an invalid queue entry.") from exc
+            if not isinstance(value, str):
+                raise ValueError(f"{label} contains an invalid queue entry.")
+            snapshot.append(value)
+        return tuple(snapshot), len(supplied) > max_items
+
+    saved, saved_truncated = bounded_snapshot(checkpoint, "Queue checkpoint")
+    if saved_truncated:
+        raise ValueError("Queue checkpoint exceeds the 1,000-item safety limit.")
+    current, current_truncated = bounded_snapshot(
+        current_entries,
+        "Current queue",
+    )
+    if current_truncated:
+        return {
+            "schema_version": 1,
+            "state": "LIMIT",
+            "saved_items": len(saved),
+            "current_items": len(current),
+            "added_items": 0,
+            "removed_items": 0,
+            "reordered": False,
+            "comparison_limited": True,
+        }
+
+    saved_counts = Counter(saved)
+    current_counts = Counter(current)
+    added_items = sum((current_counts - saved_counts).values())
+    removed_items = sum((saved_counts - current_counts).values())
+    reordered = (
+        saved != current
+        and saved_counts == current_counts
+    )
+    return {
+        "schema_version": 1,
+        "state": "MATCH" if saved == current else "CHANGED",
+        "saved_items": len(saved),
+        "current_items": len(current),
+        "added_items": added_items,
+        "removed_items": removed_items,
+        "reordered": reordered,
+        "comparison_limited": False,
+    }
+
+
 def safe_lock_preview_summary(report):
     current = dict(report or {})
     count_names = (
@@ -2332,6 +2400,45 @@ def safe_lock_preview_summary(report):
     if type(current.get("truncated")) is not bool:
         raise ValueError("Safe Lock Preview truncation state is invalid.")
 
+    checkpoint_state = current.get("checkpoint_state", "NONE")
+    if checkpoint_state not in {"NONE", "MATCH", "CHANGED", "LIMIT"}:
+        raise ValueError("Safe Lock Preview checkpoint state is invalid.")
+    checkpoint_counts = {}
+    for name in (
+        "checkpoint_saved_items",
+        "checkpoint_current_items",
+        "checkpoint_added_items",
+        "checkpoint_removed_items",
+    ):
+        value = current.get(name, 0)
+        if (
+            type(value) is not int
+            or not 0 <= value <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+        ):
+            raise ValueError("Safe Lock Preview checkpoint counts are invalid.")
+        checkpoint_counts[name] = value
+    checkpoint_reordered = current.get("checkpoint_reordered", False)
+    if type(checkpoint_reordered) is not bool:
+        raise ValueError("Safe Lock Preview checkpoint order state is invalid.")
+    if checkpoint_state == "NONE" and (
+        any(checkpoint_counts.values()) or checkpoint_reordered
+    ):
+        raise ValueError("Safe Lock Preview empty checkpoint is inconsistent.")
+    if checkpoint_state == "MATCH" and (
+        checkpoint_counts["checkpoint_saved_items"]
+        != checkpoint_counts["checkpoint_current_items"]
+        or checkpoint_counts["checkpoint_added_items"]
+        or checkpoint_counts["checkpoint_removed_items"]
+        or checkpoint_reordered
+    ):
+        raise ValueError("Safe Lock Preview matching checkpoint is inconsistent.")
+    if checkpoint_state == "CHANGED" and not (
+        checkpoint_counts["checkpoint_added_items"]
+        or checkpoint_counts["checkpoint_removed_items"]
+        or checkpoint_reordered
+    ):
+        raise ValueError("Safe Lock Preview changed checkpoint is inconsistent.")
+
     lines = [
         "VaultLink Safe Lock Preview",
         f"Status: {status}",
@@ -2348,6 +2455,12 @@ def safe_lock_preview_summary(report):
         f"Invalid: {counts['invalid']}",
         f"Inaccessible: {counts['inaccessible']}",
         f"Queue limit reached: {'YES' if current['truncated'] else 'NO'}",
+        f"Session checkpoint: {checkpoint_state}",
+        f"Checkpoint saved items: {checkpoint_counts['checkpoint_saved_items']}",
+        f"Compared queue items: {checkpoint_counts['checkpoint_current_items']}",
+        f"Added since checkpoint: {checkpoint_counts['checkpoint_added_items']}",
+        f"Removed since checkpoint: {checkpoint_counts['checkpoint_removed_items']}",
+        f"Order changed: {'YES' if checkpoint_reordered else 'NO'}",
         "",
         (
             "Preview only: no file contents were read and no files were locked, "
@@ -5394,6 +5507,7 @@ class USBFileLocker(tk.Tk):
         self.license_refresh_results = queue.Queue()
         self.license_refresh_in_progress = False
         self.license_refresh_after_id = None
+        self.license_poll_after_id = None
         self.last_license_notice_status = ""
         self.update_results = queue.Queue()
         self.update_operation = ""
@@ -5416,6 +5530,11 @@ class USBFileLocker(tk.Tk):
         self.overview_license_var = tk.StringVar(value="CHECKING LICENSE")
         self.overview_activity_var = tk.StringVar(value="READY")
         self.overview_refresh_after_id = None
+        self.breach_refresh_after_id = None
+        self.key_monitor_after_id = None
+        self.cloud_audit_after_id = None
+        self.auto_update_after_id = None
+        self.closing = False
         self.busy = False
         self.cancel_event = threading.Event()
         self.busy_buttons = []
@@ -5426,6 +5545,7 @@ class USBFileLocker(tk.Tk):
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
         self.safe_lock_queue_history = []
+        self.safe_lock_queue_checkpoint = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -5437,11 +5557,20 @@ class USBFileLocker(tk.Tk):
         )
         self.refresh_breach_status()
         self.schedule_license_refresh(INITIAL_LICENSE_REFRESH_MS)
-        self.after(20000, self.periodic_breach_refresh)
-        self.after(1500, self.monitor_loaded_key)
-        self.after(30000, self.periodic_cloud_audit_upload)
+        self.breach_refresh_after_id = self.after(
+            20000,
+            self.periodic_breach_refresh,
+        )
+        self.key_monitor_after_id = self.after(1500, self.monitor_loaded_key)
+        self.cloud_audit_after_id = self.after(
+            30000,
+            self.periodic_cloud_audit_upload,
+        )
         if not LAB_MODE and self.settings.get("auto_update_check", True):
-            self.after(6000, self.auto_check_for_updates)
+            self.auto_update_after_id = self.after(
+                6000,
+                self.auto_check_for_updates,
+            )
         if LAB_MODE:
             log_event("owner_lab_runtime_start", "release", "ok", f"version={DESKTOP_APP_VERSION}")
         completed_update = os.environ.pop("VAULTLINK_UPDATE_COMPLETED", "").strip()
@@ -6248,7 +6377,7 @@ class USBFileLocker(tk.Tk):
 
     def refresh_overview_loop(self):
         self.overview_refresh_after_id = None
-        if not self.winfo_exists():
+        if self.closing or not self.winfo_exists():
             return
         self.update_overview_status()
         self.overview_refresh_after_id = self.after(
@@ -6287,6 +6416,8 @@ class USBFileLocker(tk.Tk):
         issue_detail_var = tk.StringVar(window, value="")
         issue_detail_two_var = tk.StringVar(window, value="")
         limit_var = tk.StringVar(window, value="")
+        observed_queue = [None]
+        queue_watch_after_id = [None]
 
         outer = tk.Frame(window, bg=BG)
         outer.pack(fill="both", expand=True, padx=24, pady=20)
@@ -6399,10 +6530,12 @@ class USBFileLocker(tk.Tk):
         actions = tk.Frame(outer, bg=BG)
         actions.pack(fill="x", pady=(14, 0))
 
-        def refresh_preview(_event=None):
+        def refresh_preview(_event=None, quiet=False):
             try:
+                queue_entries = self.file_list.get(0, tk.END)
+                observed_queue[0] = queue_entries
                 report = build_safe_lock_preview(
-                    self.file_list.get(0, tk.END),
+                    queue_entries,
                     key_ready=self.key is not None,
                     owner_policy_enabled=bool(self.owner_policy),
                     owner_verified=bool(
@@ -6418,6 +6551,44 @@ class USBFileLocker(tk.Tk):
                 return
             report_state.clear()
             report_state.update(report)
+            checkpoint = self.safe_lock_queue_checkpoint
+            if checkpoint is None:
+                checkpoint_report = {
+                    "state": "NONE",
+                    "saved_items": 0,
+                    "current_items": 0,
+                    "added_items": 0,
+                    "removed_items": 0,
+                    "reordered": False,
+                }
+            else:
+                try:
+                    checkpoint_report = safe_lock_queue_checkpoint_report(
+                        checkpoint,
+                        queue_entries,
+                    )
+                except ValueError:
+                    checkpoint_report = {
+                        "state": "LIMIT",
+                        "saved_items": len(checkpoint),
+                        "current_items": min(
+                            len(queue_entries),
+                            MAX_SAFE_LOCK_PREVIEW_ITEMS,
+                        ),
+                        "added_items": 0,
+                        "removed_items": 0,
+                        "reordered": False,
+                    }
+            report_state.update(
+                {
+                    "checkpoint_state": checkpoint_report["state"],
+                    "checkpoint_saved_items": checkpoint_report["saved_items"],
+                    "checkpoint_current_items": checkpoint_report["current_items"],
+                    "checkpoint_added_items": checkpoint_report["added_items"],
+                    "checkpoint_removed_items": checkpoint_report["removed_items"],
+                    "checkpoint_reordered": checkpoint_report["reordered"],
+                }
+            )
             status_var.set(report["status"])
             status_label.configure(
                 fg=GREEN if report["can_continue"] else YELLOW
@@ -6439,15 +6610,33 @@ class USBFileLocker(tk.Tk):
                 f"   |   INVALID {report['invalid']}"
                 f"   |   INACCESSIBLE {report['inaccessible']}"
             )
-            limit_var.set(
-                "QUEUE LIMIT REACHED - REVIEW A SMALLER QUEUE"
-                if report["truncated"]
-                else "QUEUE LIMIT NOT REACHED"
-            )
-            self.status.set(
-                "Safe Lock Preview finished without reading file contents."
-            )
-            log_event("safe_lock_preview", "aggregate", "ok")
+            if report["truncated"]:
+                checkpoint_text = "CHECKPOINT COMPARISON PAUSED"
+                limit_text = "LIMIT REACHED"
+            elif checkpoint_report["state"] == "NONE":
+                checkpoint_text = "CHECKPOINT NONE"
+                limit_text = "LIMIT OK"
+            elif checkpoint_report["state"] == "MATCH":
+                checkpoint_text = (
+                    f"CHECKPOINT MATCH | SAVED {checkpoint_report['saved_items']}"
+                )
+                limit_text = "LIMIT OK"
+            else:
+                order_text = (
+                    " | ORDER CHANGED" if checkpoint_report["reordered"] else ""
+                )
+                checkpoint_text = (
+                    f"CHECKPOINT CHANGED | SAVED {checkpoint_report['saved_items']}"
+                    f" | +{checkpoint_report['added_items']}"
+                    f" -{checkpoint_report['removed_items']}{order_text}"
+                )
+                limit_text = "LIMIT OK"
+            limit_var.set(f"{limit_text} | {checkpoint_text}")
+            if not quiet:
+                self.status.set(
+                    "Safe Lock Preview finished without reading file contents."
+                )
+                log_event("safe_lock_preview", "aggregate", "ok")
 
         def copy_summary():
             if not report_state:
@@ -6473,10 +6662,87 @@ class USBFileLocker(tk.Tk):
             self.focus_set()
 
         def update_cleanup_menu_state():
+            checkpoint_ready = self.safe_lock_queue_checkpoint is not None
+            cleanup_menu.entryconfigure(
+                restore_checkpoint_index,
+                state="normal" if checkpoint_ready else "disabled",
+            )
+            cleanup_menu.entryconfigure(
+                clear_checkpoint_index,
+                state="normal" if checkpoint_ready else "disabled",
+            )
             cleanup_menu.entryconfigure(
                 undo_menu_index,
                 state="normal" if self.safe_lock_queue_history else "disabled",
             )
+
+        def save_queue_checkpoint():
+            if self.busy:
+                self.status.set(
+                    "Wait for the current lock or unlock job before saving a checkpoint."
+                )
+                return
+            current = tuple(self.file_list.get(0, tk.END))
+            plan = safe_lock_queue_cleanup_plan(current)
+            if not current:
+                self.status.set("Add queue items before saving a session checkpoint.")
+                return
+            if plan["truncated"]:
+                self.status.set(
+                    "Queue checkpoint is limited to 1,000 items; use a smaller queue."
+                )
+                return
+            self.safe_lock_queue_checkpoint = current
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set(
+                f"Saved a {len(current)}-item session checkpoint; no files changed."
+            )
+            log_event("safe_lock_queue_checkpoint_save", "aggregate", "ok")
+
+        def restore_queue_checkpoint():
+            if self.busy:
+                self.status.set(
+                    "Wait for the current lock or unlock job before restoring a checkpoint."
+                )
+                return
+            checkpoint = self.safe_lock_queue_checkpoint
+            if checkpoint is None:
+                self.status.set("No session queue checkpoint is saved.")
+                return
+            before = tuple(self.file_list.get(0, tk.END))
+            if len(before) > MAX_SAFE_LOCK_PREVIEW_ITEMS:
+                self.status.set(
+                    "Restore is paused while the current queue exceeds 1,000 items."
+                )
+                return
+            if before == checkpoint:
+                self.status.set("The current queue already matches the checkpoint.")
+                return
+            self.safe_lock_queue_history.append(
+                {"before": before, "after": checkpoint}
+            )
+            del self.safe_lock_queue_history[:-MAX_SAFE_QUEUE_UNDO]
+            self.file_list.delete(0, tk.END)
+            for item in checkpoint:
+                self.file_list.insert(tk.END, item)
+            self.update_overview_status()
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set(
+                f"Restored the {len(checkpoint)}-item checkpoint; no files changed."
+            )
+            log_event("safe_lock_queue_checkpoint_restore", "aggregate", "ok")
+
+        def clear_queue_checkpoint():
+            if self.safe_lock_queue_checkpoint is None:
+                self.status.set("No session queue checkpoint is saved.")
+                return
+            self.safe_lock_queue_checkpoint = None
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set("Cleared the session checkpoint; the queue did not change.")
+            log_event("safe_lock_queue_checkpoint_clear", "aggregate", "ok")
 
         def apply_queue_cleanup(categories=(), keep_ready=False):
             if self.busy:
@@ -6547,9 +6813,29 @@ class USBFileLocker(tk.Tk):
             log_event("safe_lock_queue_repair_undo", "aggregate", "ok")
             return "break"
 
+        def monitor_queue_changes():
+            try:
+                if not window.winfo_exists():
+                    return
+                current = self.file_list.get(0, tk.END)
+                if current != observed_queue[0]:
+                    refresh_preview(quiet=True)
+                queue_watch_after_id[0] = window.after(
+                    500,
+                    monitor_queue_changes,
+                )
+            except (AttributeError, tk.TclError):
+                queue_watch_after_id[0] = None
+
         def cleanup(event):
             if event.widget is not window:
                 return
+            if queue_watch_after_id[0] is not None:
+                try:
+                    window.after_cancel(queue_watch_after_id[0])
+                except tk.TclError:
+                    pass
+                queue_watch_after_id[0] = None
             if self.safe_lock_preview_window is window:
                 self.safe_lock_preview_window = None
             try:
@@ -6575,7 +6861,7 @@ class USBFileLocker(tk.Tk):
             ).pack(side="left", padx=(0, 8), ipadx=10, ipady=8)
         cleanup_button = tk.Menubutton(
             actions,
-            text="QUEUE REPAIR",
+            text="QUEUE TOOLS",
             bg=YELLOW,
             fg=BLACK,
             activebackground=YELLOW,
@@ -6595,6 +6881,21 @@ class USBFileLocker(tk.Tk):
             relief="flat",
             font=("Segoe UI", 9),
         )
+        cleanup_menu.add_command(
+            label="Save session checkpoint",
+            command=save_queue_checkpoint,
+        )
+        cleanup_menu.add_command(
+            label="Restore session checkpoint",
+            command=restore_queue_checkpoint,
+        )
+        restore_checkpoint_index = cleanup_menu.index("end")
+        cleanup_menu.add_command(
+            label="Clear session checkpoint",
+            command=clear_queue_checkpoint,
+        )
+        clear_checkpoint_index = cleanup_menu.index("end")
+        cleanup_menu.add_separator()
         cleanup_menu.add_command(
             label="Remove broken entries",
             command=lambda: apply_queue_cleanup(
@@ -6621,7 +6922,7 @@ class USBFileLocker(tk.Tk):
         )
         cleanup_menu.add_separator()
         cleanup_menu.add_command(
-            label="Undo last repair    Ctrl+Z",
+            label="Undo last queue change    Ctrl+Z",
             command=undo_queue_cleanup,
         )
         undo_menu_index = cleanup_menu.index("end")
@@ -6644,6 +6945,7 @@ class USBFileLocker(tk.Tk):
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         refresh_preview()
+        queue_watch_after_id[0] = window.after(500, monitor_queue_changes)
         window.lift()
         return "break"
 
@@ -7039,8 +7341,13 @@ class USBFileLocker(tk.Tk):
         self.pin_entry.configure(show="" if self.pin_visible.get() else "*")
 
     def periodic_cloud_audit_upload(self):
-        if self.winfo_exists():
-            self.after(15 * 60 * 1000, self.periodic_cloud_audit_upload)
+        self.cloud_audit_after_id = None
+        if self.closing or not self.winfo_exists():
+            return
+        self.cloud_audit_after_id = self.after(
+            15 * 60 * 1000,
+            self.periodic_cloud_audit_upload,
+        )
         settings = load_settings()
         if not settings.get("cloud_audit_enabled") or self.cloud_audit_in_progress:
             return
@@ -7115,6 +7422,9 @@ class USBFileLocker(tk.Tk):
         log_event("auto_update_setting", "local", "ok", f"enabled={int(bool(enabled))}")
 
     def auto_check_for_updates(self):
+        self.auto_update_after_id = None
+        if self.closing:
+            return
         if LAB_MODE:
             return
         if not self.settings.get("auto_update_check", True):
@@ -7522,6 +7832,7 @@ class USBFileLocker(tk.Tk):
         previous_key = self.key["key_id"] if self.key else ""
         self.key = None
         self.safe_lock_queue_history.clear()
+        self.safe_lock_queue_checkpoint = None
         try:
             self.pin_entry.delete(0, "end")
         except Exception:
@@ -7836,6 +8147,8 @@ class USBFileLocker(tk.Tk):
             messagebox.showerror("Could not open Shop", str(exc), parent=self)
 
     def schedule_license_refresh(self, delay_ms=None):
+        if self.closing:
+            return
         if self.license_refresh_after_id is not None:
             try:
                 self.after_cancel(self.license_refresh_after_id)
@@ -7847,6 +8160,8 @@ class USBFileLocker(tk.Tk):
 
     def refresh_license_state_silent(self):
         self.license_refresh_after_id = None
+        if self.closing:
+            return
         if self.license_refresh_in_progress:
             return
         state = load_license_state(self.settings)
@@ -7866,14 +8181,20 @@ class USBFileLocker(tk.Tk):
             self.license_refresh_results.put(updated)
 
         threading.Thread(target=worker, name="LicenseRefresh", daemon=True).start()
-        self.after(50, self.poll_license_refresh)
+        self.license_poll_after_id = self.after(50, self.poll_license_refresh)
 
     def poll_license_refresh(self):
+        self.license_poll_after_id = None
+        if self.closing:
+            return
         try:
             state = self.license_refresh_results.get_nowait()
         except queue.Empty:
             if self.license_refresh_in_progress and self.winfo_exists():
-                self.after(50, self.poll_license_refresh)
+                self.license_poll_after_id = self.after(
+                    50,
+                    self.poll_license_refresh,
+                )
             return
         self.license_refresh_in_progress = False
         self.finish_license_refresh(state, automatic=True)
@@ -8221,11 +8542,17 @@ class USBFileLocker(tk.Tk):
             self.breach_status.set(f"BREACH CHECK UNAVAILABLE - {exc}")
 
     def periodic_breach_refresh(self):
+        self.breach_refresh_after_id = None
+        if self.closing:
+            return
         try:
             self.refresh_breach_status()
         finally:
-            if self.winfo_exists():
-                self.after(20000, self.periodic_breach_refresh)
+            if not self.closing and self.winfo_exists():
+                self.breach_refresh_after_id = self.after(
+                    20000,
+                    self.periodic_breach_refresh,
+                )
 
     def open_breach_check(self):
         if not ensure_license_feature("global-breach-guard", parent=self):
@@ -8494,7 +8821,10 @@ class USBFileLocker(tk.Tk):
         )
 
     def monitor_loaded_key(self):
+        self.key_monitor_after_id = None
         try:
+            if self.closing:
+                return
             if self.key:
                 if self.owner_policy:
                     allowed, _message = owner_key_allowed(self.key, self.owner_policy)
@@ -8503,8 +8833,11 @@ class USBFileLocker(tk.Tk):
                 elif not Path(self.key["path"]).exists():
                     self.clear_loaded_key("Loaded key file is no longer available. The app locked itself again.", "usb_key_removed")
         finally:
-            if self.winfo_exists():
-                self.after(1500, self.monitor_loaded_key)
+            if not self.closing and self.winfo_exists():
+                self.key_monitor_after_id = self.after(
+                    1500,
+                    self.monitor_loaded_key,
+                )
 
     def enable_owner_usb_mode(self):
         if not ensure_license_feature("owner-usb-mode", parent=self):
@@ -8585,12 +8918,26 @@ class USBFileLocker(tk.Tk):
                 "Wait for the current item to finish, or click CANCEL AFTER CURRENT.",
             )
             return
-        if self.overview_refresh_after_id is not None:
+        self.closing = True
+        for attribute in (
+            "overview_refresh_after_id",
+            "license_refresh_after_id",
+            "license_poll_after_id",
+            "breach_refresh_after_id",
+            "key_monitor_after_id",
+            "cloud_audit_after_id",
+            "auto_update_after_id",
+        ):
+            after_id = getattr(self, attribute, None)
+            if after_id is None:
+                continue
             try:
-                self.after_cancel(self.overview_refresh_after_id)
+                self.after_cancel(after_id)
             except tk.TclError:
                 pass
-            self.overview_refresh_after_id = None
+            setattr(self, attribute, None)
+        self.safe_lock_queue_history.clear()
+        self.safe_lock_queue_checkpoint = None
         self.destroy()
 
     def cancel_current_job(self):

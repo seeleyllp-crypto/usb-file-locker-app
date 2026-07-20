@@ -16,7 +16,13 @@ Double-click any `Run ... .bat` launcher. `Ensure Dependencies.cmd` checks for P
 
 The app checks the API at startup when its daily update check is due. License state has a separate automatic API heartbeat: it checks about every 60 seconds, follows the server's bounded refresh policy, and re-checks stale state before a premium action. Revoked, expired, reset, removed-device, or deactivated receipts disable premium controls without requiring License Center. A temporary outage keeps a still-valid cached receipt usable within the existing offline grace period. Update Center verifies an Ed25519 manifest signature and SHA-256 package hash, clearly shows the current release, backs up replaced app files, and preserves everything in `%LOCALAPPDATA%\USBFileLocker`. `AUTO-INSTALL VERIFIED UPDATES` is a visible local opt-in; when enabled, a verified update downloads, verifies again, closes the app, installs, and restarts without an extra prompt. Automatic installation remains disabled inside Git working folders; use `git pull` there.
 
-Release `2026.07.18.20` adds `QUEUE REPAIR` inside Safe Lock Preview. It can remove broken queue entries, duplicates, already-locked entries, links or unsupported entries, or keep only ready files and folders. Repairs change the visible queue only; they never delete, rename, move, lock, unlock, copy, upload, or edit a file.
+Release `2026.07.18.21` adds a session-only Queue Checkpoint inside `QUEUE TOOLS`. Save an exact queue checkpoint, compare the current queue through aggregate added, removed, and order-changed counts, restore it without touching files, or clear it. The checkpoint stores queue paths only in memory and is never saved, logged, exported, or sent to the API.
+
+Checkpoint comparison is duplicate-aware, refreshes automatically while the preview is open, and stops at the same 1,000-item safety limit as Safe Lock Preview. Restoring a checkpoint creates a guarded queue-only undo record. USB unload, panic lock, and app exit clear both checkpoint and undo memory.
+
+The `.21` shutdown path also tracks and cancels repeating overview, license, breach, USB-monitor, cloud-audit, and delayed update timers before closing the Tk window.
+
+Release `2026.07.18.20` adds queue repair inside Safe Lock Preview. It can remove broken queue entries, duplicates, already-locked entries, links or unsupported entries, or keep only ready files and folders. Repairs change the visible queue only; they never delete, rename, move, lock, unlock, copy, upload, or edit a file.
 
 Up to ten queue-repair undo records are kept in memory for the current app session. Undo restores a repair only when the queue still exactly matches that repair's result; if a newer queue edit is detected, the old history is cleared instead of overwriting newer work. Panic lock, USB unload, and app exit clear the history.
 

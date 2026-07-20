@@ -430,11 +430,90 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("private-item", serialized)
         self.assertNotIn(temp_dir, serialized)
 
+    def test_safe_lock_queue_checkpoint_report_is_duplicate_aware_and_private(self):
+        saved = (
+            r"C:\private\alpha.txt",
+            r"C:\private\beta.txt",
+            r"C:\private\beta.txt",
+        )
+        changed = locker.safe_lock_queue_checkpoint_report(
+            saved,
+            (
+                r"C:\private\alpha.txt",
+                r"C:\private\beta.txt",
+                r"C:\private\gamma.txt",
+            ),
+        )
+        reordered = locker.safe_lock_queue_checkpoint_report(
+            ("first", "second"),
+            ("second", "first"),
+        )
+        matching = locker.safe_lock_queue_checkpoint_report(saved, saved)
+        limited = locker.safe_lock_queue_checkpoint_report(
+            ("first",),
+            ("first", "second", "third"),
+            max_items=2,
+        )
+
+        self.assertEqual(changed["state"], "CHANGED")
+        self.assertEqual(changed["saved_items"], 3)
+        self.assertEqual(changed["current_items"], 3)
+        self.assertEqual(changed["added_items"], 1)
+        self.assertEqual(changed["removed_items"], 1)
+        self.assertFalse(changed["reordered"])
+        self.assertEqual(reordered["state"], "CHANGED")
+        self.assertTrue(reordered["reordered"])
+        self.assertEqual(reordered["added_items"], 0)
+        self.assertEqual(reordered["removed_items"], 0)
+        self.assertEqual(matching["state"], "MATCH")
+        self.assertEqual(limited["state"], "LIMIT")
+        self.assertTrue(limited["comparison_limited"])
+        serialized = json.dumps(changed)
+        self.assertNotIn("alpha", serialized)
+        self.assertNotIn("private", serialized)
+        with self.assertRaises(ValueError):
+            locker.safe_lock_queue_checkpoint_report(
+                ("first", "second", "third"),
+                ("first",),
+                max_items=2,
+            )
+
+    def test_safe_lock_preview_summary_includes_aggregate_checkpoint_state(self):
+        report = locker.build_safe_lock_preview(
+            [],
+            key_ready=False,
+            owner_policy_enabled=False,
+            owner_verified=False,
+        )
+        report.update(
+            {
+                "checkpoint_state": "CHANGED",
+                "checkpoint_saved_items": 2,
+                "checkpoint_current_items": 2,
+                "checkpoint_added_items": 1,
+                "checkpoint_removed_items": 1,
+                "checkpoint_reordered": False,
+            }
+        )
+        summary = locker.safe_lock_preview_summary(report)
+        self.assertIn("Session checkpoint: CHANGED", summary)
+        self.assertIn("Checkpoint saved items: 2", summary)
+        self.assertIn("Added since checkpoint: 1", summary)
+        self.assertIn("Removed since checkpoint: 1", summary)
+        self.assertNotIn("alpha.txt", summary.lower())
+        self.assertNotIn("private", summary.lower())
+        self.assertNotIn("C:\\", summary)
+
     def test_safe_lock_preview_window_has_no_page_scroller_or_file_reader(self):
         source = inspect.getsource(locker.USBFileLocker.open_safe_lock_preview)
         self.assertIn('window.geometry("760x480")', source)
         self.assertIn("self.file_list.get(0, tk.END)", source)
-        self.assertIn('text="QUEUE REPAIR"', source)
+        self.assertIn('text="QUEUE TOOLS"', source)
+        self.assertIn('label="Save session checkpoint"', source)
+        self.assertIn('label="Restore session checkpoint"', source)
+        self.assertIn('label="Clear session checkpoint"', source)
+        self.assertIn("def monitor_queue_changes", source)
+        self.assertIn("refresh_preview(quiet=True)", source)
         self.assertIn('label="Remove broken entries"', source)
         self.assertIn('label="Keep ready items only"', source)
         self.assertIn("def undo_queue_cleanup", source)
@@ -451,6 +530,23 @@ class DesktopHelperTests(unittest.TestCase):
     def test_queue_repair_history_is_cleared_when_access_is_unloaded(self):
         source = inspect.getsource(locker.USBFileLocker.unload_session)
         self.assertIn("self.safe_lock_queue_history.clear()", source)
+        self.assertIn("self.safe_lock_queue_checkpoint = None", source)
+
+    def test_close_handler_cancels_tracked_recurring_timers(self):
+        source = inspect.getsource(locker.USBFileLocker.close_requested)
+        self.assertIn("self.closing = True", source)
+        for attribute in (
+            "overview_refresh_after_id",
+            "license_refresh_after_id",
+            "license_poll_after_id",
+            "breach_refresh_after_id",
+            "key_monitor_after_id",
+            "cloud_audit_after_id",
+            "auto_update_after_id",
+        ):
+            self.assertIn(f'"{attribute}"', source)
+        self.assertIn("self.after_cancel(after_id)", source)
+        self.assertIn("self.safe_lock_queue_checkpoint = None", source)
 
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(

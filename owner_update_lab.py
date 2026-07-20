@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "The main app and Local Receipt Review use fixed task tabs with no page canvas, page scrollbar, or page-scroll behavior.",
+    "The fixed no-scroll app and Receipt Review now cancel recurring local timers cleanly before the Tk window closes.",
     "A live local-only Overview shows aggregate access, queue, selection, PIN mode, license, and activity without paths, names, secrets, or contents.",
     "Safe Lock Preview opens from MORE TOOLS, Tool Finder, or Ctrl+Shift+P without changing queued files.",
     "Preview checks up to 1,000 entries for missing, duplicate, already-locked, linked, unsupported, invalid, inaccessible, and truncated work.",
     "Preview never reads file contents or locks, deletes, renames, copies, or uploads anything.",
-    "QUEUE REPAIR removes selected problem categories or keeps ready items while changing only the visible queue, never files.",
-    "Up to ten repair undo records stay in session memory and are cleared by USB unload, panic lock, or app exit.",
-    "Undo refuses to overwrite newer queue edits and clears stale repair history instead.",
+    "QUEUE TOOLS can save, restore, or clear one exact session-only queue checkpoint without changing files.",
+    "Checkpoint comparison auto-refreshes in the open preview and reports only aggregate match, added, removed, order, and limit states.",
+    "Checkpoint paths stay in memory, never enter logs, exports, or API requests, and clear on USB unload, panic lock, or exit.",
+    "Queue repair removes selected problem categories or keeps ready items while changing only the visible queue.",
+    "Checkpoint restore and repair share up to ten guarded undo records that refuse to overwrite newer edits.",
     "Tool Finder opens 28 fixed customer commands from MORE TOOLS or Ctrl+K and cannot execute free-form commands.",
-    "ALL, FAVORITES, and RECENT modes keep frequently used customer tools easy to reach.",
-    "Favorites persist only as allowlisted command IDs; recent tools and search text remain session memory.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 
