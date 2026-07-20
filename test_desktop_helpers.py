@@ -384,10 +384,62 @@ class DesktopHelperTests(unittest.TestCase):
                 {**report, "ready_items": 999},
             )
 
+    def test_safe_lock_queue_cleanup_plan_contains_only_bounded_indexes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            file_path = root / "private-item.txt"
+            file_path.write_text("content must remain untouched", encoding="utf-8")
+            folder_path = root / "private-folder"
+            folder_path.mkdir()
+            locked_path = root / "private-item.locked"
+            locked_path.write_text("locked fixture", encoding="utf-8")
+            missing_path = root / "private-missing.txt"
+            entries = [
+                file_path,
+                folder_path,
+                locked_path,
+                missing_path,
+                file_path,
+                "",
+            ]
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("contents were read"),
+            ), mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("contents were read"),
+            ):
+                plan = locker.safe_lock_queue_cleanup_plan(entries)
+                bounded = locker.safe_lock_queue_cleanup_plan(entries, max_items=2)
+
+        self.assertEqual(plan["checked_items"], 6)
+        self.assertFalse(plan["truncated"])
+        self.assertEqual(plan["ready_indexes"], (0, 1))
+        self.assertEqual(plan["review_indexes"], (2, 3, 4, 5))
+        self.assertEqual(plan["category_indexes"]["files"], (0,))
+        self.assertEqual(plan["category_indexes"]["folders"], (1,))
+        self.assertEqual(plan["category_indexes"]["already_locked"], (2,))
+        self.assertEqual(plan["category_indexes"]["missing"], (3,))
+        self.assertEqual(plan["category_indexes"]["duplicates"], (4,))
+        self.assertEqual(plan["category_indexes"]["invalid"], (5,))
+        self.assertEqual(bounded["checked_items"], 2)
+        self.assertTrue(bounded["truncated"])
+        serialized = json.dumps(plan)
+        self.assertNotIn("private-item", serialized)
+        self.assertNotIn(temp_dir, serialized)
+
     def test_safe_lock_preview_window_has_no_page_scroller_or_file_reader(self):
         source = inspect.getsource(locker.USBFileLocker.open_safe_lock_preview)
         self.assertIn('window.geometry("760x480")', source)
         self.assertIn("self.file_list.get(0, tk.END)", source)
+        self.assertIn('text="QUEUE REPAIR"', source)
+        self.assertIn('label="Remove broken entries"', source)
+        self.assertIn('label="Keep ready items only"', source)
+        self.assertIn("def undo_queue_cleanup", source)
+        self.assertIn('window.bind("<Control-z>", undo_queue_cleanup)', source)
+        self.assertIn("MAX_SAFE_QUEUE_UNDO", source)
         self.assertNotIn("tk.Canvas", source)
         self.assertNotIn("Scrollbar", source)
         self.assertNotIn(".read_bytes", source)
@@ -395,6 +447,10 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("unlink(", source)
         self.assertNotIn("os.remove(", source)
         self.assertNotIn("shutil.", source)
+
+    def test_queue_repair_history_is_cleared_when_access_is_unloaded(self):
+        source = inspect.getsource(locker.USBFileLocker.unload_session)
+        self.assertIn("self.safe_lock_queue_history.clear()", source)
 
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(

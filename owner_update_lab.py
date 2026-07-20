@@ -51,12 +51,12 @@ DEFAULT_NOTES = [
     "Safe Lock Preview opens from MORE TOOLS, Tool Finder, or Ctrl+Shift+P without changing queued files.",
     "Preview checks up to 1,000 entries for missing, duplicate, already-locked, linked, unsupported, invalid, inaccessible, and truncated work.",
     "Preview never reads file contents or locks, deletes, renames, copies, or uploads anything.",
-    "Its copied aggregate summary excludes filenames, paths, PINs, key IDs, secrets, and file contents.",
-    "The local readiness check reports aggregate access, policy, queue, PIN mode, license, auto-update, and current-job states.",
+    "QUEUE REPAIR removes selected problem categories or keeps ready items while changing only the visible queue, never files.",
+    "Up to ten repair undo records stay in session memory and are cleared by USB unload, panic lock, or app exit.",
+    "Undo refuses to overwrite newer queue edits and clears stale repair history instead.",
     "Tool Finder opens 28 fixed customer commands from MORE TOOLS or Ctrl+K and cannot execute free-form commands.",
     "ALL, FAVORITES, and RECENT modes keep frequently used customer tools easy to reach.",
-    "Up to eight favorites persist as fixed allowlisted command IDs; unknown, duplicate, malformed, and excess values are discarded.",
-    "Up to eight recent tools and all finder queries remain session memory and are never logged, persisted, exported, or sent to the API.",
+    "Favorites persist only as allowlisted command IDs; recent tools and search text remain session memory.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

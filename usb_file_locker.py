@@ -40,7 +40,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.19"
+DESKTOP_APP_VERSION = "2026.07.18.20"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -49,6 +49,7 @@ TOOL_FINDER_VISIBLE_LIMIT = 10
 MAX_TOOL_FINDER_FAVORITES = 8
 MAX_TOOL_FINDER_RECENT = 8
 MAX_SAFE_LOCK_PREVIEW_ITEMS = 1000
+MAX_SAFE_QUEUE_UNDO = 10
 TOOL_FINDER_ACTIONS = (
     ("Access", "Load USB Key", "load_key"),
     ("Access", "Panic Lock Now", "panic_lock_now"),
@@ -2114,19 +2115,7 @@ def tool_finder_actions_for_mode(
     return filtered[:limit]
 
 
-def build_safe_lock_preview(
-    entries,
-    *,
-    key_ready,
-    owner_policy_enabled,
-    owner_verified,
-    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
-):
-    if any(
-        type(value) is not bool
-        for value in (key_ready, owner_policy_enabled, owner_verified)
-    ):
-        raise ValueError("Safe Lock Preview access flags must be true or false.")
+def _classify_safe_lock_queue(entries, max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS):
     if (
         type(max_items) is not int
         or not 1 <= max_items <= MAX_SAFE_LOCK_PREVIEW_ITEMS
@@ -2140,17 +2129,7 @@ def build_safe_lock_preview(
     supplied = list(islice(iterator, max_items + 1))
     truncated = len(supplied) > max_items
     queued = supplied[:max_items]
-    counters = {
-        "files": 0,
-        "folders": 0,
-        "missing": 0,
-        "duplicates": 0,
-        "already_locked": 0,
-        "links_or_junctions": 0,
-        "unsupported": 0,
-        "invalid": 0,
-        "inaccessible": 0,
-    }
+    categories = []
     seen = set()
     for raw_entry in queued:
         try:
@@ -2160,29 +2139,61 @@ def build_safe_lock_preview(
             path = Path(raw_path)
             canonical = os.path.normcase(os.path.abspath(raw_path))
         except (TypeError, ValueError, OSError):
-            counters["invalid"] += 1
+            categories.append("invalid")
             continue
         if canonical in seen:
-            counters["duplicates"] += 1
+            categories.append("duplicates")
             continue
         seen.add(canonical)
         try:
             if path_is_link_or_junction(path):
-                counters["links_or_junctions"] += 1
+                category = "links_or_junctions"
             elif not path.exists():
-                counters["missing"] += 1
+                category = "missing"
             elif path.name.lower().endswith((".locked", ".lookeed")):
-                counters["already_locked"] += 1
+                category = "already_locked"
             elif path.is_file():
-                counters["files"] += 1
+                category = "files"
             elif path.is_dir():
-                counters["folders"] += 1
+                category = "folders"
             else:
-                counters["unsupported"] += 1
+                category = "unsupported"
         except OSError:
-            counters["inaccessible"] += 1
+            category = "inaccessible"
+        categories.append(category)
+    return tuple(categories), truncated
 
-    checked_items = len(queued)
+
+def build_safe_lock_preview(
+    entries,
+    *,
+    key_ready,
+    owner_policy_enabled,
+    owner_verified,
+    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
+):
+    if any(
+        type(value) is not bool
+        for value in (key_ready, owner_policy_enabled, owner_verified)
+    ):
+        raise ValueError("Safe Lock Preview access flags must be true or false.")
+    categories, truncated = _classify_safe_lock_queue(entries, max_items)
+    counters = {
+        name: categories.count(name)
+        for name in (
+            "files",
+            "folders",
+            "missing",
+            "duplicates",
+            "already_locked",
+            "links_or_junctions",
+            "unsupported",
+            "invalid",
+            "inaccessible",
+        )
+    }
+
+    checked_items = len(categories)
     ready_items = counters["files"] + counters["folders"]
     review_items = sum(
         counters[name]
@@ -2224,6 +2235,45 @@ def build_safe_lock_preview(
             and review_items == 0
             and not truncated
         ),
+    }
+
+
+def safe_lock_queue_cleanup_plan(
+    entries,
+    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
+):
+    categories, truncated = _classify_safe_lock_queue(entries, max_items)
+    indexes = {
+        name: tuple(
+            index
+            for index, category in enumerate(categories)
+            if category == name
+        )
+        for name in (
+            "files",
+            "folders",
+            "missing",
+            "duplicates",
+            "already_locked",
+            "links_or_junctions",
+            "unsupported",
+            "invalid",
+            "inaccessible",
+        )
+    }
+    ready_indexes = tuple(sorted((*indexes["files"], *indexes["folders"])))
+    review_indexes = tuple(
+        index
+        for index, category in enumerate(categories)
+        if category not in {"files", "folders"}
+    )
+    return {
+        "schema_version": 1,
+        "checked_items": len(categories),
+        "truncated": truncated,
+        "ready_indexes": ready_indexes,
+        "review_indexes": review_indexes,
+        "category_indexes": indexes,
     }
 
 
@@ -5375,6 +5425,7 @@ class USBFileLocker(tk.Tk):
         self.tool_finder_window = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
+        self.safe_lock_queue_history = []
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -6421,6 +6472,81 @@ class USBFileLocker(tk.Tk):
             self.lift()
             self.focus_set()
 
+        def update_cleanup_menu_state():
+            cleanup_menu.entryconfigure(
+                undo_menu_index,
+                state="normal" if self.safe_lock_queue_history else "disabled",
+            )
+
+        def apply_queue_cleanup(categories=(), keep_ready=False):
+            if self.busy:
+                self.status.set(
+                    "Wait for the current lock or unlock job before changing the queue."
+                )
+                return
+            before = tuple(self.file_list.get(0, tk.END))
+            plan = safe_lock_queue_cleanup_plan(before)
+            if plan["truncated"]:
+                self.status.set(
+                    "Queue repair is disabled when the 1,000-item preview limit is reached."
+                )
+                return
+            if keep_ready:
+                remove_indexes = set(plan["review_indexes"])
+            else:
+                remove_indexes = {
+                    index
+                    for category in categories
+                    for index in plan["category_indexes"].get(category, ())
+                }
+            if not remove_indexes:
+                self.status.set("That queue repair found nothing to remove.")
+                return
+            after = tuple(
+                item
+                for index, item in enumerate(before)
+                if index not in remove_indexes
+            )
+            self.safe_lock_queue_history.append(
+                {"before": before, "after": after}
+            )
+            del self.safe_lock_queue_history[:-MAX_SAFE_QUEUE_UNDO]
+            self.file_list.delete(0, tk.END)
+            for item in after:
+                self.file_list.insert(tk.END, item)
+            self.update_overview_status()
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set(
+                f"Removed {len(remove_indexes)} queue entr"
+                f"{'y' if len(remove_indexes) == 1 else 'ies'} only; no files changed."
+            )
+            log_event("safe_lock_queue_repair", "aggregate", "ok")
+
+        def undo_queue_cleanup(_event=None):
+            if not self.safe_lock_queue_history:
+                self.status.set("No Safe Queue Repair change to undo.")
+                return "break"
+            record = self.safe_lock_queue_history[-1]
+            current = tuple(self.file_list.get(0, tk.END))
+            if current != record["after"]:
+                self.safe_lock_queue_history.clear()
+                update_cleanup_menu_state()
+                self.status.set(
+                    "Queue changed after repair, so the old undo history was cleared."
+                )
+                return "break"
+            self.safe_lock_queue_history.pop()
+            self.file_list.delete(0, tk.END)
+            for item in record["before"]:
+                self.file_list.insert(tk.END, item)
+            self.update_overview_status()
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set("Restored the last queue-only repair; no files changed.")
+            log_event("safe_lock_queue_repair_undo", "aggregate", "ok")
+            return "break"
+
         def cleanup(event):
             if event.widget is not window:
                 return
@@ -6446,7 +6572,61 @@ class USBFileLocker(tk.Tk):
                 activeforeground=foreground,
                 relief="flat",
                 font=("Segoe UI", 9, "bold"),
-            ).pack(side="left", padx=(0, 10), ipadx=14, ipady=8)
+            ).pack(side="left", padx=(0, 8), ipadx=10, ipady=8)
+        cleanup_button = tk.Menubutton(
+            actions,
+            text="QUEUE REPAIR",
+            bg=YELLOW,
+            fg=BLACK,
+            activebackground=YELLOW,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+        )
+        cleanup_button.pack(side="left", padx=(0, 8), ipadx=10, ipady=8)
+        cleanup_menu = tk.Menu(
+            cleanup_button,
+            tearoff=False,
+            bg=PANEL,
+            fg=TEXT,
+            activebackground=BLUE,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        cleanup_menu.add_command(
+            label="Remove broken entries",
+            command=lambda: apply_queue_cleanup(
+                ("missing", "invalid", "inaccessible")
+            ),
+        )
+        cleanup_menu.add_command(
+            label="Remove duplicates",
+            command=lambda: apply_queue_cleanup(("duplicates",)),
+        )
+        cleanup_menu.add_command(
+            label="Remove already locked",
+            command=lambda: apply_queue_cleanup(("already_locked",)),
+        )
+        cleanup_menu.add_command(
+            label="Remove links and unsupported",
+            command=lambda: apply_queue_cleanup(
+                ("links_or_junctions", "unsupported")
+            ),
+        )
+        cleanup_menu.add_command(
+            label="Keep ready items only",
+            command=lambda: apply_queue_cleanup(keep_ready=True),
+        )
+        cleanup_menu.add_separator()
+        cleanup_menu.add_command(
+            label="Undo last repair    Ctrl+Z",
+            command=undo_queue_cleanup,
+        )
+        undo_menu_index = cleanup_menu.index("end")
+        cleanup_button.configure(menu=cleanup_menu)
+        update_cleanup_menu_state()
         tk.Button(
             actions,
             text="CLOSE",
@@ -6459,6 +6639,7 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="right", ipadx=15, ipady=8)
         window.bind("<F5>", refresh_preview)
+        window.bind("<Control-z>", undo_queue_cleanup)
         window.bind("<Escape>", lambda _event: window.destroy())
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
@@ -7340,6 +7521,7 @@ class USBFileLocker(tk.Tk):
     def unload_session(self, reason, action_name, result):
         previous_key = self.key["key_id"] if self.key else ""
         self.key = None
+        self.safe_lock_queue_history.clear()
         try:
             self.pin_entry.delete(0, "end")
         except Exception:
