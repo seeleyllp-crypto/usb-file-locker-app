@@ -46,7 +46,8 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Local Receipt Review now keeps its only CLOSE action in the top header where it is immediately reachable.",
+    "Local Receipt Review moves its former bottom actions, result count, and only CLOSE action into a fixed top toolbar.",
+    "The review window has no page scrollbar or page-scroll behavior; fixed Results and Review Details tabs keep content reachable.",
     "The main app no longer shows a sideways scrollbar; crowded controls stay arranged in normal separate rows.",
     "REVIEW & NEXT marks the selected pending receipt Reviewed and moves to the next pending row; Ctrl+Enter does the same.",
     "Ctrl+Z restores the latest temporary review-mark change.",
@@ -56,7 +57,6 @@ DEFAULT_NOTES = [
     "Review marks, selections, queue positions, active-view state, and filename query text remain temporary local memory.",
     "These temporary values are never logged, exported, persisted, or sent to the API.",
     "COPY SAFE SUMMARY continues to export aggregate counts without filenames, paths, hashes, or receipt contents.",
-    "API 0.62.0 advertises the faster review workflow without receiving local review data.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

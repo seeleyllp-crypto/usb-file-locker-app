@@ -1254,18 +1254,29 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('table.heading("session", text="Session")', source)
         self.assertIn("self.folder_review_window = None", source)
         self.assertIn("window.minsize(760, 520)", source)
-        self.assertIn("review_header = tk.Frame(content, bg=locker.BG)", source)
+        self.assertIn("review_toolbar = tk.Frame(window, bg=locker.BG)", source)
+        self.assertIn("review_header = tk.Frame(review_toolbar, bg=locker.BG)", source)
+        self.assertIn(
+            "review_action_commands = tk.Frame(review_toolbar, bg=locker.BG)",
+            source,
+        )
+        self.assertIn(
+            "review_action_status = tk.Frame(review_toolbar, bg=locker.BG)",
+            source,
+        )
         self.assertIn(
             'command=lambda: self.close_receipt_folder_review(window)',
             source,
         )
-        self.assertNotIn(
-            'tk.Button(\n            action_status,\n            text="CLOSE"',
+        self.assertIn("review_tabs = ttk.Notebook(window)", source)
+        self.assertIn('review_tabs.add(results_tab, text="RESULTS")', source)
+        self.assertIn(
+            'review_tabs.add(details_tab, text="REVIEW DETAILS")',
             source,
         )
-        self.assertIn("receipt_canvas = tk.Canvas(", source)
-        self.assertIn("receipt_scrollbar = ttk.Scrollbar(", source)
-        self.assertIn('window.bind("<MouseWheel>", scroll_receipt_window, add="+")', source)
+        self.assertNotIn("receipt_canvas", source)
+        self.assertNotIn("receipt_scrollbar", source)
+        self.assertNotIn("scroll_receipt_window", source)
         self.assertIn("MAX_RECEIPT_REVIEW_HISTORY = 100", source)
         self.assertIn("RECEIPT_REVIEW_SEARCH_DEBOUNCE_MS = 180", source)
         self.assertIn('search_entry.bind("<KeyRelease>", schedule_search_refresh)', source)

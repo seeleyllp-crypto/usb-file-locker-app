@@ -2484,59 +2484,10 @@ class DownloadVerificationCenter(tk.Tk):
             lambda: self.close_receipt_folder_review(window),
         )
         window._vaultlink_search_after_id = None
-        receipt_canvas = tk.Canvas(
-            window,
-            bg=locker.BG,
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        receipt_scrollbar = ttk.Scrollbar(
-            window,
-            orient="vertical",
-            command=receipt_canvas.yview,
-        )
-        receipt_canvas.configure(yscrollcommand=receipt_scrollbar.set)
-        receipt_scrollbar.pack(side="right", fill="y")
-        receipt_canvas.pack(side="left", fill="both", expand=True)
-        content = tk.Frame(receipt_canvas, bg=locker.BG)
-        content_window = receipt_canvas.create_window(
-            (0, 0),
-            window=content,
-            anchor="nw",
-        )
-
-        def resize_receipt_content(event):
-            receipt_canvas.itemconfigure(content_window, width=event.width)
-
-        def update_receipt_scroll_region(_event=None):
-            receipt_canvas.configure(scrollregion=receipt_canvas.bbox("all"))
-
-        def scroll_receipt_window(event):
-            target = window.winfo_containing(event.x_root, event.y_root)
-            if target is table:
-                return None
-            receipt_canvas.yview_scroll(
-                -1 if event.delta > 0 else 1,
-                "units",
-            )
-            return "break"
-
-        receipt_canvas.bind("<Configure>", resize_receipt_content)
-        content.bind("<Configure>", update_receipt_scroll_region)
-        window.bind("<MouseWheel>", scroll_receipt_window, add="+")
-        review_details = [
-            dict(detail, review_id=index)
-            for index, detail in enumerate(
-                filter_receipt_folder_local_details(
-                    self.folder_audit_local_details
-                )
-            )
-        ]
-        reviewed_ids = set()
-        review_history = []
-
-        review_header = tk.Frame(content, bg=locker.BG)
-        review_header.pack(fill="x", padx=20, pady=(18, 2))
+        review_toolbar = tk.Frame(window, bg=locker.BG)
+        review_toolbar.pack(side="top", fill="x")
+        review_header = tk.Frame(review_toolbar, bg=locker.BG)
+        review_header.pack(fill="x", padx=20, pady=(18, 8))
         tk.Label(
             review_header,
             text="Local Receipt Review",
@@ -2553,6 +2504,28 @@ class DownloadVerificationCenter(tk.Tk):
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="right", ipadx=12, ipady=7)
+        review_action_commands = tk.Frame(review_toolbar, bg=locker.BG)
+        review_action_commands.pack(fill="x", padx=20, pady=(0, 8))
+        review_action_status = tk.Frame(review_toolbar, bg=locker.BG)
+        review_action_status.pack(fill="x", padx=20, pady=(0, 10))
+        review_tabs = ttk.Notebook(window)
+        review_tabs.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        results_tab = tk.Frame(review_tabs, bg=locker.BG)
+        details_tab = tk.Frame(review_tabs, bg=locker.BG)
+        review_tabs.add(results_tab, text="RESULTS")
+        review_tabs.add(details_tab, text="REVIEW DETAILS")
+        content = results_tab
+        review_details = [
+            dict(detail, review_id=index)
+            for index, detail in enumerate(
+                filter_receipt_folder_local_details(
+                    self.folder_audit_local_details
+                )
+            )
+        ]
+        reviewed_ids = set()
+        review_history = []
+
         tk.Label(
             content,
             text="Receipt names, searches, and review marks stay in this app's memory only and are never added to exports, audit logs, or API requests.",
@@ -2561,7 +2534,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9),
             wraplength=820,
             justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 12))
+        ).pack(anchor="w", padx=20, pady=(12, 12))
 
         filter_labels = {
             "All results": "all",
@@ -2742,14 +2715,7 @@ class DownloadVerificationCenter(tk.Tk):
         table.column("priority", width=125, minwidth=105, anchor="w", stretch=False)
         table.column("result", width=330, minwidth=220, anchor="w")
         table.column("session", width=100, minwidth=90, anchor="w", stretch=False)
-        scrollbar = ttk.Scrollbar(
-            table_frame,
-            orient="vertical",
-            command=table.yview,
-        )
-        table.configure(yscrollcommand=scrollbar.set)
-        table.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        table.pack(fill="both", expand=True)
         table.tag_configure("critical", foreground=locker.RED)
         table.tag_configure("review", foreground=locker.YELLOW)
         table.tag_configure("info", foreground=locker.BLUE)
@@ -3238,8 +3204,8 @@ class DownloadVerificationCenter(tk.Tk):
         window.bind("<Shift-F3>", shortcut(previous_pending_item))
         refresh_review()
 
-        triage_panel = tk.Frame(content, bg=locker.PANEL)
-        triage_panel.pack(fill="x", padx=20, pady=(0, 12))
+        triage_panel = tk.Frame(details_tab, bg=locker.PANEL)
+        triage_panel.pack(fill="both", expand=True, padx=12, pady=12)
         tk.Label(
             triage_panel,
             textvariable=triage_title_var,
@@ -3372,7 +3338,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
         tk.Button(
-            mark_controls,
+            copy_controls,
             text="RESET REVIEW MARKS",
             command=reset_review_marks,
             bg="#252936",
@@ -3381,14 +3347,8 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=10, ipady=5)
 
-        actions = tk.Frame(content, bg=locker.BG)
-        actions.pack(fill="x", padx=20, pady=(0, 18))
-        action_commands = tk.Frame(actions, bg=locker.BG)
-        action_commands.pack(fill="x")
-        action_status = tk.Frame(actions, bg=locker.BG)
-        action_status.pack(fill="x", pady=(10, 0))
         tk.Button(
-            action_commands,
+            review_action_commands,
             text="CLEAR LOCAL LIST",
             command=lambda: self.clear_receipt_folder_review(window),
             bg=locker.YELLOW,
@@ -3397,7 +3357,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", ipadx=12, ipady=7)
         tk.Button(
-            action_commands,
+            review_action_commands,
             text="CLEAR FILTERS",
             command=clear_filters,
             bg="#252936",
@@ -3406,7 +3366,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            action_commands,
+            review_action_commands,
             text="NEXT REVIEW ITEM",
             command=next_review_item,
             bg=locker.BLUE,
@@ -3415,7 +3375,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            action_commands,
+            review_action_commands,
             text="PREVIOUS PENDING",
             command=previous_pending_item,
             bg="#252936",
@@ -3424,7 +3384,7 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Button(
-            action_commands,
+            review_action_commands,
             text="NEXT PENDING ITEM",
             command=next_pending_item,
             bg="#252936",
@@ -3433,12 +3393,12 @@ class DownloadVerificationCenter(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=7)
         tk.Label(
-            action_status,
+            review_action_status,
             textvariable=visible_count_var,
             bg=locker.BG,
             fg=locker.MUTED,
             font=("Segoe UI", 9, "bold"),
-        ).pack(side="left", padx=14)
+        ).pack(side="left")
         locker.log_event("download_verify_view_receipt_folder_review", "local", "ok")
 
     def close_receipt_folder_review(self, window=None):
