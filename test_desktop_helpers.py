@@ -100,7 +100,10 @@ class DesktopHelperTests(unittest.TestCase):
     def test_main_window_uses_fixed_tabs_without_page_scrolling(self):
         source = Path(locker.__file__).read_text(encoding="utf-8")
         self.assertIn("self.minsize(860, 520)", source)
-        self.assertIn("main_tabs = ttk.Notebook(outer)", source)
+        self.assertIn(
+            'main_tabs = ttk.Notebook(outer, style="VaultLink.TNotebook")',
+            source,
+        )
         self.assertIn('main_tabs.add(key_panel, text="KEY")', source)
         self.assertIn('main_tabs.add(panel, text="LOCKER")', source)
         self.assertIn('main_tabs.add(queue_panel, text="QUEUE")', source)
@@ -109,6 +112,9 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('main_tabs.add(data_panel, text="DATA")', source)
         self.assertIn('main_tabs.add(account_panel, text="ACCOUNT")', source)
         self.assertIn("self.main_tabs = main_tabs", source)
+        self.assertIn('style="VaultLink.TNotebook"', source)
+        self.assertIn("status_panel = tk.Frame(", source)
+        self.assertIn("configure_vaultlink_ttk_styles(self)", source)
         self.assertNotIn("main_canvas", source)
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
@@ -1274,7 +1280,10 @@ class DesktopHelperTests(unittest.TestCase):
             'command=lambda: self.close_receipt_folder_review(window)',
             source,
         )
-        self.assertIn("review_tabs = ttk.Notebook(window)", source)
+        self.assertIn(
+            'review_tabs = ttk.Notebook(window, style="VaultLink.TNotebook")',
+            source,
+        )
         self.assertIn('review_tabs.add(results_tab, text="RESULTS")', source)
         self.assertIn(
             'review_tabs.add(details_tab, text="REVIEW DETAILS")',

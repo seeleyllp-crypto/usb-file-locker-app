@@ -18,6 +18,8 @@ The app checks the API at startup when its daily update check is due. License st
 
 Release `2026.07.18.14` removes page scrolling from both the main app and Local Receipt Review. The main app uses fixed task tabs, with lock and unlock actions above the file list. Receipt Review moves its former bottom actions into a fixed top toolbar and uses fixed `RESULTS` and `REVIEW DETAILS` tabs. Neither window uses a page canvas, page scrollbar, or page wheel binding.
 
+The normal dark interface now uses a compact bordered status dashboard, a restrained green accent, clearer selected tabs, consistent dark fields and result tables, and an explicit version or private-lab badge.
+
 Release `2026.07.18.13` speeds up Local Receipt Review with `REVIEW & NEXT`: it marks the selected pending row Reviewed and immediately moves to the next pending row in priority order. Ctrl+Enter runs the same action, while Ctrl+Z restores the latest temporary mark change.
 
 The main app and receipt-review window now use fixed task tabs instead of page scrolling. The main app supports an `860x520` minimum; receipt review supports `760x520`.

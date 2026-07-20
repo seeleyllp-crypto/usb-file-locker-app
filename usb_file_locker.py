@@ -415,6 +415,8 @@ MAX_SCAN_FILE_SIZE = 25 * 1024 * 1024
 BG = "#0f1115"
 PANEL = "#171a21"
 FIELD = "#0a0c10"
+SURFACE = "#242936"
+BORDER = "#303642"
 TEXT = "#f4f4f5"
 MUTED = "#a7adbb"
 GREEN = "#24e66f"
@@ -448,6 +450,92 @@ WALK_SKIP_DIRS = {
     "program files",
     "program files (x86)",
 }
+
+def configure_vaultlink_ttk_styles(root):
+    style = ttk.Style(root)
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    style.configure(
+        "VaultLink.TNotebook",
+        background=BG,
+        borderwidth=0,
+        bordercolor=BG,
+        lightcolor=BG,
+        darkcolor=BG,
+        relief="flat",
+        tabmargins=(0, 0, 0, 0),
+    )
+    style.configure(
+        "VaultLink.TNotebook.Tab",
+        background=SURFACE,
+        foreground=MUTED,
+        borderwidth=0,
+        bordercolor=SURFACE,
+        lightcolor=SURFACE,
+        darkcolor=SURFACE,
+        relief="flat",
+        padding=(13, 8),
+        font=("Segoe UI", 9, "bold"),
+    )
+    style.map(
+        "VaultLink.TNotebook.Tab",
+        background=[("selected", PANEL), ("active", BORDER)],
+        foreground=[("selected", GREEN), ("active", TEXT)],
+        bordercolor=[("selected", PANEL), ("active", BORDER)],
+        lightcolor=[("selected", PANEL), ("active", BORDER)],
+        darkcolor=[("selected", PANEL), ("active", BORDER)],
+    )
+    style.configure(
+        "TCombobox",
+        fieldbackground=FIELD,
+        background=SURFACE,
+        foreground=TEXT,
+        arrowcolor=TEXT,
+        bordercolor=BORDER,
+        lightcolor=BORDER,
+        darkcolor=BORDER,
+        padding=4,
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", FIELD)],
+        foreground=[("readonly", TEXT)],
+        selectbackground=[("readonly", FIELD)],
+        selectforeground=[("readonly", TEXT)],
+    )
+    style.configure(
+        "Treeview",
+        background=FIELD,
+        fieldbackground=FIELD,
+        foreground=TEXT,
+        borderwidth=0,
+        rowheight=26,
+        font=("Segoe UI", 9),
+    )
+    style.map(
+        "Treeview",
+        background=[("selected", BLUE)],
+        foreground=[("selected", BLACK)],
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=SURFACE,
+        foreground=TEXT,
+        borderwidth=0,
+        padding=(8, 7),
+        font=("Segoe UI", 8, "bold"),
+    )
+    style.map("Treeview.Heading", background=[("active", BORDER)])
+    style.configure(
+        "VaultLink.Horizontal.TProgressbar",
+        background=GREEN,
+        troughcolor=FIELD,
+        borderwidth=0,
+        lightcolor=GREEN,
+        darkcolor=GREEN,
+    )
+    return style
+
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
@@ -4842,6 +4930,7 @@ class USBFileLocker(tk.Tk):
         self.geometry(f"{window_width}x{window_height}")
         self.minsize(860, 520)
         self.configure(bg=BG)
+        configure_vaultlink_ttk_styles(self)
         self.settings = load_settings()
         self.owner_policy = load_owner_policy(self.settings)
         self.key = None
@@ -4905,53 +4994,102 @@ class USBFileLocker(tk.Tk):
         outer = tk.Frame(self, bg=BG)
         outer.pack(fill="both", expand=True, padx=26, pady=18)
 
-        tk.Label(outer, text="USB File Locker", bg=BG, fg=TEXT, font=("Segoe UI", 25, "bold")).pack(anchor="w")
-        if LAB_MODE:
-            tk.Label(
-                outer,
-                text=f"OWNER LAB {DESKTOP_APP_VERSION} | PRIVATE VERIFIED CANDIDATE | STABLE APP NOT REPLACED",
-                bg=BG,
-                fg=YELLOW,
-                font=("Segoe UI", 9, "bold"),
-            ).pack(anchor="w", pady=(2, 4))
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        title_block = tk.Frame(header, bg=BG)
+        title_block.pack(side="left")
         tk.Label(
-            outer,
-            textvariable=self.key_status,
+            title_block,
+            text="VaultLink",
             bg=BG,
-            fg=YELLOW,
-            font=("Segoe UI", 10, "bold"),
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w", pady=(2, 2))
+            fg=TEXT,
+            font=("Segoe UI", 25, "bold"),
+        ).pack(anchor="w")
         tk.Label(
-            outer,
-            textvariable=self.access_status,
+            title_block,
+            text="USB FILE LOCKER",
             bg=BG,
             fg=MUTED,
-            font=("Segoe UI", 9, "bold"),
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 14))
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w")
+        if LAB_MODE:
+            tk.Label(
+                header,
+                text=f"OWNER LAB  {DESKTOP_APP_VERSION}",
+                bg=YELLOW,
+                fg=BLACK,
+                font=("Segoe UI", 9, "bold"),
+                padx=12,
+                pady=7,
+            ).pack(side="right", anchor="n", pady=(4, 0))
+        else:
+            tk.Label(
+                header,
+                text=f"VERSION {DESKTOP_APP_VERSION}",
+                bg=SURFACE,
+                fg=TEXT,
+                font=("Segoe UI", 8, "bold"),
+                padx=12,
+                pady=7,
+            ).pack(side="right", anchor="n", pady=(4, 0))
+        tk.Frame(outer, bg=GREEN, height=2).pack(fill="x", pady=(10, 10))
+
+        status_panel = tk.Frame(
+            outer,
+            bg=PANEL,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        status_panel.pack(fill="x", pady=(0, 12))
+        status_panel.columnconfigure(0, weight=1, uniform="status")
+        status_panel.columnconfigure(1, weight=1, uniform="status")
         tk.Label(
-            outer,
-            text="PRIVACY LOGGING ON - activity history never stores client file names",
-            bg=BG,
-            fg=GREEN,
-            font=("Segoe UI", 9, "bold"),
-        ).pack(anchor="w", pady=(0, 10))
-        tk.Label(outer, textvariable=self.breach_status, bg=BG, fg=YELLOW, font=("Segoe UI", 9, "bold"), wraplength=760, justify="left").pack(anchor="w", pady=(0, 10))
+            status_panel,
+            text="KEY STATUS",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(14, 8), pady=(10, 2))
+        tk.Label(
+            status_panel,
+            text="LICENSE",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=0, column=1, sticky="w", padx=(8, 14), pady=(10, 2))
+        tk.Label(
+            status_panel,
+            textvariable=self.key_status,
+            bg=PANEL,
+            fg=YELLOW,
+            font=("Segoe UI", 10, "bold"),
+            wraplength=370,
+            justify="left",
+        ).grid(
+            row=1,
+            column=0,
+            sticky="nw",
+            padx=(14, 8),
+            pady=(0, 10),
+        )
         self.license_status_label = tk.Label(
-            outer,
+            status_panel,
             textvariable=self.license_status,
-            bg=BG,
+            bg=PANEL,
             fg=GREEN,
             font=("Segoe UI", 9, "bold"),
-            wraplength=760,
+            wraplength=370,
             justify="left",
         )
-        self.license_status_label.pack(anchor="w", pady=(0, 12))
+        self.license_status_label.grid(
+            row=1,
+            column=1,
+            sticky="nw",
+            padx=(8, 14),
+            pady=(0, 10),
+        )
 
-        main_tabs = ttk.Notebook(outer)
+        main_tabs = ttk.Notebook(outer, style="VaultLink.TNotebook")
         main_tabs.pack(fill="both", expand=True)
         key_panel = tk.Frame(main_tabs, bg=PANEL)
         panel = tk.Frame(main_tabs, bg=PANEL)
@@ -4983,6 +5121,40 @@ class USBFileLocker(tk.Tk):
         self.register_button.pack(side="left", ipadx=10, ipady=8)
         self.license_button = tk.Button(top_secondary, text="LICENSE CENTER", command=self.open_license_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.license_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
+        key_health_panel = tk.Frame(
+            key_panel,
+            bg=FIELD,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        key_health_panel.pack(fill="x", padx=18, pady=(2, 12))
+        tk.Label(
+            key_health_panel,
+            textvariable=self.access_status,
+            bg=FIELD,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(10, 5))
+        key_health_row = tk.Frame(key_health_panel, bg=FIELD)
+        key_health_row.pack(fill="x", padx=12, pady=(0, 10))
+        tk.Label(
+            key_health_row,
+            text="PRIVACY LOGGING ON",
+            bg=FIELD,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            key_health_row,
+            textvariable=self.breach_status,
+            bg=FIELD,
+            fg=YELLOW,
+            font=("Segoe UI", 8, "bold"),
+            wraplength=500,
+            justify="left",
+        ).pack(side="right")
 
         top_tools = tk.Frame(tools_panel, bg=PANEL)
         top_tools.pack(fill="x", padx=18, pady=(18, 10))
@@ -5234,7 +5406,12 @@ class USBFileLocker(tk.Tk):
 
         progress_row = tk.Frame(panel, bg=PANEL)
         progress_row.pack(fill="x", padx=18, pady=(2, 8))
-        ttk.Progressbar(progress_row, variable=self.progress_value, maximum=100).pack(side="left", fill="x", expand=True)
+        ttk.Progressbar(
+            progress_row,
+            variable=self.progress_value,
+            maximum=100,
+            style="VaultLink.Horizontal.TProgressbar",
+        ).pack(side="left", fill="x", expand=True)
         tk.Label(progress_row, textvariable=self.progress_text, bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(side="left", padx=(10, 0))
         self.cancel_button = tk.Button(
             progress_row,

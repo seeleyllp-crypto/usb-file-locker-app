@@ -1728,6 +1728,7 @@ class DownloadVerificationCenter(tk.Tk):
         self.geometry(f"{window_width}x{window_height}")
         self.minsize(1050, 520)
         self.configure(bg=locker.BG)
+        locker.configure_vaultlink_ttk_styles(self)
         self.selected_path = None
         self.result = None
         self.defender_result = None
@@ -2508,7 +2509,7 @@ class DownloadVerificationCenter(tk.Tk):
         review_action_commands.pack(fill="x", padx=20, pady=(0, 8))
         review_action_status = tk.Frame(review_toolbar, bg=locker.BG)
         review_action_status.pack(fill="x", padx=20, pady=(0, 10))
-        review_tabs = ttk.Notebook(window)
+        review_tabs = ttk.Notebook(window, style="VaultLink.TNotebook")
         review_tabs.pack(fill="both", expand=True, padx=20, pady=(0, 16))
         results_tab = tk.Frame(review_tabs, bg=locker.BG)
         details_tab = tk.Frame(review_tabs, bg=locker.BG)

@@ -48,7 +48,7 @@ PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git
 DEFAULT_NOTES = [
     "Local Receipt Review moves its former bottom actions, result count, and only CLOSE action into a fixed top toolbar.",
     "The review window has no page scrollbar or page-scroll behavior; fixed Results and Review Details tabs keep content reachable.",
-    "The main app has no page scrollbars or page-scroll behavior; fixed task tabs keep every control reachable.",
+    "The main app has no page scrolling and adds polished dark task tabs, a compact status dashboard, and clearer visual hierarchy.",
     "REVIEW & NEXT marks the selected pending receipt Reviewed and moves to the next pending row; Ctrl+Enter does the same.",
     "Ctrl+Z restores the latest temporary review-mark change.",
     "The selected-row line now shows its position in the filtered pending queue.",
