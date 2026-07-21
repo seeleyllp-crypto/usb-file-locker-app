@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.24"
+DESKTOP_APP_VERSION = "2026.07.18.25"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -59,6 +59,7 @@ TOOL_FINDER_ACTIONS = (
     ("Access", "Local Readiness Check", "show_local_readiness"),
     ("Locking", "Safe Lock Preview", "open_safe_lock_preview"),
     ("Locking", "Receipt History", "open_last_lock_receipt"),
+    ("Locking", "Receipt Comparison", "open_lock_receipt_comparison"),
     ("Security & privacy", "Verify Download", "open_download_verification_center"),
     ("Security & privacy", "Audit Log", "open_log"),
     ("Security & privacy", "Support Redactor", "open_support_redactor"),
@@ -2792,6 +2793,123 @@ def lock_receipt_session_summary(history):
             "USB key IDs, PINs, secrets, file contents, and error details."
         ),
         "Safety: lock outcomes are not a malware scan or a security guarantee.",
+    ]
+    return "\n".join(lines)
+
+
+def compare_lock_job_receipts(previous_receipt, current_receipt):
+    previous = normalize_lock_job_receipt(previous_receipt)
+    current = normalize_lock_job_receipt(current_receipt)
+    if previous["receipt_id"] == current["receipt_id"]:
+        raise ValueError("Receipt comparison requires two different receipt IDs.")
+    previous_finished = parse_utc_text(previous["finished_at_utc"])
+    current_finished = parse_utc_text(current["finished_at_utc"])
+    if current_finished < previous_finished:
+        raise ValueError("Receipt comparison order is invalid.")
+
+    def success_percent(receipt):
+        return round(
+            receipt["successful_items"] * 100 / receipt["requested_items"]
+        )
+
+    def duration_seconds(receipt):
+        started = parse_utc_text(receipt["started_at_utc"])
+        finished = parse_utc_text(receipt["finished_at_utc"])
+        return max(0, round((finished - started).total_seconds()))
+
+    previous_percent = success_percent(previous)
+    current_percent = success_percent(current)
+    rate_delta = current_percent - previous_percent
+    rate_trend = "IMPROVED" if rate_delta > 0 else ("DECLINED" if rate_delta < 0 else "SAME")
+    previous_duration = duration_seconds(previous)
+    current_duration = duration_seconds(current)
+    return {
+        "schema_version": 1,
+        "report_type": "vaultlink-lock-receipt-comparison",
+        "previous_receipt_id": previous["receipt_id"],
+        "current_receipt_id": current["receipt_id"],
+        "previous_status": previous["status"],
+        "current_status": current["status"],
+        "previous_mode": previous["mode"],
+        "current_mode": current["mode"],
+        "mode_changed": previous["mode"] != current["mode"],
+        "previous_guard_used": previous["preview_guard_used"],
+        "current_guard_used": current["preview_guard_used"],
+        "guard_changed": previous["preview_guard_used"] != current["preview_guard_used"],
+        "previous_canceled": previous["canceled"],
+        "current_canceled": current["canceled"],
+        "previous_success_percent": previous_percent,
+        "current_success_percent": current_percent,
+        "success_percent_delta": rate_delta,
+        "success_rate_trend": rate_trend,
+        "requested_items_delta": current["requested_items"] - previous["requested_items"],
+        "successful_items_delta": current["successful_items"] - previous["successful_items"],
+        "failed_items_delta": current["failed_items"] - previous["failed_items"],
+        "unprocessed_items_delta": current["unprocessed_items"] - previous["unprocessed_items"],
+        "verified_items_delta": current["verified_items"] - previous["verified_items"],
+        "originals_removed_delta": current["originals_removed"] - previous["originals_removed"],
+        "previous_duration_seconds": previous_duration,
+        "current_duration_seconds": current_duration,
+        "duration_seconds_delta": current_duration - previous_duration,
+        "previous_finished_at_utc": previous["finished_at_utc"],
+        "current_finished_at_utc": current["finished_at_utc"],
+    }
+
+
+def lock_receipt_comparison_summary(previous_receipt, current_receipt):
+    report = compare_lock_job_receipts(previous_receipt, current_receipt)
+
+    def signed(value, suffix=""):
+        prefix = "+" if value > 0 else ""
+        return f"{prefix}{value}{suffix}"
+
+    previous_mode = (
+        "LOCK COPY" if report["previous_mode"] == "lock_copy" else "LOCK + REMOVE"
+    )
+    current_mode = (
+        "LOCK COPY" if report["current_mode"] == "lock_copy" else "LOCK + REMOVE"
+    )
+    lines = [
+        "VaultLink Lock Receipt Comparison",
+        f"Previous receipt ID: {report['previous_receipt_id']}",
+        f"Current receipt ID: {report['current_receipt_id']}",
+        f"Status: {report['previous_status']} -> {report['current_status']}",
+        f"Mode: {previous_mode} -> {current_mode}",
+        (
+            f"Success rate: {report['previous_success_percent']}% -> "
+            f"{report['current_success_percent']}% "
+            f"({signed(report['success_percent_delta'], '%')}, "
+            f"{report['success_rate_trend']})"
+        ),
+        f"Requested items delta: {signed(report['requested_items_delta'])}",
+        f"Successful items delta: {signed(report['successful_items_delta'])}",
+        f"Failed items delta: {signed(report['failed_items_delta'])}",
+        f"Unprocessed items delta: {signed(report['unprocessed_items_delta'])}",
+        f"Verified items delta: {signed(report['verified_items_delta'])}",
+        f"Originals removed delta: {signed(report['originals_removed_delta'])}",
+        (
+            f"Duration: {report['previous_duration_seconds']}s -> "
+            f"{report['current_duration_seconds']}s "
+            f"({signed(report['duration_seconds_delta'], 's')})"
+        ),
+        (
+            "Preview Guard: "
+            f"{'YES' if report['previous_guard_used'] else 'NO'} -> "
+            f"{'YES' if report['current_guard_used'] else 'NO'}"
+        ),
+        (
+            "Canceled: "
+            f"{'YES' if report['previous_canceled'] else 'NO'} -> "
+            f"{'YES' if report['current_canceled'] else 'NO'}"
+        ),
+        f"Previous finish UTC: {report['previous_finished_at_utc']}",
+        f"Current finish UTC: {report['current_finished_at_utc']}",
+        "",
+        (
+            "Privacy: this comparison excludes filenames, paths, USB key IDs, "
+            "PINs, secrets, file contents, and error details."
+        ),
+        "Safety: comparison trends are not a malware scan or a security guarantee.",
     ]
     return "\n".join(lines)
 
@@ -5902,6 +6020,7 @@ class USBFileLocker(tk.Tk):
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
         self.last_lock_receipt_window = None
+        self.lock_receipt_comparison_window = None
         self.last_lock_receipt = None
         self.lock_receipt_history = []
         self.lock_receipt_history_index = -1
@@ -6249,6 +6368,10 @@ class USBFileLocker(tk.Tk):
         overview_more_menu.add_command(
             label="View receipt history",
             command=self.open_last_lock_receipt,
+        )
+        overview_more_menu.add_command(
+            label="Compare lock receipts",
+            command=self.open_lock_receipt_comparison,
         )
         overview_more_menu.add_command(
             label="Run local readiness check",
@@ -6986,6 +7109,7 @@ class USBFileLocker(tk.Tk):
                 parent=window,
             ):
                 return
+            self.close_lock_receipt_comparison_window()
             self.lock_receipt_history.clear()
             self.lock_receipt_history_index = -1
             self.last_lock_receipt = None
@@ -7017,6 +7141,18 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 8, "bold"),
         )
         next_button.pack(side="left", padx=(7, 0), ipadx=12, ipady=8)
+        compare_button = tk.Button(
+            actions,
+            text="COMPARE",
+            command=self.open_lock_receipt_comparison,
+            bg=SURFACE,
+            fg=BLUE,
+            activebackground=BORDER,
+            activeforeground=BLUE,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        compare_button.pack(side="left", padx=(7, 0), ipadx=9, ipady=8)
 
         copy_button = tk.Button(
             actions,
@@ -7086,6 +7222,7 @@ class USBFileLocker(tk.Tk):
                 for button in (
                     previous_button,
                     next_button,
+                    compare_button,
                     copy_button,
                     session_copy_button,
                 ):
@@ -7117,6 +7254,7 @@ class USBFileLocker(tk.Tk):
                 receipt_id_var.set("RECEIPT ID NONE")
                 previous_button.configure(state="disabled")
                 next_button.configure(state="disabled")
+                compare_button.configure(state="disabled")
                 copy_button.configure(state="disabled")
                 session_copy_button.configure(state="disabled")
                 clear_button.configure(state="disabled")
@@ -7176,6 +7314,9 @@ class USBFileLocker(tk.Tk):
                     else "disabled"
                 )
             )
+            compare_button.configure(
+                state="normal" if self.lock_receipt_history_index > 0 else "disabled"
+            )
             copy_button.configure(state="normal")
             session_copy_button.configure(state="normal")
             clear_button.configure(state="normal")
@@ -7198,7 +7339,261 @@ class USBFileLocker(tk.Tk):
         window.lift()
         return "break"
 
+    def close_lock_receipt_comparison_window(self):
+        window = self.lock_receipt_comparison_window
+        if window is None:
+            return
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except tk.TclError:
+            pass
+        self.lock_receipt_comparison_window = None
+
+    def open_lock_receipt_comparison(self, _event=None):
+        try:
+            lock_receipt_session_report(self.lock_receipt_history)
+        except ValueError:
+            self.status.set("Receipt comparison is blocked until invalid history is cleared.")
+            messagebox.showwarning(
+                "Receipt history needs attention",
+                "The in-memory receipt history did not pass validation. Clear it before comparing receipts.",
+                parent=self,
+            )
+            return "break"
+        if len(self.lock_receipt_history) < 2:
+            self.status.set("Receipt comparison needs at least two lock jobs.")
+            messagebox.showinfo(
+                "Two receipts needed",
+                "Complete at least two lock jobs in this USB session before comparing results.",
+                parent=self,
+            )
+            return "break"
+        index = min(
+            max(self.lock_receipt_history_index, 0),
+            len(self.lock_receipt_history) - 1,
+        )
+        if index == 0:
+            self.status.set("Select the second or a later receipt to compare.")
+            messagebox.showinfo(
+                "No previous receipt",
+                "The first session receipt has no earlier result to compare. Select NEXT, then try again.",
+                parent=self,
+            )
+            return "break"
+        previous = self.lock_receipt_history[index - 1]
+        current = self.lock_receipt_history[index]
+        try:
+            report = compare_lock_job_receipts(previous, current)
+        except ValueError:
+            self.status.set("The selected receipts could not be compared safely.")
+            messagebox.showwarning(
+                "Comparison unavailable",
+                "The selected aggregate receipts did not pass comparison validation.",
+                parent=self,
+            )
+            return "break"
+
+        self.close_lock_receipt_comparison_window()
+        window = tk.Toplevel(self)
+        self.lock_receipt_comparison_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Receipt Comparison")
+        window.geometry("720x440")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        def signed(value, suffix=""):
+            prefix = "+" if value > 0 else ""
+            return f"{prefix}{value}{suffix}"
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Receipt Comparison",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 20, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text=report["success_rate_trend"],
+            bg=BG,
+            fg=(
+                GREEN
+                if report["success_rate_trend"] == "IMPROVED"
+                else RED if report["success_rate_trend"] == "DECLINED" else MUTED
+            ),
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right")
+        tk.Label(
+            outer,
+            text="PREVIOUS -> CURRENT | AGGREGATE COUNTS ONLY",
+            bg=BG,
+            fg=BLUE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(1, 12))
+
+        metrics = tk.Frame(outer, bg=BG)
+        metrics.pack(fill="x")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1, uniform="comparison")
+
+        def add_metric(column, heading, value, color):
+            panel = tk.Frame(
+                metrics,
+                bg=FIELD,
+                highlightbackground=BORDER,
+                highlightthickness=1,
+            )
+            panel.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 5, 0 if column == 3 else 5),
+            )
+            tk.Label(
+                panel,
+                text=heading,
+                bg=FIELD,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=11, pady=(9, 3))
+            tk.Label(
+                panel,
+                text=value,
+                bg=FIELD,
+                fg=color,
+                font=("Segoe UI", 11, "bold"),
+            ).pack(anchor="w", padx=11, pady=(0, 10))
+
+        add_metric(
+            0,
+            "SUCCESS RATE",
+            f"{report['current_success_percent']}% ({signed(report['success_percent_delta'], '%')})",
+            GREEN if report["success_percent_delta"] >= 0 else YELLOW,
+        )
+        add_metric(1, "SUCCESSFUL", signed(report["successful_items_delta"]), TEXT)
+        add_metric(2, "FAILED", signed(report["failed_items_delta"]), YELLOW)
+        add_metric(3, "DURATION", signed(report["duration_seconds_delta"], "s"), BLUE)
+
+        details = tk.Frame(
+            outer,
+            bg=PANEL,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        details.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            details,
+            text="AGGREGATE CHANGES",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=13, pady=(10, 4))
+        previous_mode = (
+            "LOCK COPY" if report["previous_mode"] == "lock_copy" else "LOCK + REMOVE"
+        )
+        current_mode = (
+            "LOCK COPY" if report["current_mode"] == "lock_copy" else "LOCK + REMOVE"
+        )
+        detail_values = (
+            f"STATUS {report['previous_status']} -> {report['current_status']} | MODE {previous_mode} -> {current_mode}",
+            (
+                f"REQUESTED {signed(report['requested_items_delta'])} | "
+                f"UNPROCESSED {signed(report['unprocessed_items_delta'])} | "
+                f"VERIFIED {signed(report['verified_items_delta'])} | "
+                f"REMOVED {signed(report['originals_removed_delta'])}"
+            ),
+            (
+                f"PREVIEW GUARD {'YES' if report['previous_guard_used'] else 'NO'} -> "
+                f"{'YES' if report['current_guard_used'] else 'NO'} | "
+                f"CANCELED {'YES' if report['previous_canceled'] else 'NO'} -> "
+                f"{'YES' if report['current_canceled'] else 'NO'}"
+            ),
+            f"RECEIPTS {report['previous_receipt_id']} -> {report['current_receipt_id']}",
+            (
+                f"FINISHED {report['previous_finished_at_utc']} -> "
+                f"{report['current_finished_at_utc']}"
+            ),
+        )
+        for value in detail_values:
+            tk.Label(
+                details,
+                text=value,
+                bg=PANEL,
+                fg=TEXT,
+                anchor="w",
+                font=("Segoe UI", 8, "bold"),
+            ).pack(fill="x", padx=13, pady=(0, 4))
+        tk.Label(
+            details,
+            text="No filenames, paths, key IDs, PINs, secrets, file contents, or error details are included.",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", padx=13, pady=(2, 9))
+
+        actions = tk.Frame(outer, bg=BG)
+        actions.pack(fill="x", pady=(12, 0))
+
+        def copy_comparison():
+            try:
+                summary = lock_receipt_comparison_summary(previous, current)
+                self.clipboard_clear()
+                self.clipboard_append(summary)
+                self.update_idletasks()
+            except (ValueError, tk.TclError):
+                self.status.set("Could not copy the receipt comparison.")
+                return
+            self.status.set("Privacy-safe receipt comparison copied.")
+            log_event("lock_receipt_comparison_copy", "aggregate", "ok")
+
+        tk.Button(
+            actions,
+            text="COPY COMPARISON",
+            command=copy_comparison,
+            bg=BLUE,
+            fg=BLACK,
+            activebackground=BLUE,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", ipadx=12, ipady=8)
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="right", ipadx=12, ipady=8)
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if self.lock_receipt_comparison_window is window:
+                self.lock_receipt_comparison_window = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        window.lift()
+        return "break"
+
     def record_lock_job_receipt(self, receipt):
+        self.close_lock_receipt_comparison_window()
         self.lock_receipt_history = append_lock_job_receipt(
             self.lock_receipt_history,
             receipt,

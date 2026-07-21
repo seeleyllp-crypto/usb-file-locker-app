@@ -142,7 +142,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("self.main_horizontal_scrollbar", source)
 
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
-        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 29)
+        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 30)
         self.assertEqual(
             len({action[1] for action in locker.TOOL_FINDER_ACTIONS}),
             len(locker.TOOL_FINDER_ACTIONS),
@@ -705,6 +705,97 @@ class DesktopHelperTests(unittest.TestCase):
                 {**receipt, "receipt_type": "unknown"}
             )
 
+    def test_lock_receipt_comparison_reports_exact_aggregate_deltas(self):
+        previous = locker.build_lock_job_receipt(
+            mode="lock_copy",
+            requested_items=4,
+            successful_items=2,
+            failed_items=1,
+            canceled=False,
+            preview_guard_used=False,
+            verified_items=0,
+            originals_removed=0,
+            started_at_utc="2026-07-18T12:00:00Z",
+            finished_at_utc="2026-07-18T12:00:04Z",
+            receipt_id="000000000101",
+        )
+        current = locker.build_lock_job_receipt(
+            mode="lock_remove",
+            requested_items=5,
+            successful_items=5,
+            failed_items=0,
+            canceled=False,
+            preview_guard_used=True,
+            verified_items=5,
+            originals_removed=5,
+            started_at_utc="2026-07-18T12:01:00Z",
+            finished_at_utc="2026-07-18T12:01:06Z",
+            receipt_id="000000000102",
+        )
+        previous["private_path"] = r"C:\private\previous-name.txt"
+        current["private_error"] = "PIN 1234 failed for current-name.txt"
+        report = locker.compare_lock_job_receipts(previous, current)
+        self.assertEqual(report["success_rate_trend"], "IMPROVED")
+        self.assertEqual(report["previous_success_percent"], 50)
+        self.assertEqual(report["current_success_percent"], 100)
+        self.assertEqual(report["success_percent_delta"], 50)
+        self.assertEqual(report["requested_items_delta"], 1)
+        self.assertEqual(report["successful_items_delta"], 3)
+        self.assertEqual(report["failed_items_delta"], -1)
+        self.assertEqual(report["unprocessed_items_delta"], -1)
+        self.assertEqual(report["verified_items_delta"], 5)
+        self.assertEqual(report["originals_removed_delta"], 5)
+        self.assertEqual(report["duration_seconds_delta"], 2)
+        self.assertTrue(report["mode_changed"])
+        self.assertTrue(report["guard_changed"])
+        summary = locker.lock_receipt_comparison_summary(previous, current)
+        self.assertIn("Status: PARTIAL -> COMPLETED", summary)
+        self.assertIn("Success rate: 50% -> 100% (+50%, IMPROVED)", summary)
+        self.assertIn("Failed items delta: -1", summary)
+        self.assertIn("Duration: 4s -> 6s (+2s)", summary)
+        self.assertIn("not a malware scan", summary)
+        self.assertNotIn("previous-name", summary)
+        self.assertNotIn("current-name", summary)
+        self.assertNotIn("1234", summary)
+        self.assertNotIn("C:\\", summary)
+
+    def test_lock_receipt_comparison_rejects_duplicate_or_reversed_receipts(self):
+        first = locker.build_lock_job_receipt(
+            mode="lock_copy",
+            requested_items=1,
+            successful_items=1,
+            failed_items=0,
+            canceled=False,
+            preview_guard_used=False,
+            verified_items=0,
+            originals_removed=0,
+            started_at_utc="2026-07-18T12:00:00Z",
+            finished_at_utc="2026-07-18T12:00:02Z",
+            receipt_id="000000000201",
+        )
+        second = {
+            **first,
+            "started_at_utc": "2026-07-18T12:01:00Z",
+            "finished_at_utc": "2026-07-18T12:01:02Z",
+            "receipt_id": "000000000202",
+        }
+        with self.assertRaises(ValueError):
+            locker.compare_lock_job_receipts(first, first)
+        with self.assertRaises(ValueError):
+            locker.compare_lock_job_receipts(second, first)
+
+        declined = locker.compare_lock_job_receipts(
+            first,
+            {
+                **second,
+                "successful_items": 0,
+                "failed_items": 1,
+            },
+        )
+        self.assertEqual(declined["success_rate_trend"], "DECLINED")
+        same = locker.compare_lock_job_receipts(first, second)
+        self.assertEqual(same["success_rate_trend"], "SAME")
+
     def test_lock_job_receipt_rejects_inconsistent_or_identifying_data(self):
         valid = {
             "mode": "lock_copy",
@@ -745,6 +836,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="NEXT"', source)
         self.assertIn('text="COPY RECEIPT"', source)
         self.assertIn('text="COPY SESSION"', source)
+        self.assertIn('text="COMPARE"', source)
         self.assertIn('text="CLEAR"', source)
         self.assertIn('window.bind("<<LastLockReceiptChanged>>"', source)
         self.assertIn("lock_job_receipt_summary", source)
@@ -760,10 +852,34 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("Scrollbar", source)
         self.assertIn('text="RECEIPT HISTORY"', app_source)
         self.assertIn('label="View receipt history"', app_source)
+        self.assertIn('label="Compare lock receipts"', app_source)
         self.assertIn(
             ("Locking", "Receipt History", "open_last_lock_receipt"),
             locker.TOOL_FINDER_ACTIONS,
         )
+        self.assertIn(
+            ("Locking", "Receipt Comparison", "open_lock_receipt_comparison"),
+            locker.TOOL_FINDER_ACTIONS,
+        )
+
+    def test_receipt_comparison_window_is_fixed_private_and_closes_when_stale(self):
+        source = inspect.getsource(
+            locker.USBFileLocker.open_lock_receipt_comparison
+        )
+        history_source = inspect.getsource(
+            locker.USBFileLocker.open_last_lock_receipt
+        )
+        recorder = inspect.getsource(locker.USBFileLocker.record_lock_job_receipt)
+        self.assertIn('window.geometry("720x440")', source)
+        self.assertIn("window.resizable(False, False)", source)
+        self.assertIn('text="COPY COMPARISON"', source)
+        self.assertIn("compare_lock_job_receipts", source)
+        self.assertIn("lock_receipt_comparison_summary", source)
+        self.assertIn("filenames, paths, key IDs, PINs", source)
+        self.assertNotIn("tk.Canvas", source)
+        self.assertNotIn("Scrollbar", source)
+        self.assertIn("self.close_lock_receipt_comparison_window()", history_source)
+        self.assertIn("self.close_lock_receipt_comparison_window()", recorder)
 
     def test_both_lock_workflows_capture_receipts_before_guard_consumption(self):
         for method in (

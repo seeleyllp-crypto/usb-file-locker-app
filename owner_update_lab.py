@@ -46,14 +46,15 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Receipt History keeps only the latest 10 aggregate LOCK COPY and LOCK + REMOVE ORIGINAL results in session memory.",
-    "The fixed no-scroll dashboard shows session jobs, successful items, success rate, and jobs needing review.",
-    "PREVIOUS and NEXT move between receipts while new completed jobs automatically become the current receipt.",
-    "Customers can copy one privacy-safe receipt or a bounded aggregate session summary.",
-    "CLEAR removes receipt memory without changing locked files or audit logs.",
-    "Every entry is revalidated and normalized; duplicate IDs fail closed and unknown fields are discarded.",
-    "History excludes filenames, paths, USB key IDs, PINs, secrets, file contents, and detailed errors.",
-    "Receipt History clears on USB unload or app exit and is never saved or sent to the API.",
+    "Receipt Comparison compares the selected session lock result with the receipt immediately before it.",
+    "The fixed no-scroll window shows status, mode, success-rate, count, duration, Preview Guard, and canceled-state changes.",
+    "Signed deltas cover requested, successful, failed, unprocessed, verified, and removed-original counts.",
+    "Comparison revalidates both receipts and rejects duplicate IDs or reversed chronological order.",
+    "Customers can copy one privacy-safe comparison from Receipt History, MORE TOOLS, or Tool Finder.",
+    "New lock jobs and history clearing close stale comparison windows so old session snapshots do not remain visible.",
+    "Comparisons exclude filenames, paths, USB key IDs, PINs, secrets, file contents, and detailed errors.",
+    "Receipt History still keeps only the latest 10 normalized aggregate results in session memory.",
+    "History and comparisons clear on USB unload or app exit and are never saved or sent to the API.",
     "Optional one-time Preview Guard binds the next lock start to the exact reviewed queue and selected targets.",
     "QUEUE TOOLS keeps the session-only checkpoint, guarded undo, and queue-repair controls from earlier releases.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
