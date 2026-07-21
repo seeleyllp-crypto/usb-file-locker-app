@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.22"
+DESKTOP_APP_VERSION = "2026.07.18.23"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -57,6 +57,7 @@ TOOL_FINDER_ACTIONS = (
     ("Access", "License Center", "open_license_center"),
     ("Access", "Local Readiness Check", "show_local_readiness"),
     ("Locking", "Safe Lock Preview", "open_safe_lock_preview"),
+    ("Locking", "Last Lock Receipt", "open_last_lock_receipt"),
     ("Security & privacy", "Verify Download", "open_download_verification_center"),
     ("Security & privacy", "Audit Log", "open_log"),
     ("Security & privacy", "Support Redactor", "open_support_redactor"),
@@ -2577,6 +2578,135 @@ def safe_lock_preview_summary(report):
         (
             "This aggregate summary excludes filenames, paths, PINs, key IDs, "
             "secrets, and file contents."
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def build_lock_job_receipt(
+    *,
+    mode,
+    requested_items,
+    successful_items,
+    failed_items,
+    canceled,
+    preview_guard_used,
+    verified_items,
+    originals_removed,
+    started_at_utc,
+    finished_at_utc,
+    receipt_id=None,
+):
+    if mode not in {"lock_copy", "lock_remove"}:
+        raise ValueError("Lock receipt mode is invalid.")
+    counts = {}
+    for name, value in (
+        ("requested_items", requested_items),
+        ("successful_items", successful_items),
+        ("failed_items", failed_items),
+        ("verified_items", verified_items),
+        ("originals_removed", originals_removed),
+    ):
+        if type(value) is not int or not 0 <= value <= 1_000_000:
+            raise ValueError("Lock receipt counts are invalid.")
+        counts[name] = value
+    if counts["requested_items"] < 1:
+        raise ValueError("Lock receipt must describe at least one requested item.")
+    processed_items = counts["successful_items"] + counts["failed_items"]
+    if processed_items > counts["requested_items"]:
+        raise ValueError("Lock receipt processed count is inconsistent.")
+    if counts["verified_items"] > counts["successful_items"]:
+        raise ValueError("Lock receipt verified count is inconsistent.")
+    if counts["originals_removed"] > counts["successful_items"]:
+        raise ValueError("Lock receipt removal count is inconsistent.")
+    if mode == "lock_copy" and (
+        counts["verified_items"] or counts["originals_removed"]
+    ):
+        raise ValueError("Lock copy receipt cannot report removal verification.")
+    if mode == "lock_remove" and (
+        counts["verified_items"] != counts["successful_items"]
+        or counts["originals_removed"] != counts["successful_items"]
+    ):
+        raise ValueError("Lock and remove receipt verification is inconsistent.")
+    if type(canceled) is not bool or type(preview_guard_used) is not bool:
+        raise ValueError("Lock receipt flags are invalid.")
+    started = parse_utc_text(started_at_utc)
+    finished = parse_utc_text(finished_at_utc)
+    if started is None or finished is None or finished < started:
+        raise ValueError("Lock receipt timestamps are invalid.")
+    identifier = str(receipt_id or secrets.token_hex(6)).strip().lower()
+    if (
+        len(identifier) != 12
+        or any(character not in "0123456789abcdef" for character in identifier)
+    ):
+        raise ValueError("Lock receipt ID is invalid.")
+    unprocessed_items = counts["requested_items"] - processed_items
+    if canceled:
+        status = "CANCELED"
+    elif counts["successful_items"] == counts["requested_items"]:
+        status = "COMPLETED"
+    elif counts["successful_items"]:
+        status = "PARTIAL"
+    else:
+        status = "FAILED"
+    return {
+        "schema_version": 1,
+        "receipt_type": "vaultlink-lock-job",
+        "receipt_id": identifier,
+        "mode": mode,
+        "status": status,
+        **counts,
+        "unprocessed_items": unprocessed_items,
+        "canceled": canceled,
+        "preview_guard_used": preview_guard_used,
+        "started_at_utc": str(started_at_utc),
+        "finished_at_utc": str(finished_at_utc),
+    }
+
+
+def lock_job_receipt_summary(receipt):
+    current = dict(receipt or {})
+    normalized = build_lock_job_receipt(
+        mode=current.get("mode"),
+        requested_items=current.get("requested_items"),
+        successful_items=current.get("successful_items"),
+        failed_items=current.get("failed_items"),
+        canceled=current.get("canceled"),
+        preview_guard_used=current.get("preview_guard_used"),
+        verified_items=current.get("verified_items"),
+        originals_removed=current.get("originals_removed"),
+        started_at_utc=current.get("started_at_utc"),
+        finished_at_utc=current.get("finished_at_utc"),
+        receipt_id=current.get("receipt_id"),
+    )
+    mode_label = (
+        "LOCK COPY"
+        if normalized["mode"] == "lock_copy"
+        else "LOCK + REMOVE ORIGINAL"
+    )
+    lines = [
+        "VaultLink Last Lock Receipt",
+        f"Receipt ID: {normalized['receipt_id']}",
+        f"Mode: {mode_label}",
+        f"Status: {normalized['status']}",
+        f"Requested items: {normalized['requested_items']}",
+        f"Successful items: {normalized['successful_items']}",
+        f"Failed items: {normalized['failed_items']}",
+        f"Unprocessed items: {normalized['unprocessed_items']}",
+        f"Verified items: {normalized['verified_items']}",
+        f"Originals removed: {normalized['originals_removed']}",
+        f"Canceled: {'YES' if normalized['canceled'] else 'NO'}",
+        (
+            "Preview Guard used: YES"
+            if normalized["preview_guard_used"]
+            else "Preview Guard used: NO"
+        ),
+        f"Started UTC: {normalized['started_at_utc']}",
+        f"Finished UTC: {normalized['finished_at_utc']}",
+        "",
+        (
+            "Privacy: this session-only receipt excludes filenames, paths, "
+            "USB key IDs, PINs, secrets, file contents, and error details."
         ),
     ]
     return "\n".join(lines)
@@ -5652,6 +5782,8 @@ class USBFileLocker(tk.Tk):
         self.tool_finder_window = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
+        self.last_lock_receipt_window = None
+        self.last_lock_receipt = None
         self.safe_lock_queue_history = []
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
@@ -5992,6 +6124,10 @@ class USBFileLocker(tk.Tk):
         overview_more_menu.add_command(
             label="Preview lock queue",
             command=self.open_safe_lock_preview,
+        )
+        overview_more_menu.add_command(
+            label="View last lock receipt",
+            command=self.open_last_lock_receipt,
         )
         overview_more_menu.add_command(
             label="Run local readiness check",
@@ -6369,6 +6505,23 @@ class USBFileLocker(tk.Tk):
             font=("Segoe UI", 10, "bold"),
         )
         self.lock_remove_button.pack(side="left", padx=(12, 0), ipadx=14, ipady=10)
+        self.last_lock_receipt_button = tk.Button(
+            action_row,
+            text="LAST RECEIPT",
+            command=self.open_last_lock_receipt,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.last_lock_receipt_button.pack(
+            side="left",
+            padx=(12, 0),
+            ipadx=12,
+            ipady=10,
+        )
         self.unlock_button = tk.Button(action_row, text="UNLOCK HERE", command=self.unlock_selected, bg=WHITE, fg=BLACK, relief="flat", font=("Segoe UI", 10, "bold"))
         self.unlock_button.pack(side="left", padx=(12, 0), ipadx=18, ipady=10)
         self.perm_unlock_button = tk.Button(action_row, text="PERM UNLOCK", command=self.perm_unlock_selected, bg=YELLOW, fg=BLACK, relief="flat", font=("Segoe UI", 10, "bold"))
@@ -6493,6 +6646,261 @@ class USBFileLocker(tk.Tk):
             750,
             self.refresh_overview_loop,
         )
+
+    def open_last_lock_receipt(self, _event=None):
+        if self.last_lock_receipt_window is not None:
+            try:
+                if self.last_lock_receipt_window.winfo_exists():
+                    self.last_lock_receipt_window.deiconify()
+                    self.last_lock_receipt_window.lift()
+                    self.last_lock_receipt_window.focus_set()
+                    return "break"
+            except tk.TclError:
+                pass
+            self.last_lock_receipt_window = None
+
+        window = tk.Toplevel(self)
+        self.last_lock_receipt_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Last Lock Receipt")
+        window.geometry("700x440")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        status_var = tk.StringVar(window, value="NO RECEIPT YET")
+        mode_var = tk.StringVar(window, value="NONE")
+        requested_var = tk.StringVar(window, value="0")
+        completed_var = tk.StringVar(window, value="0")
+        failed_var = tk.StringVar(window, value="0")
+        guard_var = tk.StringVar(window, value="PREVIEW GUARD NOT RECORDED")
+        verification_var = tk.StringVar(window, value="VERIFIED 0 | ORIGINALS REMOVED 0")
+        canceled_var = tk.StringVar(window, value="CANCELED NO | UNPROCESSED 0")
+        timing_var = tk.StringVar(window, value="NO COMPLETED LOCK JOB THIS SESSION")
+        receipt_id_var = tk.StringVar(window, value="RECEIPT ID NONE")
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Last Lock Receipt",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(side="left")
+        status_label = tk.Label(
+            header,
+            textvariable=status_var,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+        )
+        status_label.pack(side="right")
+        tk.Label(
+            outer,
+            text="SESSION-ONLY AGGREGATE RESULT",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(1, 14))
+
+        metrics = tk.Frame(outer, bg=BG)
+        metrics.pack(fill="x")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1, uniform="receipt")
+
+        def add_metric(column, heading, variable, color):
+            panel = tk.Frame(
+                metrics,
+                bg=FIELD,
+                highlightbackground=BORDER,
+                highlightthickness=1,
+            )
+            panel.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 5, 0 if column == 3 else 5),
+            )
+            tk.Label(
+                panel,
+                text=heading,
+                bg=FIELD,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=11, pady=(9, 3))
+            tk.Label(
+                panel,
+                textvariable=variable,
+                bg=FIELD,
+                fg=color,
+                font=("Segoe UI", 11, "bold"),
+                wraplength=140,
+                justify="left",
+            ).pack(anchor="w", padx=11, pady=(0, 10))
+
+        add_metric(0, "MODE", mode_var, BLUE)
+        add_metric(1, "REQUESTED", requested_var, TEXT)
+        add_metric(2, "SUCCESSFUL", completed_var, GREEN)
+        add_metric(3, "FAILED", failed_var, YELLOW)
+
+        details = tk.Frame(
+            outer,
+            bg=PANEL,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        details.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            details,
+            text="LOCK JOB DETAILS",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=13, pady=(10, 4))
+        for variable, color in (
+            (guard_var, GREEN),
+            (verification_var, TEXT),
+            (canceled_var, TEXT),
+            (timing_var, TEXT),
+            (receipt_id_var, BLUE),
+        ):
+            tk.Label(
+                details,
+                textvariable=variable,
+                bg=PANEL,
+                fg=color,
+                font=("Segoe UI", 8, "bold"),
+                anchor="w",
+            ).pack(fill="x", padx=13, pady=(0, 4))
+        tk.Label(
+            details,
+            text=(
+                "No filenames, paths, key IDs, PINs, secrets, file contents, "
+                "or error details are included."
+            ),
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", padx=13, pady=(4, 10))
+
+        actions = tk.Frame(outer, bg=BG)
+        actions.pack(fill="x", pady=(14, 0))
+
+        def copy_receipt():
+            if self.last_lock_receipt is None:
+                self.status.set("No completed lock receipt is available yet.")
+                return
+            try:
+                summary = lock_job_receipt_summary(self.last_lock_receipt)
+                self.clipboard_clear()
+                self.clipboard_append(summary)
+                self.update_idletasks()
+            except (ValueError, tk.TclError):
+                self.status.set("Could not copy the Last Lock Receipt.")
+                return
+            self.status.set("Privacy-safe Last Lock Receipt copied.")
+            log_event("last_lock_receipt_copy", "aggregate", "ok")
+
+        copy_button = tk.Button(
+            actions,
+            text="COPY SAFE RECEIPT",
+            command=copy_receipt,
+            bg=BLUE,
+            fg=BLACK,
+            activebackground=BLUE,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        copy_button.pack(side="left", ipadx=14, ipady=8)
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=15, ipady=8)
+
+        def render_receipt(_event=None):
+            receipt = self.last_lock_receipt
+            if receipt is None:
+                status_var.set("NO RECEIPT YET")
+                status_label.configure(fg=MUTED)
+                copy_button.configure(state="disabled")
+                return
+            try:
+                lock_job_receipt_summary(receipt)
+            except ValueError:
+                status_var.set("RECEIPT INVALID")
+                status_label.configure(fg=RED)
+                copy_button.configure(state="disabled")
+                return
+            mode_var.set(
+                "LOCK COPY"
+                if receipt["mode"] == "lock_copy"
+                else "LOCK + REMOVE"
+            )
+            requested_var.set(str(receipt["requested_items"]))
+            completed_var.set(str(receipt["successful_items"]))
+            failed_var.set(str(receipt["failed_items"]))
+            status_var.set(receipt["status"])
+            status_label.configure(
+                fg=GREEN if receipt["status"] == "COMPLETED" else YELLOW
+            )
+            guard_var.set(
+                "PREVIEW GUARD USED YES"
+                if receipt["preview_guard_used"]
+                else "PREVIEW GUARD USED NO"
+            )
+            verification_var.set(
+                f"VERIFIED {receipt['verified_items']}"
+                f" | ORIGINALS REMOVED {receipt['originals_removed']}"
+            )
+            canceled_var.set(
+                f"CANCELED {'YES' if receipt['canceled'] else 'NO'}"
+                f" | UNPROCESSED {receipt['unprocessed_items']}"
+            )
+            timing_var.set(
+                f"STARTED {receipt['started_at_utc']}"
+                f" | FINISHED {receipt['finished_at_utc']}"
+            )
+            receipt_id_var.set(f"RECEIPT ID {receipt['receipt_id']}")
+            copy_button.configure(state="normal")
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if self.last_lock_receipt_window is window:
+                self.last_lock_receipt_window = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        window.bind("<<LastLockReceiptChanged>>", render_receipt)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        render_receipt()
+        window.lift()
+        return "break"
+
+    def notify_last_lock_receipt_changed(self):
+        window = self.last_lock_receipt_window
+        if window is None:
+            return
+        try:
+            if window.winfo_exists():
+                window.event_generate("<<LastLockReceiptChanged>>")
+        except tk.TclError:
+            pass
 
     def open_safe_lock_preview(self, _event=None):
         if self.safe_lock_preview_window is not None:
@@ -8058,6 +8466,7 @@ class USBFileLocker(tk.Tk):
         self.safe_lock_queue_history.clear()
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
+        self.last_lock_receipt = None
         try:
             self.pin_entry.delete(0, "end")
         except Exception:
@@ -9164,6 +9573,7 @@ class USBFileLocker(tk.Tk):
         self.safe_lock_queue_history.clear()
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
+        self.last_lock_receipt = None
         self.destroy()
 
     def cancel_current_job(self):
@@ -9901,6 +10311,9 @@ class USBFileLocker(tk.Tk):
         if pin is None:
             return
         key = self.key
+        receipt_started_at = utc_now_text()
+        receipt_guard_used = self.safe_lock_preview_approval is not None
+        receipt_id = secrets.token_hex(6)
 
         def worker(report, cancel):
             outputs = []
@@ -9922,6 +10335,20 @@ class USBFileLocker(tk.Tk):
             return {"outputs": outputs, "errors": errors, "canceled": cancel.is_set()}
 
         def finished(result):
+            self.last_lock_receipt = build_lock_job_receipt(
+                mode="lock_copy",
+                requested_items=len(paths),
+                successful_items=len(result["outputs"]),
+                failed_items=len(result["errors"]),
+                canceled=bool(result["canceled"]),
+                preview_guard_used=receipt_guard_used,
+                verified_items=0,
+                originals_removed=0,
+                started_at_utc=receipt_started_at,
+                finished_at_utc=utc_now_text(),
+                receipt_id=receipt_id,
+            )
+            self.notify_last_lock_receipt_changed()
             self.status.set(f"Locked {len(result['outputs'])} item(s). Failed {len(result['errors'])}.")
             text = (
                 f"Portable locks created: {len(result['outputs'])}\n"
@@ -9961,6 +10388,9 @@ class USBFileLocker(tk.Tk):
         if pin is None:
             return
         key = self.key
+        receipt_started_at = utc_now_text()
+        receipt_guard_used = self.safe_lock_preview_approval is not None
+        receipt_id = secrets.token_hex(6)
 
         def worker(report, cancel):
             new_items = []
@@ -9990,6 +10420,21 @@ class USBFileLocker(tk.Tk):
             return {"new_items": new_items, "errors": errors, "canceled": cancel.is_set()}
 
         def finished(result):
+            successful_items = len(result["new_items"])
+            self.last_lock_receipt = build_lock_job_receipt(
+                mode="lock_remove",
+                requested_items=len(paths),
+                successful_items=successful_items,
+                failed_items=len(result["errors"]),
+                canceled=bool(result["canceled"]),
+                preview_guard_used=receipt_guard_used,
+                verified_items=successful_items,
+                originals_removed=successful_items,
+                started_at_utc=receipt_started_at,
+                finished_at_utc=utc_now_text(),
+                receipt_id=receipt_id,
+            )
+            self.notify_last_lock_receipt_changed()
             remaining = [item for item in self.file_list.get(0, "end") if item not in paths]
             self.file_list.delete(0, "end")
             for item in remaining + result["new_items"]:
