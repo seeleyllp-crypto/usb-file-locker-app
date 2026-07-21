@@ -104,7 +104,8 @@ class DesktopHelperTests(unittest.TestCase):
 
     def test_customer_idle_messages_rotate_every_twelve_seconds(self):
         self.assertEqual(locker.CUSTOMER_MESSAGE_INTERVAL_MS, 12_000)
-        self.assertGreaterEqual(len(locker.CUSTOMER_IDLE_MESSAGES), 8)
+        self.assertEqual(len(locker.CUSTOMER_IDLE_MESSAGES), 16)
+        self.assertEqual(len(locker.CUSTOMER_TIPS), 16)
         self.assertEqual(
             locker.customer_idle_message(len(locker.CUSTOMER_IDLE_MESSAGES)),
             locker.CUSTOMER_IDLE_MESSAGES[0],
@@ -119,6 +120,22 @@ class DesktopHelperTests(unittest.TestCase):
             lowered = message.lower()
             for forbidden in ("http", "discord", "webhook", "filename", "password", "pin"):
                 self.assertNotIn(forbidden, lowered)
+
+    def test_customer_tip_focuses_are_fixed_balanced_and_bounded(self):
+        self.assertEqual(
+            locker.CUSTOMER_TIP_FOCUSES,
+            ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES"),
+        )
+        self.assertEqual(locker.normalize_customer_tip_focus("bad"), "ALL")
+        self.assertEqual(len(locker.customer_tip_indexes("ALL")), 16)
+        for focus in locker.CUSTOMER_TIP_FOCUSES[1:]:
+            indexes = locker.customer_tip_indexes(focus)
+            self.assertEqual(len(indexes), 4)
+            self.assertTrue(
+                all(locker.customer_tip_category(index) == focus for index in indexes)
+            )
+            self.assertEqual(locker.customer_tip_position(indexes[0], focus), (1, 4))
+            self.assertEqual(locker.customer_tip_position(indexes[-1], focus), (4, 4))
 
     def test_customer_activity_prioritizes_live_progress(self):
         self.assertEqual(
@@ -175,12 +192,14 @@ class DesktopHelperTests(unittest.TestCase):
 
     def test_tip_center_is_fixed_session_only_and_has_no_scroller(self):
         source = inspect.getsource(locker.USBFileLocker.open_tip_center)
-        self.assertIn('window.geometry("640x350")', source)
+        self.assertIn('window.geometry("720x390")', source)
         self.assertIn("window.resizable(False, False)", source)
+        self.assertIn('text="TIP FOCUS"', source)
         self.assertIn('text="PREVIOUS"', source)
         self.assertIn('text="NEXT"', source)
         self.assertIn('text="PAUSE"', source)
         self.assertIn('text="RESET"', source)
+        self.assertIn('text="COPY TIP"', source)
         self.assertNotIn("Canvas", source)
         self.assertNotIn("Scrollbar", source)
         self.assertNotIn("save_settings", source)
@@ -189,6 +208,13 @@ class DesktopHelperTests(unittest.TestCase):
             ("Guidance", "Tip Center", "open_tip_center"),
             locker.TOOL_FINDER_ACTIONS,
         )
+
+    def test_tip_copy_uses_only_the_current_fixed_message(self):
+        source = inspect.getsource(locker.USBFileLocker.copy_customer_message)
+        self.assertIn("self.clipboard_append(self.customer_message_text)", source)
+        self.assertNotIn("save_settings", source)
+        self.assertNotIn("log_event", source)
+        self.assertNotIn("api_", source)
 
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
         self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 31)

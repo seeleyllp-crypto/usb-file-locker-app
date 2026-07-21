@@ -41,22 +41,32 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.27"
+DESKTOP_APP_VERSION = "2026.07.18.28"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 CUSTOMER_MESSAGE_INTERVAL_MS = 12_000
-CUSTOMER_IDLE_MESSAGES = (
-    "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB.",
-    "TIP | KEEP A BACKUP USB KEY IN A DIFFERENT SAFE LOCATION.",
-    "TIP | TEST RECOVERY WITH A COPY BEFORE REMOVING AN ORIGINAL.",
-    "TIP | VERIFY UNFAMILIAR DOWNLOADS BEFORE OPENING THEM.",
-    "TIP | CHECK THE AUDIT LOG AFTER IMPORTANT LOCK OR UNLOCK JOBS.",
-    "TIP | UNPLUG THE MASTER USB KEY WHEN YOU ARE FINISHED.",
-    "TIP | SIGNED UPDATES PRESERVE KEYS, SETTINGS, AND LOCAL DATA.",
-    "TIP | USE SUPPORT REDACTOR BEFORE SHARING ERRORS OR LOG TEXT.",
+CUSTOMER_TIP_FOCUSES = ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES")
+CUSTOMER_TIPS = (
+    ("LOCKING", "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB."),
+    ("LOCKING", "TIP | LOAD THE INTENDED USB KEY BEFORE ADDING PRIVATE FILES."),
+    ("LOCKING", "TIP | USE COPY MODE UNTIL YOU HAVE TESTED A COMPLETE RECOVERY."),
+    ("LOCKING", "TIP | CHECK QUEUE COUNTS AND SELECTIONS BEFORE STARTING."),
+    ("RECOVERY", "TIP | KEEP A BACKUP USB KEY IN A DIFFERENT SAFE LOCATION."),
+    ("RECOVERY", "TIP | TEST RECOVERY WITH A COPY BEFORE REMOVING AN ORIGINAL."),
+    ("RECOVERY", "TIP | PRACTICE ONE RECOVERY DRILL BEFORE AN EMERGENCY."),
+    ("RECOVERY", "TIP | VERIFY YOUR BACKUP KEY AFTER IMPORTANT KEY CHANGES."),
+    ("PRIVACY", "TIP | VERIFY UNFAMILIAR DOWNLOADS BEFORE OPENING THEM."),
+    ("PRIVACY", "TIP | CHECK THE AUDIT LOG AFTER IMPORTANT LOCK OR UNLOCK JOBS."),
+    ("PRIVACY", "TIP | UNPLUG THE MASTER USB KEY WHEN YOU ARE FINISHED."),
+    ("PRIVACY", "TIP | USE SUPPORT REDACTOR BEFORE SHARING ERRORS OR LOG TEXT."),
+    ("UPDATES", "TIP | SIGNED UPDATES PRESERVE KEYS, SETTINGS, AND LOCAL DATA."),
+    ("UPDATES", "TIP | REVIEW RELEASE NOTES BEFORE INSTALLING A NEW VERSION."),
+    ("UPDATES", "TIP | KEEP VERIFIED AUTOMATIC UPDATES ENABLED WHEN PRACTICAL."),
+    ("UPDATES", "TIP | CHECK PUBLIC STATUS IF AN ONLINE FEATURE IS UNAVAILABLE."),
 )
+CUSTOMER_IDLE_MESSAGES = tuple(message for _category, message in CUSTOMER_TIPS)
 TOOL_FINDER_VISIBLE_LIMIT = 10
 MAX_TOOL_FINDER_FAVORITES = 8
 MAX_TOOL_FINDER_RECENT = 8
@@ -4080,6 +4090,41 @@ def customer_idle_message(index):
     return CUSTOMER_IDLE_MESSAGES[normalized_index % len(CUSTOMER_IDLE_MESSAGES)]
 
 
+def normalize_customer_tip_focus(value):
+    focus = str(value or "ALL").strip().upper()
+    return focus if focus in CUSTOMER_TIP_FOCUSES else "ALL"
+
+
+def customer_tip_indexes(focus="ALL"):
+    normalized_focus = normalize_customer_tip_focus(focus)
+    return tuple(
+        index
+        for index, (category, _message) in enumerate(CUSTOMER_TIPS)
+        if normalized_focus == "ALL" or category == normalized_focus
+    )
+
+
+def customer_tip_category(index):
+    try:
+        normalized_index = int(index) % len(CUSTOMER_TIPS)
+    except (TypeError, ValueError):
+        normalized_index = 0
+    return CUSTOMER_TIPS[normalized_index][0]
+
+
+def customer_tip_position(index, focus="ALL"):
+    indexes = customer_tip_indexes(focus)
+    try:
+        normalized_index = int(index) % len(CUSTOMER_TIPS)
+    except (TypeError, ValueError):
+        normalized_index = indexes[0]
+    try:
+        position = indexes.index(normalized_index)
+    except ValueError:
+        position = 0
+    return position + 1, len(indexes)
+
+
 def customer_activity_text(busy, progress_text, idle_message):
     source = progress_text if busy else idle_message
     return str(source or "Ready").strip().upper()[:72]
@@ -6031,6 +6076,7 @@ class USBFileLocker(tk.Tk):
         self.overview_activity_var = tk.StringVar(value="READY")
         self.customer_message_index = -1
         self.customer_message_text = customer_idle_message(0)
+        self.customer_message_focus = "ALL"
         self.customer_message_paused = False
         self.customer_message_after_id = None
         self.overview_refresh_after_id = None
@@ -6050,6 +6096,8 @@ class USBFileLocker(tk.Tk):
         self.tip_center_message_var = None
         self.tip_center_position_var = None
         self.tip_center_mode_var = None
+        self.tip_center_focus_var = None
+        self.tip_center_focus_button = None
         self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
@@ -6940,10 +6988,13 @@ class USBFileLocker(tk.Tk):
         )
 
     def set_customer_message(self, index, restart_timer=True):
+        allowed_indexes = customer_tip_indexes(self.customer_message_focus)
         try:
             normalized_index = int(index) % len(CUSTOMER_IDLE_MESSAGES)
         except (TypeError, ValueError):
-            normalized_index = 0
+            normalized_index = allowed_indexes[0]
+        if normalized_index not in allowed_indexes:
+            normalized_index = allowed_indexes[0]
         self.customer_message_index = normalized_index
         self.customer_message_text = customer_idle_message(normalized_index)
         self.update_overview_status()
@@ -6951,15 +7002,33 @@ class USBFileLocker(tk.Tk):
         if restart_timer:
             self.restart_customer_message_timer()
 
-    def move_customer_message(self, step):
+    def move_customer_message(self, step, restart_timer=True):
         try:
             delta = int(step)
         except (TypeError, ValueError):
             delta = 1
-        current = self.customer_message_index
-        if current < 0:
-            current = 0
-        self.set_customer_message(current + delta)
+        allowed_indexes = customer_tip_indexes(self.customer_message_focus)
+        try:
+            current_position = allowed_indexes.index(self.customer_message_index)
+        except ValueError:
+            current_position = -1
+        target = allowed_indexes[(current_position + delta) % len(allowed_indexes)]
+        self.set_customer_message(target, restart_timer=restart_timer)
+
+    def set_customer_message_focus(self, focus):
+        self.customer_message_focus = normalize_customer_tip_focus(focus)
+        self.set_customer_message(customer_tip_indexes(self.customer_message_focus)[0])
+
+    def reset_customer_message(self):
+        self.set_customer_message(customer_tip_indexes(self.customer_message_focus)[0])
+
+    def copy_customer_message(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.customer_message_text)
+            self.status.set("Copied the current fixed VaultLink tip.")
+        except tk.TclError:
+            self.status.set("Could not copy the current VaultLink tip.")
 
     def toggle_customer_message_pause(self):
         self.customer_message_paused = not self.customer_message_paused
@@ -6970,7 +7039,7 @@ class USBFileLocker(tk.Tk):
         self.customer_message_after_id = None
         if self.closing or self.customer_message_paused or not self.winfo_exists():
             return
-        self.set_customer_message(self.customer_message_index + 1, restart_timer=False)
+        self.move_customer_message(1, restart_timer=False)
         self.restart_customer_message_timer()
 
     def refresh_tip_center(self):
@@ -6980,10 +7049,16 @@ class USBFileLocker(tk.Tk):
         try:
             if not window.winfo_exists():
                 return
+            position, total = customer_tip_position(
+                self.customer_message_index,
+                self.customer_message_focus,
+            )
+            category = customer_tip_category(self.customer_message_index)
             self.tip_center_message_var.set(self.customer_message_text)
             self.tip_center_position_var.set(
-                f"TIP {self.customer_message_index + 1} OF {len(CUSTOMER_IDLE_MESSAGES)}"
+                f"TIP {position} OF {total} | {category}"
             )
+            self.tip_center_focus_var.set(f"FOCUS: {self.customer_message_focus}")
             self.tip_center_mode_var.set(
                 "AUTO ROTATION PAUSED"
                 if self.customer_message_paused
@@ -7021,7 +7096,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_window = window
         self.secondary_windows.append(window)
         window.title("VaultLink Tip Center")
-        window.geometry("640x350")
+        window.geometry("720x390")
         window.resizable(False, False)
         window.configure(bg=BG)
         window.transient(self)
@@ -7029,6 +7104,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_message_var = tk.StringVar(window)
         self.tip_center_position_var = tk.StringVar(window)
         self.tip_center_mode_var = tk.StringVar(window)
+        self.tip_center_focus_var = tk.StringVar(window)
 
         outer = tk.Frame(window, bg=BG)
         outer.pack(fill="both", expand=True, padx=24, pady=20)
@@ -7056,7 +7132,47 @@ class USBFileLocker(tk.Tk):
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 8, "bold"),
-        ).pack(anchor="w", pady=(3, 14))
+        ).pack(anchor="w", pady=(3, 10))
+
+        focus_row = tk.Frame(outer, bg=BG)
+        focus_row.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            focus_row,
+            text="TIP FOCUS",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        self.tip_center_focus_button = tk.Menubutton(
+            focus_row,
+            textvariable=self.tip_center_focus_var,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+            direction="below",
+        )
+        self.tip_center_focus_button.pack(
+            side="left", padx=(10, 0), ipadx=12, ipady=5
+        )
+        focus_menu = tk.Menu(
+            self.tip_center_focus_button,
+            tearoff=False,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BLUE,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        for focus in CUSTOMER_TIP_FOCUSES:
+            focus_menu.add_command(
+                label=focus.title(),
+                command=lambda selected=focus: self.set_customer_message_focus(selected),
+            )
+        self.tip_center_focus_button.configure(menu=focus_menu)
 
         message_panel = tk.Frame(
             outer,
@@ -7072,8 +7188,8 @@ class USBFileLocker(tk.Tk):
             fg=TEXT,
             font=("Segoe UI", 14, "bold"),
             justify="left",
-            wraplength=540,
-        ).pack(anchor="w", padx=18, pady=22)
+            wraplength=620,
+        ).pack(anchor="w", padx=18, pady=20)
 
         tk.Label(
             outer,
@@ -7089,7 +7205,7 @@ class USBFileLocker(tk.Tk):
             fg=MUTED,
             font=("Segoe UI", 9),
             justify="left",
-            wraplength=580,
+            wraplength=660,
         ).pack(anchor="w")
 
         actions = tk.Frame(outer, bg=BG)
@@ -7127,12 +7243,21 @@ class USBFileLocker(tk.Tk):
         tk.Button(
             actions,
             text="RESET",
-            command=lambda: self.set_customer_message(0),
+            command=self.reset_customer_message,
             bg=SURFACE,
             fg=TEXT,
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="COPY TIP",
+            command=self.copy_customer_message,
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=11, ipady=7)
         tk.Button(
             actions,
             text="CLOSE",
@@ -7151,6 +7276,8 @@ class USBFileLocker(tk.Tk):
                 self.tip_center_message_var = None
                 self.tip_center_position_var = None
                 self.tip_center_mode_var = None
+                self.tip_center_focus_var = None
+                self.tip_center_focus_button = None
                 self.tip_center_toggle_button = None
             try:
                 self.secondary_windows.remove(window)
@@ -7160,6 +7287,7 @@ class USBFileLocker(tk.Tk):
         window.bind("<Left>", lambda _event: self.move_customer_message(-1))
         window.bind("<Right>", lambda _event: self.move_customer_message(1))
         window.bind("<space>", lambda _event: self.toggle_customer_message_pause())
+        window.bind("<Control-c>", lambda _event: self.copy_customer_message())
         window.bind("<Escape>", lambda _event: window.destroy())
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
