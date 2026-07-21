@@ -152,6 +152,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("self.overview_access_var", source)
         self.assertIn("def update_overview_status(self):", source)
         self.assertIn("def rotate_customer_message(self):", source)
+        self.assertIn("def open_tip_center(self, _event=None):", source)
+        self.assertIn('label="Open Tip Center"', source)
         self.assertIn('"customer_message_after_id",', source)
         self.assertIn("def show_local_readiness(self):", source)
         self.assertIn("def open_tool_finder(self, _event=None):", source)
@@ -171,8 +173,25 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
 
+    def test_tip_center_is_fixed_session_only_and_has_no_scroller(self):
+        source = inspect.getsource(locker.USBFileLocker.open_tip_center)
+        self.assertIn('window.geometry("640x350")', source)
+        self.assertIn("window.resizable(False, False)", source)
+        self.assertIn('text="PREVIOUS"', source)
+        self.assertIn('text="NEXT"', source)
+        self.assertIn('text="PAUSE"', source)
+        self.assertIn('text="RESET"', source)
+        self.assertNotIn("Canvas", source)
+        self.assertNotIn("Scrollbar", source)
+        self.assertNotIn("save_settings", source)
+        self.assertNotIn("log_event", source)
+        self.assertIn(
+            ("Guidance", "Tip Center", "open_tip_center"),
+            locker.TOOL_FINDER_ACTIONS,
+        )
+
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
-        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 30)
+        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 31)
         self.assertEqual(
             len({action[1] for action in locker.TOOL_FINDER_ACTIONS}),
             len(locker.TOOL_FINDER_ACTIONS),

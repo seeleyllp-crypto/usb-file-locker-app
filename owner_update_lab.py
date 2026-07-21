@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "The Overview CURRENT ACTIVITY strip now rotates a useful local customer message every 12 seconds while idle.",
-    "Eight fixed tips cover safe preview, key backup, recovery testing, download checks, audit review, and updates.",
-    "A running lock, unlock, scan, or verification job always replaces the tip with its real progress text.",
-    "Tips return automatically after the active job finishes without changing the operation result shown below.",
-    "The message timer is canceled during shutdown so no delayed Tk callback remains after the app closes.",
-    "Messages are built into the signed app and never come from a webhook, downloaded script, or free-form command.",
-    "No message includes or reads filenames, paths, USB key IDs, PINs, passwords, license keys, or file contents.",
-    "The feature adds no panel, popup, canvas, scrollbar, or page height, preserving the fixed 860x520 layout.",
-    "Receipt Comparison and the latest 10 session-only normalized aggregate receipts remain available.",
-    "Optional one-time Preview Guard still binds the next lock start to the exact reviewed queue and targets.",
-    "Customer data, receipt history, and rotating-message state remain local and are never sent to the API.",
+    "Tip Center shows the same fixed local guidance that rotates in Overview every 12 seconds while idle.",
+    "Customers can move to the previous or next tip, pause or resume rotation, and reset to the first tip.",
+    "Manual movement restarts one countdown so multiple message timers cannot collect in the background.",
+    "Pause cancels the active timer; resume creates one new timer; shutdown still cancels any remaining callback.",
+    "The fixed 640x350 Tip Center has no canvas, scrollbar, page growth, free-form field, or downloaded content.",
+    "Tip Center is available from Overview MORE TOOLS and the allowlisted local Tool Finder catalog.",
+    "A running lock, unlock, scan, or verification job always replaces the Overview tip with real progress.",
+    "Tip position, pause state, and navigation remain in memory and reset when the app closes.",
+    "Messages never read or include filenames, paths, USB key IDs, PINs, passwords, keys, or file contents.",
+    "No Discord URL, webhook, customer record, message state, or navigation event is saved, logged, or uploaded.",
+    "Receipt Comparison, Receipt History, Safe Lock Preview, and Preview Guard remain available.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

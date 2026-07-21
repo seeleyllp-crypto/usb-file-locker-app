@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.26"
+DESKTOP_APP_VERSION = "2026.07.18.27"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -68,6 +68,7 @@ TOOL_FINDER_ACTIONS = (
     ("Access", "Panic Lock Now", "panic_lock_now"),
     ("Access", "License Center", "open_license_center"),
     ("Access", "Local Readiness Check", "show_local_readiness"),
+    ("Guidance", "Tip Center", "open_tip_center"),
     ("Locking", "Safe Lock Preview", "open_safe_lock_preview"),
     ("Locking", "Receipt History", "open_last_lock_receipt"),
     ("Locking", "Receipt Comparison", "open_lock_receipt_comparison"),
@@ -6030,6 +6031,7 @@ class USBFileLocker(tk.Tk):
         self.overview_activity_var = tk.StringVar(value="READY")
         self.customer_message_index = -1
         self.customer_message_text = customer_idle_message(0)
+        self.customer_message_paused = False
         self.customer_message_after_id = None
         self.overview_refresh_after_id = None
         self.breach_refresh_after_id = None
@@ -6044,6 +6046,11 @@ class USBFileLocker(tk.Tk):
         self.license_gated_buttons = {}
         self.secondary_windows = []
         self.tool_finder_window = None
+        self.tip_center_window = None
+        self.tip_center_message_var = None
+        self.tip_center_position_var = None
+        self.tip_center_mode_var = None
+        self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
         self.last_lock_receipt_window = None
@@ -6388,6 +6395,10 @@ class USBFileLocker(tk.Tk):
         overview_more_menu.add_command(
             label="Find a tool",
             command=self.open_tool_finder,
+        )
+        overview_more_menu.add_command(
+            label="Open Tip Center",
+            command=self.open_tip_center,
         )
         overview_more_menu.add_command(
             label="Preview lock queue",
@@ -6913,21 +6924,76 @@ class USBFileLocker(tk.Tk):
         except (AttributeError, tk.TclError):
             return
 
-    def rotate_customer_message(self):
+    def restart_customer_message_timer(self):
+        after_id = self.customer_message_after_id
         self.customer_message_after_id = None
-        if self.closing or not self.winfo_exists():
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        if self.closing or self.customer_message_paused or not self.winfo_exists():
             return
-        self.customer_message_index = (
-            self.customer_message_index + 1
-        ) % len(CUSTOMER_IDLE_MESSAGES)
-        self.customer_message_text = customer_idle_message(
-            self.customer_message_index
-        )
-        self.update_overview_status()
         self.customer_message_after_id = self.after(
             CUSTOMER_MESSAGE_INTERVAL_MS,
             self.rotate_customer_message,
         )
+
+    def set_customer_message(self, index, restart_timer=True):
+        try:
+            normalized_index = int(index) % len(CUSTOMER_IDLE_MESSAGES)
+        except (TypeError, ValueError):
+            normalized_index = 0
+        self.customer_message_index = normalized_index
+        self.customer_message_text = customer_idle_message(normalized_index)
+        self.update_overview_status()
+        self.refresh_tip_center()
+        if restart_timer:
+            self.restart_customer_message_timer()
+
+    def move_customer_message(self, step):
+        try:
+            delta = int(step)
+        except (TypeError, ValueError):
+            delta = 1
+        current = self.customer_message_index
+        if current < 0:
+            current = 0
+        self.set_customer_message(current + delta)
+
+    def toggle_customer_message_pause(self):
+        self.customer_message_paused = not self.customer_message_paused
+        self.restart_customer_message_timer()
+        self.refresh_tip_center()
+
+    def rotate_customer_message(self):
+        self.customer_message_after_id = None
+        if self.closing or self.customer_message_paused or not self.winfo_exists():
+            return
+        self.set_customer_message(self.customer_message_index + 1, restart_timer=False)
+        self.restart_customer_message_timer()
+
+    def refresh_tip_center(self):
+        window = self.tip_center_window
+        if window is None:
+            return
+        try:
+            if not window.winfo_exists():
+                return
+            self.tip_center_message_var.set(self.customer_message_text)
+            self.tip_center_position_var.set(
+                f"TIP {self.customer_message_index + 1} OF {len(CUSTOMER_IDLE_MESSAGES)}"
+            )
+            self.tip_center_mode_var.set(
+                "AUTO ROTATION PAUSED"
+                if self.customer_message_paused
+                else "AUTO ROTATES EVERY 12 SECONDS"
+            )
+            self.tip_center_toggle_button.configure(
+                text="RESUME" if self.customer_message_paused else "PAUSE"
+            )
+        except (AttributeError, tk.TclError):
+            return
 
     def refresh_overview_loop(self):
         self.overview_refresh_after_id = None
@@ -6938,6 +7004,168 @@ class USBFileLocker(tk.Tk):
             750,
             self.refresh_overview_loop,
         )
+
+    def open_tip_center(self, _event=None):
+        if self.tip_center_window is not None:
+            try:
+                if self.tip_center_window.winfo_exists():
+                    self.tip_center_window.deiconify()
+                    self.tip_center_window.lift()
+                    self.tip_center_window.focus_set()
+                    return "break"
+            except tk.TclError:
+                pass
+            self.tip_center_window = None
+
+        window = tk.Toplevel(self)
+        self.tip_center_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Tip Center")
+        window.geometry("640x350")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        self.tip_center_message_var = tk.StringVar(window)
+        self.tip_center_position_var = tk.StringVar(window)
+        self.tip_center_mode_var = tk.StringVar(window)
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=20)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Tip Center",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 22, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header,
+            textvariable=self.tip_center_position_var,
+            bg=SURFACE,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+            padx=11,
+            pady=6,
+        ).pack(side="right", pady=(3, 0))
+        tk.Label(
+            outer,
+            text="LOCAL SESSION GUIDANCE | ACTIVE JOB PROGRESS ALWAYS TAKES PRIORITY",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(3, 14))
+
+        message_panel = tk.Frame(
+            outer,
+            bg=FIELD,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        message_panel.pack(fill="x")
+        tk.Label(
+            message_panel,
+            textvariable=self.tip_center_message_var,
+            bg=FIELD,
+            fg=TEXT,
+            font=("Segoe UI", 14, "bold"),
+            justify="left",
+            wraplength=540,
+        ).pack(anchor="w", padx=18, pady=22)
+
+        tk.Label(
+            outer,
+            textvariable=self.tip_center_mode_var,
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", pady=(14, 2))
+        tk.Label(
+            outer,
+            text="Messages are fixed inside VaultLink and use no webhooks, files, paths, secrets, or downloaded commands.",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+            justify="left",
+            wraplength=580,
+        ).pack(anchor="w")
+
+        actions = tk.Frame(outer, bg=BG)
+        actions.pack(fill="x", side="bottom", pady=(14, 0))
+        tk.Button(
+            actions,
+            text="PREVIOUS",
+            command=lambda: self.move_customer_message(-1),
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="NEXT",
+            command=lambda: self.move_customer_message(1),
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=15, ipady=7)
+        self.tip_center_toggle_button = tk.Button(
+            actions,
+            text="PAUSE",
+            command=self.toggle_customer_message_pause,
+            bg=BLUE,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.tip_center_toggle_button.pack(
+            side="left", padx=(8, 0), ipadx=13, ipady=7
+        )
+        tk.Button(
+            actions,
+            text="RESET",
+            command=lambda: self.set_customer_message(0),
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(8, 0), ipadx=12, ipady=7)
+        tk.Button(
+            actions,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=12, ipady=7)
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if self.tip_center_window is window:
+                self.tip_center_window = None
+                self.tip_center_message_var = None
+                self.tip_center_position_var = None
+                self.tip_center_mode_var = None
+                self.tip_center_toggle_button = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        window.bind("<Left>", lambda _event: self.move_customer_message(-1))
+        window.bind("<Right>", lambda _event: self.move_customer_message(1))
+        window.bind("<space>", lambda _event: self.toggle_customer_message_pause())
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        self.refresh_tip_center()
+        window.lift()
+        return "break"
 
     def open_last_lock_receipt(self, _event=None):
         if self.last_lock_receipt_window is not None:
