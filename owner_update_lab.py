@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "The fixed no-scroll app and Receipt Review now cancel recurring local timers cleanly before the Tk window closes.",
-    "A live local-only Overview shows aggregate access, queue, selection, PIN mode, license, and activity without paths, names, secrets, or contents.",
-    "Safe Lock Preview opens from MORE TOOLS, Tool Finder, or Ctrl+Shift+P without changing queued files.",
+    "The fixed no-scroll Safe Lock Preview opens from MORE TOOLS, Tool Finder, or Ctrl+Shift+P without changing queued files.",
     "Preview checks up to 1,000 entries for missing, duplicate, already-locked, linked, unsupported, invalid, inaccessible, and truncated work.",
     "Preview never reads file contents or locks, deletes, renames, copies, or uploads anything.",
+    "Optional one-time Preview Guard binds the next lock start to the exact reviewed queue and selected targets.",
+    "An armed guard blocks changed queues, changed targets, over-limit work, or stale file readiness without changing files.",
+    "A matching guard is consumed only when LOCK COPY or LOCK + REMOVE ORIGINAL starts successfully.",
+    "Guard approvals stay in session memory and clear on USB unload, panic lock, app exit, or manual clear.",
     "QUEUE TOOLS can save, restore, or clear one exact session-only queue checkpoint without changing files.",
-    "Checkpoint comparison auto-refreshes in the open preview and reports only aggregate match, added, removed, order, and limit states.",
     "Checkpoint paths stay in memory, never enter logs, exports, or API requests, and clear on USB unload, panic lock, or exit.",
     "Queue repair removes selected problem categories or keeps ready items while changing only the visible queue.",
     "Checkpoint restore and repair share up to ten guarded undo records that refuse to overwrite newer edits.",
-    "Tool Finder opens 28 fixed customer commands from MORE TOOLS or Ctrl+K and cannot execute free-form commands.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

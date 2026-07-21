@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.21"
+DESKTOP_APP_VERSION = "2026.07.18.22"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -2278,39 +2278,44 @@ def safe_lock_queue_cleanup_plan(
     }
 
 
+def _bounded_safe_queue_snapshot(entries, max_items, label):
+    if (
+        type(max_items) is not int
+        or not 1 <= max_items <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+    ):
+        raise ValueError("Safe queue snapshot item limit is invalid.")
+    try:
+        iterator = iter(entries)
+    except TypeError as exc:
+        raise ValueError(f"{label} needs a bounded queue.") from exc
+    supplied = list(islice(iterator, max_items + 1))
+    snapshot = []
+    for raw_entry in supplied[:max_items]:
+        try:
+            value = os.fspath(raw_entry)
+        except TypeError as exc:
+            raise ValueError(f"{label} contains an invalid queue entry.") from exc
+        if not isinstance(value, str):
+            raise ValueError(f"{label} contains an invalid queue entry.")
+        snapshot.append(value)
+    return tuple(snapshot), len(supplied) > max_items
+
+
 def safe_lock_queue_checkpoint_report(
     checkpoint,
     current_entries,
     max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
 ):
-    if (
-        type(max_items) is not int
-        or not 1 <= max_items <= MAX_SAFE_LOCK_PREVIEW_ITEMS
-    ):
-        raise ValueError("Queue checkpoint item limit is invalid.")
-
-    def bounded_snapshot(entries, label):
-        try:
-            iterator = iter(entries)
-        except TypeError as exc:
-            raise ValueError(f"{label} needs a bounded queue.") from exc
-        supplied = list(islice(iterator, max_items + 1))
-        snapshot = []
-        for raw_entry in supplied[:max_items]:
-            try:
-                value = os.fspath(raw_entry)
-            except TypeError as exc:
-                raise ValueError(f"{label} contains an invalid queue entry.") from exc
-            if not isinstance(value, str):
-                raise ValueError(f"{label} contains an invalid queue entry.")
-            snapshot.append(value)
-        return tuple(snapshot), len(supplied) > max_items
-
-    saved, saved_truncated = bounded_snapshot(checkpoint, "Queue checkpoint")
+    saved, saved_truncated = _bounded_safe_queue_snapshot(
+        checkpoint,
+        max_items,
+        "Queue checkpoint",
+    )
     if saved_truncated:
         raise ValueError("Queue checkpoint exceeds the 1,000-item safety limit.")
-    current, current_truncated = bounded_snapshot(
+    current, current_truncated = _bounded_safe_queue_snapshot(
         current_entries,
+        max_items,
         "Current queue",
     )
     if current_truncated:
@@ -2342,6 +2347,71 @@ def safe_lock_queue_checkpoint_report(
         "removed_items": removed_items,
         "reordered": reordered,
         "comparison_limited": False,
+    }
+
+
+def safe_lock_preview_guard_report(
+    approval,
+    current_queue,
+    current_targets,
+    max_items=MAX_SAFE_LOCK_PREVIEW_ITEMS,
+):
+    queue_snapshot, queue_truncated = _bounded_safe_queue_snapshot(
+        current_queue,
+        max_items,
+        "Current queue",
+    )
+    target_snapshot, targets_truncated = _bounded_safe_queue_snapshot(
+        current_targets,
+        max_items,
+        "Current lock targets",
+    )
+    if approval is None:
+        return {
+            "schema_version": 1,
+            "state": "NOT_ARMED",
+            "approved_queue_items": 0,
+            "approved_target_items": 0,
+            "current_queue_items": len(queue_snapshot),
+            "current_target_items": len(target_snapshot),
+            "comparison_limited": queue_truncated or targets_truncated,
+        }
+    if not isinstance(approval, dict):
+        raise ValueError("Preview Guard approval is invalid.")
+    approved_queue, approved_queue_truncated = _bounded_safe_queue_snapshot(
+        approval.get("queue", ()),
+        max_items,
+        "Approved queue",
+    )
+    approved_targets, approved_targets_truncated = _bounded_safe_queue_snapshot(
+        approval.get("targets", ()),
+        max_items,
+        "Approved lock targets",
+    )
+    limited = any(
+        (
+            queue_truncated,
+            targets_truncated,
+            approved_queue_truncated,
+            approved_targets_truncated,
+        )
+    )
+    if limited:
+        state = "LIMIT"
+    elif approved_queue != queue_snapshot:
+        state = "QUEUE_CHANGED"
+    elif approved_targets != target_snapshot:
+        state = "TARGETS_CHANGED"
+    else:
+        state = "MATCH"
+    return {
+        "schema_version": 1,
+        "state": state,
+        "approved_queue_items": len(approved_queue),
+        "approved_target_items": len(approved_targets),
+        "current_queue_items": len(queue_snapshot),
+        "current_target_items": len(target_snapshot),
+        "comparison_limited": limited,
     }
 
 
@@ -2439,6 +2509,40 @@ def safe_lock_preview_summary(report):
     ):
         raise ValueError("Safe Lock Preview changed checkpoint is inconsistent.")
 
+    guard_state = current.get("guard_state", "NOT_ARMED")
+    if guard_state not in {
+        "NOT_ARMED",
+        "MATCH",
+        "QUEUE_CHANGED",
+        "TARGETS_CHANGED",
+        "LIMIT",
+        "STALE",
+    }:
+        raise ValueError("Safe Lock Preview Guard state is invalid.")
+    guard_counts = {}
+    for name in (
+        "guard_approved_queue_items",
+        "guard_approved_target_items",
+        "guard_current_target_items",
+    ):
+        value = current.get(name, 0)
+        if (
+            type(value) is not int
+            or not 0 <= value <= MAX_SAFE_LOCK_PREVIEW_ITEMS
+        ):
+            raise ValueError("Safe Lock Preview Guard counts are invalid.")
+        guard_counts[name] = value
+    if guard_state == "NOT_ARMED" and (
+        guard_counts["guard_approved_queue_items"]
+        or guard_counts["guard_approved_target_items"]
+    ):
+        raise ValueError("Safe Lock Preview Guard approval is inconsistent.")
+    if guard_state == "MATCH" and (
+        guard_counts["guard_approved_target_items"]
+        != guard_counts["guard_current_target_items"]
+    ):
+        raise ValueError("Safe Lock Preview Guard target counts are inconsistent.")
+
     lines = [
         "VaultLink Safe Lock Preview",
         f"Status: {status}",
@@ -2461,6 +2565,10 @@ def safe_lock_preview_summary(report):
         f"Added since checkpoint: {checkpoint_counts['checkpoint_added_items']}",
         f"Removed since checkpoint: {checkpoint_counts['checkpoint_removed_items']}",
         f"Order changed: {'YES' if checkpoint_reordered else 'NO'}",
+        f"Preview Guard: {guard_state}",
+        f"Guard approved queue items: {guard_counts['guard_approved_queue_items']}",
+        f"Guard approved targets: {guard_counts['guard_approved_target_items']}",
+        f"Current lock targets: {guard_counts['guard_current_target_items']}",
         "",
         (
             "Preview only: no file contents were read and no files were locked, "
@@ -5546,6 +5654,7 @@ class USBFileLocker(tk.Tk):
         self.safe_lock_preview_window = None
         self.safe_lock_queue_history = []
         self.safe_lock_queue_checkpoint = None
+        self.safe_lock_preview_approval = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.try_load_last_key()
@@ -5743,7 +5852,7 @@ class USBFileLocker(tk.Tk):
                 fg=MUTED,
                 font=("Segoe UI", 8, "bold"),
             ).pack(anchor="w", padx=11, pady=(9, 3))
-            tk.Label(
+            value_label = tk.Label(
                 metric,
                 textvariable=variable,
                 bg=FIELD,
@@ -6417,6 +6526,7 @@ class USBFileLocker(tk.Tk):
         issue_detail_two_var = tk.StringVar(window, value="")
         limit_var = tk.StringVar(window, value="")
         observed_queue = [None]
+        observed_targets = [None]
         queue_watch_after_id = [None]
 
         outer = tk.Frame(window, bg=BG)
@@ -6471,7 +6581,7 @@ class USBFileLocker(tk.Tk):
                 fg=MUTED,
                 font=("Segoe UI", 8, "bold"),
             ).pack(anchor="w", padx=11, pady=(9, 3))
-            tk.Label(
+            value_label = tk.Label(
                 metric,
                 textvariable=variable,
                 bg=FIELD,
@@ -6479,12 +6589,14 @@ class USBFileLocker(tk.Tk):
                 font=("Segoe UI", 11, "bold"),
                 wraplength=150,
                 justify="left",
-            ).pack(anchor="w", padx=11, pady=(0, 10))
+            )
+            value_label.pack(anchor="w", padx=11, pady=(0, 10))
+            return value_label
 
         add_metric(0, "CHECKED", queued_var, BLUE)
         add_metric(1, "READY ITEMS", ready_var, GREEN)
         add_metric(2, "REVIEW ITEMS", review_var, YELLOW)
-        add_metric(3, "USB ACCESS", access_var, GREEN)
+        guard_value_label = add_metric(3, "LOCK GUARD", access_var, YELLOW)
 
         details = tk.Frame(
             outer,
@@ -6533,7 +6645,9 @@ class USBFileLocker(tk.Tk):
         def refresh_preview(_event=None, quiet=False):
             try:
                 queue_entries = self.file_list.get(0, tk.END)
+                target_entries = tuple(self.selected_or_all_files())
                 observed_queue[0] = queue_entries
+                observed_targets[0] = target_entries
                 report = build_safe_lock_preview(
                     queue_entries,
                     key_ready=self.key is not None,
@@ -6589,6 +6703,41 @@ class USBFileLocker(tk.Tk):
                     "checkpoint_reordered": checkpoint_report["reordered"],
                 }
             )
+            try:
+                guard_report = safe_lock_preview_guard_report(
+                    self.safe_lock_preview_approval,
+                    queue_entries,
+                    target_entries,
+                )
+            except ValueError:
+                guard_report = {
+                    "state": "LIMIT",
+                    "approved_queue_items": 0,
+                    "approved_target_items": 0,
+                    "current_target_items": min(
+                        len(target_entries),
+                        MAX_SAFE_LOCK_PREVIEW_ITEMS,
+                    ),
+                }
+            if (
+                guard_report["state"] == "MATCH"
+                and not report["can_continue"]
+            ):
+                guard_report["state"] = "STALE"
+            report_state.update(
+                {
+                    "guard_state": guard_report["state"],
+                    "guard_approved_queue_items": guard_report[
+                        "approved_queue_items"
+                    ],
+                    "guard_approved_target_items": guard_report[
+                        "approved_target_items"
+                    ],
+                    "guard_current_target_items": guard_report[
+                        "current_target_items"
+                    ],
+                }
+            )
             status_var.set(report["status"])
             status_label.configure(
                 fg=GREEN if report["can_continue"] else YELLOW
@@ -6596,7 +6745,24 @@ class USBFileLocker(tk.Tk):
             queued_var.set(str(report["checked_items"]))
             ready_var.set(str(report["ready_items"]))
             review_var.set(str(report["review_items"]))
-            access_var.set("READY" if report["access_ready"] else "KEY REQUIRED")
+            if not report["access_ready"]:
+                guard_text = "KEY REQUIRED"
+            elif guard_report["state"] == "NOT_ARMED":
+                guard_text = "OPTIONAL"
+            elif guard_report["state"] == "MATCH":
+                guard_text = "ARMED"
+            else:
+                guard_text = "BLOCKING"
+            access_var.set(guard_text)
+            guard_value_label.configure(
+                fg=(
+                    GREEN
+                    if guard_text == "ARMED"
+                    else RED
+                    if guard_text == "BLOCKING"
+                    else YELLOW
+                )
+            )
             ready_detail_var.set(
                 f"FILES {report['files']}   |   FOLDERS {report['folders']}"
             )
@@ -6663,6 +6829,7 @@ class USBFileLocker(tk.Tk):
 
         def update_cleanup_menu_state():
             checkpoint_ready = self.safe_lock_queue_checkpoint is not None
+            guard_ready = self.safe_lock_preview_approval is not None
             cleanup_menu.entryconfigure(
                 restore_checkpoint_index,
                 state="normal" if checkpoint_ready else "disabled",
@@ -6670,6 +6837,10 @@ class USBFileLocker(tk.Tk):
             cleanup_menu.entryconfigure(
                 clear_checkpoint_index,
                 state="normal" if checkpoint_ready else "disabled",
+            )
+            cleanup_menu.entryconfigure(
+                clear_guard_index,
+                state="normal" if guard_ready else "disabled",
             )
             cleanup_menu.entryconfigure(
                 undo_menu_index,
@@ -6743,6 +6914,44 @@ class USBFileLocker(tk.Tk):
             refresh_preview()
             self.status.set("Cleared the session checkpoint; the queue did not change.")
             log_event("safe_lock_queue_checkpoint_clear", "aggregate", "ok")
+
+        def arm_preview_guard():
+            if self.busy:
+                self.status.set(
+                    "Wait for the current lock or unlock job before arming Preview Guard."
+                )
+                return
+            refresh_preview()
+            if not report_state.get("can_continue"):
+                self.status.set(
+                    "Preview Guard needs a clean queue and verified USB access."
+                )
+                return
+            queue_entries = tuple(self.file_list.get(0, tk.END))
+            target_entries = tuple(self.selected_or_all_files())
+            if not target_entries:
+                self.status.set("Select or add lock targets before arming Preview Guard.")
+                return
+            self.safe_lock_preview_approval = {
+                "queue": queue_entries,
+                "targets": target_entries,
+            }
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set(
+                f"One-time Preview Guard armed for {len(target_entries)} target(s)."
+            )
+            log_event("safe_lock_preview_guard_arm", "aggregate", "ok")
+
+        def clear_preview_guard():
+            if self.safe_lock_preview_approval is None:
+                self.status.set("Preview Guard is not armed.")
+                return
+            self.safe_lock_preview_approval = None
+            update_cleanup_menu_state()
+            refresh_preview()
+            self.status.set("One-time Preview Guard cleared; the queue did not change.")
+            log_event("safe_lock_preview_guard_clear", "aggregate", "ok")
 
         def apply_queue_cleanup(categories=(), keep_ready=False):
             if self.busy:
@@ -6818,7 +7027,11 @@ class USBFileLocker(tk.Tk):
                 if not window.winfo_exists():
                     return
                 current = self.file_list.get(0, tk.END)
-                if current != observed_queue[0]:
+                targets = tuple(self.selected_or_all_files())
+                if (
+                    current != observed_queue[0]
+                    or targets != observed_targets[0]
+                ):
                     refresh_preview(quiet=True)
                 queue_watch_after_id[0] = window.after(
                     500,
@@ -6897,6 +7110,16 @@ class USBFileLocker(tk.Tk):
         clear_checkpoint_index = cleanup_menu.index("end")
         cleanup_menu.add_separator()
         cleanup_menu.add_command(
+            label="Arm one-time Preview Guard",
+            command=arm_preview_guard,
+        )
+        cleanup_menu.add_command(
+            label="Clear Preview Guard",
+            command=clear_preview_guard,
+        )
+        clear_guard_index = cleanup_menu.index("end")
+        cleanup_menu.add_separator()
+        cleanup_menu.add_command(
             label="Remove broken entries",
             command=lambda: apply_queue_cleanup(
                 ("missing", "invalid", "inaccessible")
@@ -6941,6 +7164,7 @@ class USBFileLocker(tk.Tk):
         ).pack(side="right", ipadx=15, ipady=8)
         window.bind("<F5>", refresh_preview)
         window.bind("<Control-z>", undo_queue_cleanup)
+        window.bind("<<SafeLockGuardChanged>>", refresh_preview)
         window.bind("<Escape>", lambda _event: window.destroy())
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
@@ -7833,6 +8057,7 @@ class USBFileLocker(tk.Tk):
         self.key = None
         self.safe_lock_queue_history.clear()
         self.safe_lock_queue_checkpoint = None
+        self.safe_lock_preview_approval = None
         try:
             self.pin_entry.delete(0, "end")
         except Exception:
@@ -8938,6 +9163,7 @@ class USBFileLocker(tk.Tk):
             setattr(self, attribute, None)
         self.safe_lock_queue_history.clear()
         self.safe_lock_queue_checkpoint = None
+        self.safe_lock_preview_approval = None
         self.destroy()
 
     def cancel_current_job(self):
@@ -9598,6 +9824,67 @@ class USBFileLocker(tk.Tk):
             return [self.file_list.get(index) for index in selected]
         return list(self.file_list.get(0, "end"))
 
+    def safe_lock_preview_guard_allows(self, paths):
+        approval = self.safe_lock_preview_approval
+        if approval is None:
+            return True
+        current_queue = tuple(self.file_list.get(0, tk.END))
+        try:
+            guard = safe_lock_preview_guard_report(
+                approval,
+                current_queue,
+                tuple(paths),
+            )
+        except ValueError:
+            guard = {"state": "LIMIT"}
+        state = guard["state"]
+        if state == "MATCH":
+            try:
+                fresh_preview = build_safe_lock_preview(
+                    current_queue,
+                    key_ready=self.key is not None,
+                    owner_policy_enabled=bool(self.owner_policy),
+                    owner_verified=bool(
+                        self.owner_policy
+                        and self.active_key_matches_owner_policy()
+                    ),
+                )
+            except (AttributeError, OSError, ValueError):
+                fresh_preview = {"can_continue": False}
+            if fresh_preview.get("can_continue"):
+                return True
+            state = "STALE"
+        reason = {
+            "QUEUE_CHANGED": "the queue changed after approval",
+            "TARGETS_CHANGED": "the selected lock targets changed after approval",
+            "LIMIT": "the queue or target list exceeded the 1,000-item safety limit",
+            "STALE": "a fresh preview found missing, linked, inaccessible, or otherwise unready work",
+        }.get(state, "the approved lock job no longer matches")
+        self.status.set(f"Preview Guard blocked this lock because {reason}.")
+        log_event("safe_lock_preview_guard_block", "aggregate", "failed")
+        messagebox.showwarning(
+            "Preview Guard stopped the lock",
+            "The one-time Preview Guard stopped this lock because "
+            f"{reason}.\n\nNo files were changed. Review the aggregate preview "
+            "and arm Preview Guard again for the current targets.",
+            parent=self,
+        )
+        self.open_safe_lock_preview()
+        return False
+
+    def consume_safe_lock_preview_guard(self):
+        if self.safe_lock_preview_approval is None:
+            return
+        self.safe_lock_preview_approval = None
+        preview = self.safe_lock_preview_window
+        if preview is not None:
+            try:
+                if preview.winfo_exists():
+                    preview.event_generate("<<SafeLockGuardChanged>>")
+            except tk.TclError:
+                pass
+        log_event("safe_lock_preview_guard_consume", "aggregate", "ok")
+
     def lock_selected(self):
         if not ensure_license_feature("portable-locking", parent=self):
             self.status.set("Locking new files needs an active Starter license.")
@@ -9607,6 +9894,8 @@ class USBFileLocker(tk.Tk):
         paths = self.selected_or_all_files()
         if not paths:
             self.status.set("Add files or folders first.")
+            return
+        if not self.safe_lock_preview_guard_allows(paths):
             return
         pin = self.confirmed_lock_pin()
         if pin is None:
@@ -9643,7 +9932,8 @@ class USBFileLocker(tk.Tk):
                 text += "\n\n" + "\n".join(result["errors"][:5])
             messagebox.showinfo("Lock complete", text)
 
-        self.start_background_job("Lock copy", len(paths), worker, finished)
+        if self.start_background_job("Lock copy", len(paths), worker, finished):
+            self.consume_safe_lock_preview_guard()
 
     def lock_and_remove_selected(self):
         if not ensure_license_feature("portable-locking", parent=self):
@@ -9654,6 +9944,8 @@ class USBFileLocker(tk.Tk):
         paths = self.selected_or_all_files()
         if not paths:
             self.status.set("Add files or folders first.")
+            return
+        if not self.safe_lock_preview_guard_allows(paths):
             return
         folder_count = sum(Path(path).is_dir() for path in paths)
         if not messagebox.askyesno(
@@ -9712,7 +10004,8 @@ class USBFileLocker(tk.Tk):
                 text += "\n\n" + "\n".join(result["errors"][:5])
             messagebox.showinfo("Private lock complete", text)
 
-        self.start_background_job("Lock and verify", len(paths), worker, finished)
+        if self.start_background_job("Lock and verify", len(paths), worker, finished):
+            self.consume_safe_lock_preview_guard()
 
     def unlock_selected(self, output_dir=None):
         if not self.require_key():

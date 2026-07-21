@@ -478,6 +478,55 @@ class DesktopHelperTests(unittest.TestCase):
                 max_items=2,
             )
 
+    def test_safe_lock_preview_guard_report_is_exact_bounded_and_private(self):
+        approval = {
+            "queue": (r"C:\private\alpha.txt", r"C:\private\beta.txt"),
+            "targets": (r"C:\private\alpha.txt",),
+        }
+        matching = locker.safe_lock_preview_guard_report(
+            approval,
+            approval["queue"],
+            approval["targets"],
+        )
+        queue_changed = locker.safe_lock_preview_guard_report(
+            approval,
+            (*approval["queue"], r"C:\private\gamma.txt"),
+            approval["targets"],
+        )
+        targets_changed = locker.safe_lock_preview_guard_report(
+            approval,
+            approval["queue"],
+            (r"C:\private\beta.txt",),
+        )
+        limited = locker.safe_lock_preview_guard_report(
+            {"queue": ("first",), "targets": ("first",)},
+            ("first", "second", "third"),
+            ("first",),
+            max_items=2,
+        )
+        not_armed = locker.safe_lock_preview_guard_report(
+            None,
+            approval["queue"],
+            approval["targets"],
+        )
+
+        self.assertEqual(matching["state"], "MATCH")
+        self.assertEqual(matching["approved_queue_items"], 2)
+        self.assertEqual(matching["approved_target_items"], 1)
+        self.assertEqual(queue_changed["state"], "QUEUE_CHANGED")
+        self.assertEqual(targets_changed["state"], "TARGETS_CHANGED")
+        self.assertEqual(limited["state"], "LIMIT")
+        self.assertTrue(limited["comparison_limited"])
+        self.assertEqual(not_armed["state"], "NOT_ARMED")
+        self.assertEqual(not_armed["approved_queue_items"], 0)
+        serialized = json.dumps(
+            [matching, queue_changed, targets_changed, limited, not_armed]
+        )
+        self.assertNotIn("alpha", serialized)
+        self.assertNotIn("private", serialized)
+        with self.assertRaises(ValueError):
+            locker.safe_lock_preview_guard_report("invalid", (), ())
+
     def test_safe_lock_preview_summary_includes_aggregate_checkpoint_state(self):
         report = locker.build_safe_lock_preview(
             [],
@@ -493,6 +542,10 @@ class DesktopHelperTests(unittest.TestCase):
                 "checkpoint_added_items": 1,
                 "checkpoint_removed_items": 1,
                 "checkpoint_reordered": False,
+                "guard_state": "MATCH",
+                "guard_approved_queue_items": 2,
+                "guard_approved_target_items": 1,
+                "guard_current_target_items": 1,
             }
         )
         summary = locker.safe_lock_preview_summary(report)
@@ -500,6 +553,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Checkpoint saved items: 2", summary)
         self.assertIn("Added since checkpoint: 1", summary)
         self.assertIn("Removed since checkpoint: 1", summary)
+        self.assertIn("Preview Guard: MATCH", summary)
+        self.assertIn("Guard approved targets: 1", summary)
         self.assertNotIn("alpha.txt", summary.lower())
         self.assertNotIn("private", summary.lower())
         self.assertNotIn("C:\\", summary)
@@ -512,6 +567,9 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('label="Save session checkpoint"', source)
         self.assertIn('label="Restore session checkpoint"', source)
         self.assertIn('label="Clear session checkpoint"', source)
+        self.assertIn('label="Arm one-time Preview Guard"', source)
+        self.assertIn('label="Clear Preview Guard"', source)
+        self.assertIn('add_metric(3, "LOCK GUARD"', source)
         self.assertIn("def monitor_queue_changes", source)
         self.assertIn("refresh_preview(quiet=True)", source)
         self.assertIn('label="Remove broken entries"', source)
@@ -531,6 +589,7 @@ class DesktopHelperTests(unittest.TestCase):
         source = inspect.getsource(locker.USBFileLocker.unload_session)
         self.assertIn("self.safe_lock_queue_history.clear()", source)
         self.assertIn("self.safe_lock_queue_checkpoint = None", source)
+        self.assertIn("self.safe_lock_preview_approval = None", source)
 
     def test_close_handler_cancels_tracked_recurring_timers(self):
         source = inspect.getsource(locker.USBFileLocker.close_requested)
@@ -547,6 +606,27 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertIn(f'"{attribute}"', source)
         self.assertIn("self.after_cancel(after_id)", source)
         self.assertIn("self.safe_lock_queue_checkpoint = None", source)
+        self.assertIn("self.safe_lock_preview_approval = None", source)
+
+    def test_preview_guard_enforces_both_lock_starts_and_uses_aggregate_logs(self):
+        guard_source = inspect.getsource(
+            locker.USBFileLocker.safe_lock_preview_guard_allows
+        )
+        lock_copy_source = inspect.getsource(locker.USBFileLocker.lock_selected)
+        lock_remove_source = inspect.getsource(
+            locker.USBFileLocker.lock_and_remove_selected
+        )
+        consume_source = inspect.getsource(
+            locker.USBFileLocker.consume_safe_lock_preview_guard
+        )
+        self.assertIn('"safe_lock_preview_guard_block", "aggregate"', guard_source)
+        self.assertNotIn('log_event("safe_lock_preview_guard_block", path', guard_source)
+        self.assertIn("build_safe_lock_preview(", guard_source)
+        self.assertIn("self.safe_lock_preview_guard_allows(paths)", lock_copy_source)
+        self.assertIn("self.safe_lock_preview_guard_allows(paths)", lock_remove_source)
+        self.assertIn("self.consume_safe_lock_preview_guard()", lock_copy_source)
+        self.assertIn("self.consume_safe_lock_preview_guard()", lock_remove_source)
+        self.assertIn("self.safe_lock_preview_approval = None", consume_source)
 
     def test_local_readiness_summary_is_aggregate_and_privacy_safe(self):
         summary = locker.local_readiness_summary(
