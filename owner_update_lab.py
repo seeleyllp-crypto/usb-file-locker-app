@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Receipt Comparison compares the selected session lock result with the receipt immediately before it.",
-    "The fixed no-scroll window shows status, mode, success-rate, count, duration, Preview Guard, and canceled-state changes.",
-    "Signed deltas cover requested, successful, failed, unprocessed, verified, and removed-original counts.",
-    "Comparison revalidates both receipts and rejects duplicate IDs or reversed chronological order.",
-    "Customers can copy one privacy-safe comparison from Receipt History, MORE TOOLS, or Tool Finder.",
-    "New lock jobs and history clearing close stale comparison windows so old session snapshots do not remain visible.",
-    "Comparisons exclude filenames, paths, USB key IDs, PINs, secrets, file contents, and detailed errors.",
-    "Receipt History still keeps only the latest 10 normalized aggregate results in session memory.",
-    "History and comparisons clear on USB unload or app exit and are never saved or sent to the API.",
-    "Optional one-time Preview Guard binds the next lock start to the exact reviewed queue and selected targets.",
-    "QUEUE TOOLS keeps the session-only checkpoint, guarded undo, and queue-repair controls from earlier releases.",
+    "The Overview CURRENT ACTIVITY strip now rotates a useful local customer message every 12 seconds while idle.",
+    "Eight fixed tips cover safe preview, key backup, recovery testing, download checks, audit review, and updates.",
+    "A running lock, unlock, scan, or verification job always replaces the tip with its real progress text.",
+    "Tips return automatically after the active job finishes without changing the operation result shown below.",
+    "The message timer is canceled during shutdown so no delayed Tk callback remains after the app closes.",
+    "Messages are built into the signed app and never come from a webhook, downloaded script, or free-form command.",
+    "No message includes or reads filenames, paths, USB key IDs, PINs, passwords, license keys, or file contents.",
+    "The feature adds no panel, popup, canvas, scrollbar, or page height, preserving the fixed 860x520 layout.",
+    "Receipt Comparison and the latest 10 session-only normalized aggregate receipts remain available.",
+    "Optional one-time Preview Guard still binds the next lock start to the exact reviewed queue and targets.",
+    "Customer data, receipt history, and rotating-message state remain local and are never sent to the API.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

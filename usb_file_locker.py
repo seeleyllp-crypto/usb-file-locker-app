@@ -41,11 +41,22 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.25"
+DESKTOP_APP_VERSION = "2026.07.18.26"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
+CUSTOMER_MESSAGE_INTERVAL_MS = 12_000
+CUSTOMER_IDLE_MESSAGES = (
+    "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB.",
+    "TIP | KEEP A BACKUP USB KEY IN A DIFFERENT SAFE LOCATION.",
+    "TIP | TEST RECOVERY WITH A COPY BEFORE REMOVING AN ORIGINAL.",
+    "TIP | VERIFY UNFAMILIAR DOWNLOADS BEFORE OPENING THEM.",
+    "TIP | CHECK THE AUDIT LOG AFTER IMPORTANT LOCK OR UNLOCK JOBS.",
+    "TIP | UNPLUG THE MASTER USB KEY WHEN YOU ARE FINISHED.",
+    "TIP | SIGNED UPDATES PRESERVE KEYS, SETTINGS, AND LOCAL DATA.",
+    "TIP | USE SUPPORT REDACTOR BEFORE SHARING ERRORS OR LOG TEXT.",
+)
 TOOL_FINDER_VISIBLE_LIMIT = 10
 MAX_TOOL_FINDER_FAVORITES = 8
 MAX_TOOL_FINDER_RECENT = 8
@@ -4060,6 +4071,19 @@ def security_profile_for_settings(settings):
     return normalize_security_profile_name(settings.get("security_profile", DEFAULT_SECURITY_PROFILE))
 
 
+def customer_idle_message(index):
+    try:
+        normalized_index = int(index)
+    except (TypeError, ValueError):
+        normalized_index = 0
+    return CUSTOMER_IDLE_MESSAGES[normalized_index % len(CUSTOMER_IDLE_MESSAGES)]
+
+
+def customer_activity_text(busy, progress_text, idle_message):
+    source = progress_text if busy else idle_message
+    return str(source or "Ready").strip().upper()[:72]
+
+
 def security_profile_summary(name):
     profile_name = normalize_security_profile_name(name)
     profile = security_profile_settings(profile_name)
@@ -6004,6 +6028,9 @@ class USBFileLocker(tk.Tk):
         self.overview_pin_var = tk.StringVar(value="USB KEY ONLY")
         self.overview_license_var = tk.StringVar(value="CHECKING LICENSE")
         self.overview_activity_var = tk.StringVar(value="READY")
+        self.customer_message_index = -1
+        self.customer_message_text = customer_idle_message(0)
+        self.customer_message_after_id = None
         self.overview_refresh_after_id = None
         self.breach_refresh_after_id = None
         self.key_monitor_after_id = None
@@ -6029,6 +6056,7 @@ class USBFileLocker(tk.Tk):
         self.safe_lock_preview_approval = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
+        self.rotate_customer_message()
         self.try_load_last_key()
         self.apply_access_state()
         self.update_overview_status()
@@ -6876,10 +6904,30 @@ class USBFileLocker(tk.Tk):
             self.overview_pin_var.set(pin_mode.upper())
             self.overview_license_var.set(license_text.upper()[:56])
             self.overview_activity_var.set(
-                str(self.progress_text.get() or "Ready").strip().upper()[:72]
+                customer_activity_text(
+                    self.busy,
+                    self.progress_text.get(),
+                    self.customer_message_text,
+                )
             )
         except (AttributeError, tk.TclError):
             return
+
+    def rotate_customer_message(self):
+        self.customer_message_after_id = None
+        if self.closing or not self.winfo_exists():
+            return
+        self.customer_message_index = (
+            self.customer_message_index + 1
+        ) % len(CUSTOMER_IDLE_MESSAGES)
+        self.customer_message_text = customer_idle_message(
+            self.customer_message_index
+        )
+        self.update_overview_status()
+        self.customer_message_after_id = self.after(
+            CUSTOMER_MESSAGE_INTERVAL_MS,
+            self.rotate_customer_message,
+        )
 
     def refresh_overview_loop(self):
         self.overview_refresh_after_id = None
@@ -10273,6 +10321,7 @@ class USBFileLocker(tk.Tk):
             "key_monitor_after_id",
             "cloud_audit_after_id",
             "auto_update_after_id",
+            "customer_message_after_id",
         ):
             after_id = getattr(self, attribute, None)
             if after_id is None:

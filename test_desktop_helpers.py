@@ -102,6 +102,34 @@ class DesktopHelperTests(unittest.TestCase):
     def test_first_account_and_announcement_sync_starts_early(self):
         self.assertEqual(locker.INITIAL_LICENSE_REFRESH_MS, 1000)
 
+    def test_customer_idle_messages_rotate_every_twelve_seconds(self):
+        self.assertEqual(locker.CUSTOMER_MESSAGE_INTERVAL_MS, 12_000)
+        self.assertGreaterEqual(len(locker.CUSTOMER_IDLE_MESSAGES), 8)
+        self.assertEqual(
+            locker.customer_idle_message(len(locker.CUSTOMER_IDLE_MESSAGES)),
+            locker.CUSTOMER_IDLE_MESSAGES[0],
+        )
+        self.assertEqual(
+            locker.customer_idle_message("bad-index"),
+            locker.CUSTOMER_IDLE_MESSAGES[0],
+        )
+        for message in locker.CUSTOMER_IDLE_MESSAGES:
+            self.assertTrue(message.startswith("TIP | "))
+            self.assertLessEqual(len(message), 72)
+            lowered = message.lower()
+            for forbidden in ("http", "discord", "webhook", "filename", "password", "pin"):
+                self.assertNotIn(forbidden, lowered)
+
+    def test_customer_activity_prioritizes_live_progress(self):
+        self.assertEqual(
+            locker.customer_activity_text(True, "Lock copy: 2/4", "TIP | IDLE"),
+            "LOCK COPY: 2/4",
+        )
+        self.assertEqual(
+            locker.customer_activity_text(False, "Complete", "TIP | IDLE"),
+            "TIP | IDLE",
+        )
+
     def test_main_window_uses_fixed_tabs_without_page_scrolling(self):
         source = Path(locker.__file__).read_text(encoding="utf-8")
         self.assertIn("self.minsize(860, 520)", source)
@@ -123,6 +151,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("configure_vaultlink_ttk_styles(self)", source)
         self.assertIn("self.overview_access_var", source)
         self.assertIn("def update_overview_status(self):", source)
+        self.assertIn("def rotate_customer_message(self):", source)
+        self.assertIn('"customer_message_after_id",', source)
         self.assertIn("def show_local_readiness(self):", source)
         self.assertIn("def open_tool_finder(self, _event=None):", source)
         self.assertIn("def open_safe_lock_preview(self, _event=None):", source)
