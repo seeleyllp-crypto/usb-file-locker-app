@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Tip Center now includes 16 fixed local tips split evenly across Locking, Recovery, Privacy, and Updates.",
-    "A fixed focus menu selects All or one category without accepting free-form text or downloaded content.",
-    "Previous, Next, Reset, and 12-second automatic rotation stay inside the selected focus category.",
-    "The position badge shows the current category and exact position within the selected focus.",
-    "Copy Tip places only the current built-in message on the Windows clipboard and records no clipboard text.",
-    "The fixed 720x390 Tip Center has no canvas, scrollbar, page growth, customer field, or remote command.",
-    "Focus, position, pause state, and navigation remain in memory and reset when the app closes.",
-    "Active lock, unlock, scan, or verification progress still replaces the Overview tip until work finishes.",
-    "Messages never read or include filenames, paths, USB key IDs, PINs, passwords, keys, or file contents.",
-    "No Discord URL, webhook, copied tip, message state, or navigation event is saved, logged, or uploaded.",
-    "Tip Center remains available from Overview MORE TOOLS and the allowlisted local Tool Finder catalog.",
+    "Customers can favorite up to eight built-in Tip Center messages and use a dedicated Favorites focus.",
+    "Favorites are stored only as stable allowlisted IDs, so message wording can change without losing selections.",
+    "Unknown IDs, duplicates, malformed values, and favorites beyond the eight-item limit are discarded.",
+    "The selected fixed focus is preserved across updates; empty Favorites focus safely falls back to All.",
+    "Favorite and Unfavorite update the visible focused set immediately and never store copied message text.",
+    "Removing the last favorite while viewing Favorites returns to All without leaving an empty rotation.",
+    "The fixed 720x390 Tip Center still has no canvas, scrollbar, free-form field, or downloaded content.",
+    "Sixteen tips remain evenly split across Locking, Recovery, Privacy, and Updates categories.",
+    "Active job progress still replaces the Overview tip, and one 12-second timer controls idle rotation.",
+    "No filename, path, key ID, PIN, password, file content, webhook, or customer record enters favorites.",
+    "Tip IDs and fixed focus stay in local settings; navigation, pause state, and copied text remain session-only.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]
 

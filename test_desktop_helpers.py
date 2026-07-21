@@ -124,11 +124,11 @@ class DesktopHelperTests(unittest.TestCase):
     def test_customer_tip_focuses_are_fixed_balanced_and_bounded(self):
         self.assertEqual(
             locker.CUSTOMER_TIP_FOCUSES,
-            ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES"),
+            ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES", "FAVORITES"),
         )
         self.assertEqual(locker.normalize_customer_tip_focus("bad"), "ALL")
         self.assertEqual(len(locker.customer_tip_indexes("ALL")), 16)
-        for focus in locker.CUSTOMER_TIP_FOCUSES[1:]:
+        for focus in locker.CUSTOMER_TIP_FOCUSES[1:5]:
             indexes = locker.customer_tip_indexes(focus)
             self.assertEqual(len(indexes), 4)
             self.assertTrue(
@@ -136,6 +136,31 @@ class DesktopHelperTests(unittest.TestCase):
             )
             self.assertEqual(locker.customer_tip_position(indexes[0], focus), (1, 4))
             self.assertEqual(locker.customer_tip_position(indexes[-1], focus), (4, 4))
+        self.assertEqual(locker.customer_tip_indexes("FAVORITES"), ())
+        favorite_ids = ["recovery-drill", "privacy-audit"]
+        favorite_indexes = locker.customer_tip_indexes("FAVORITES", favorite_ids)
+        self.assertEqual(len(favorite_indexes), 2)
+        self.assertEqual(
+            [locker.customer_tip_id(index) for index in favorite_indexes],
+            favorite_ids,
+        )
+        self.assertEqual(
+            locker.customer_tip_position(favorite_indexes[-1], "FAVORITES", favorite_ids),
+            (2, 2),
+        )
+
+    def test_customer_tip_favorites_reject_unknown_duplicates_and_overflow(self):
+        raw = [
+            locker.CUSTOMER_TIP_IDS[0],
+            "unknown-tip",
+            locker.CUSTOMER_TIP_IDS[0],
+            *locker.CUSTOMER_TIP_IDS[1:10],
+        ]
+        normalized = locker.normalize_customer_tip_favorites(raw)
+        self.assertEqual(normalized, list(locker.CUSTOMER_TIP_IDS[:8]))
+        self.assertEqual(len(normalized), locker.MAX_CUSTOMER_TIP_FAVORITES)
+        with self.assertRaises(ValueError):
+            locker.normalize_customer_tip_favorites([], 0)
 
     def test_customer_activity_prioritizes_live_progress(self):
         self.assertEqual(
@@ -190,11 +215,12 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("main_scrollbar", source)
         self.assertNotIn("self.main_horizontal_scrollbar", source)
 
-    def test_tip_center_is_fixed_session_only_and_has_no_scroller(self):
+    def test_tip_center_is_fixed_bounded_and_has_no_scroller(self):
         source = inspect.getsource(locker.USBFileLocker.open_tip_center)
         self.assertIn('window.geometry("720x390")', source)
         self.assertIn("window.resizable(False, False)", source)
         self.assertIn('text="TIP FOCUS"', source)
+        self.assertIn('text="FAVORITE TIP"', source)
         self.assertIn('text="PREVIOUS"', source)
         self.assertIn('text="NEXT"', source)
         self.assertIn('text="PAUSE"', source)
@@ -355,6 +381,28 @@ class DesktopHelperTests(unittest.TestCase):
             saved["tool_finder_favorites"],
             ["open_shop", "open_log"],
         )
+
+    def test_save_settings_keeps_only_fixed_tip_favorites_and_valid_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            with mock.patch.object(locker, "SETTINGS_FILE", settings_path):
+                locker.save_settings(
+                    {
+                        "tip_center_favorites": [
+                            "recovery-drill",
+                            "unknown-tip",
+                            "recovery-drill",
+                            "privacy-audit",
+                        ],
+                        "tip_center_focus": "favorites",
+                    }
+                )
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["tip_center_favorites"],
+            ["recovery-drill", "privacy-audit"],
+        )
+        self.assertEqual(saved["tip_center_focus"], "FAVORITES")
 
     def test_safe_lock_preview_classifies_queue_without_reading_contents(self):
         with tempfile.TemporaryDirectory() as temp_dir:

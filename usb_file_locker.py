@@ -41,32 +41,41 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.28"
+DESKTOP_APP_VERSION = "2026.07.18.29"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 CUSTOMER_MESSAGE_INTERVAL_MS = 12_000
-CUSTOMER_TIP_FOCUSES = ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES")
-CUSTOMER_TIPS = (
-    ("LOCKING", "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB."),
-    ("LOCKING", "TIP | LOAD THE INTENDED USB KEY BEFORE ADDING PRIVATE FILES."),
-    ("LOCKING", "TIP | USE COPY MODE UNTIL YOU HAVE TESTED A COMPLETE RECOVERY."),
-    ("LOCKING", "TIP | CHECK QUEUE COUNTS AND SELECTIONS BEFORE STARTING."),
-    ("RECOVERY", "TIP | KEEP A BACKUP USB KEY IN A DIFFERENT SAFE LOCATION."),
-    ("RECOVERY", "TIP | TEST RECOVERY WITH A COPY BEFORE REMOVING AN ORIGINAL."),
-    ("RECOVERY", "TIP | PRACTICE ONE RECOVERY DRILL BEFORE AN EMERGENCY."),
-    ("RECOVERY", "TIP | VERIFY YOUR BACKUP KEY AFTER IMPORTANT KEY CHANGES."),
-    ("PRIVACY", "TIP | VERIFY UNFAMILIAR DOWNLOADS BEFORE OPENING THEM."),
-    ("PRIVACY", "TIP | CHECK THE AUDIT LOG AFTER IMPORTANT LOCK OR UNLOCK JOBS."),
-    ("PRIVACY", "TIP | UNPLUG THE MASTER USB KEY WHEN YOU ARE FINISHED."),
-    ("PRIVACY", "TIP | USE SUPPORT REDACTOR BEFORE SHARING ERRORS OR LOG TEXT."),
-    ("UPDATES", "TIP | SIGNED UPDATES PRESERVE KEYS, SETTINGS, AND LOCAL DATA."),
-    ("UPDATES", "TIP | REVIEW RELEASE NOTES BEFORE INSTALLING A NEW VERSION."),
-    ("UPDATES", "TIP | KEEP VERIFIED AUTOMATIC UPDATES ENABLED WHEN PRACTICAL."),
-    ("UPDATES", "TIP | CHECK PUBLIC STATUS IF AN ONLINE FEATURE IS UNAVAILABLE."),
+CUSTOMER_TIP_FOCUSES = (
+    "ALL",
+    "LOCKING",
+    "RECOVERY",
+    "PRIVACY",
+    "UPDATES",
+    "FAVORITES",
 )
-CUSTOMER_IDLE_MESSAGES = tuple(message for _category, message in CUSTOMER_TIPS)
+MAX_CUSTOMER_TIP_FAVORITES = 8
+CUSTOMER_TIPS = (
+    ("locking-preview", "LOCKING", "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB."),
+    ("locking-key", "LOCKING", "TIP | LOAD THE INTENDED USB KEY BEFORE ADDING PRIVATE FILES."),
+    ("locking-copy", "LOCKING", "TIP | USE COPY MODE UNTIL YOU HAVE TESTED A COMPLETE RECOVERY."),
+    ("locking-queue", "LOCKING", "TIP | CHECK QUEUE COUNTS AND SELECTIONS BEFORE STARTING."),
+    ("recovery-backup-key", "RECOVERY", "TIP | KEEP A BACKUP USB KEY IN A DIFFERENT SAFE LOCATION."),
+    ("recovery-test-copy", "RECOVERY", "TIP | TEST RECOVERY WITH A COPY BEFORE REMOVING AN ORIGINAL."),
+    ("recovery-drill", "RECOVERY", "TIP | PRACTICE ONE RECOVERY DRILL BEFORE AN EMERGENCY."),
+    ("recovery-verify-key", "RECOVERY", "TIP | VERIFY YOUR BACKUP KEY AFTER IMPORTANT KEY CHANGES."),
+    ("privacy-download", "PRIVACY", "TIP | VERIFY UNFAMILIAR DOWNLOADS BEFORE OPENING THEM."),
+    ("privacy-audit", "PRIVACY", "TIP | CHECK THE AUDIT LOG AFTER IMPORTANT LOCK OR UNLOCK JOBS."),
+    ("privacy-unplug", "PRIVACY", "TIP | UNPLUG THE MASTER USB KEY WHEN YOU ARE FINISHED."),
+    ("privacy-redactor", "PRIVACY", "TIP | USE SUPPORT REDACTOR BEFORE SHARING ERRORS OR LOG TEXT."),
+    ("updates-preserve", "UPDATES", "TIP | SIGNED UPDATES PRESERVE KEYS, SETTINGS, AND LOCAL DATA."),
+    ("updates-notes", "UPDATES", "TIP | REVIEW RELEASE NOTES BEFORE INSTALLING A NEW VERSION."),
+    ("updates-auto", "UPDATES", "TIP | KEEP VERIFIED AUTOMATIC UPDATES ENABLED WHEN PRACTICAL."),
+    ("updates-status", "UPDATES", "TIP | CHECK PUBLIC STATUS IF AN ONLINE FEATURE IS UNAVAILABLE."),
+)
+CUSTOMER_TIP_IDS = tuple(tip_id for tip_id, _category, _message in CUSTOMER_TIPS)
+CUSTOMER_IDLE_MESSAGES = tuple(message for _tip_id, _category, message in CUSTOMER_TIPS)
 TOOL_FINDER_VISIBLE_LIMIT = 10
 MAX_TOOL_FINDER_FAVORITES = 8
 MAX_TOOL_FINDER_RECENT = 8
@@ -1437,6 +1446,23 @@ def save_settings(settings):
         normalized["tool_finder_favorites"] = favorites
     else:
         normalized.pop("tool_finder_favorites", None)
+    tip_favorites = normalize_customer_tip_favorites(
+        normalized.get("tip_center_favorites", []),
+        MAX_CUSTOMER_TIP_FAVORITES,
+    )
+    if tip_favorites:
+        normalized["tip_center_favorites"] = tip_favorites
+    else:
+        normalized.pop("tip_center_favorites", None)
+    tip_focus = normalize_customer_tip_focus(
+        normalized.get("tip_center_focus", "ALL")
+    )
+    if tip_focus == "FAVORITES" and not tip_favorites:
+        tip_focus = "ALL"
+    if tip_focus == "ALL":
+        normalized.pop("tip_center_focus", None)
+    else:
+        normalized["tip_center_focus"] = tip_focus
     write_text_atomic(SETTINGS_FILE, json.dumps(normalized, indent=2))
 
 
@@ -4095,16 +4121,35 @@ def normalize_customer_tip_focus(value):
     return focus if focus in CUSTOMER_TIP_FOCUSES else "ALL"
 
 
-def customer_tip_indexes(focus="ALL"):
+def normalize_customer_tip_favorites(value, limit=MAX_CUSTOMER_TIP_FAVORITES):
+    if type(limit) is not int or not 1 <= limit <= len(CUSTOMER_TIP_IDS):
+        raise ValueError("Customer tip favorite limit is invalid.")
+    if not isinstance(value, (list, tuple)):
+        return []
+    allowed = set(CUSTOMER_TIP_IDS)
+    result = []
+    for raw_tip_id in value:
+        tip_id = str(raw_tip_id or "").strip().lower()
+        if tip_id in allowed and tip_id not in result:
+            result.append(tip_id)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def customer_tip_indexes(focus="ALL", favorite_ids=()):
     normalized_focus = normalize_customer_tip_focus(focus)
+    favorites = set(normalize_customer_tip_favorites(favorite_ids))
     return tuple(
         index
-        for index, (category, _message) in enumerate(CUSTOMER_TIPS)
-        if normalized_focus == "ALL" or category == normalized_focus
+        for index, (tip_id, category, _message) in enumerate(CUSTOMER_TIPS)
+        if normalized_focus == "ALL"
+        or category == normalized_focus
+        or normalized_focus == "FAVORITES" and tip_id in favorites
     )
 
 
-def customer_tip_category(index):
+def customer_tip_id(index):
     try:
         normalized_index = int(index) % len(CUSTOMER_TIPS)
     except (TypeError, ValueError):
@@ -4112,8 +4157,18 @@ def customer_tip_category(index):
     return CUSTOMER_TIPS[normalized_index][0]
 
 
-def customer_tip_position(index, focus="ALL"):
-    indexes = customer_tip_indexes(focus)
+def customer_tip_category(index):
+    try:
+        normalized_index = int(index) % len(CUSTOMER_TIPS)
+    except (TypeError, ValueError):
+        normalized_index = 0
+    return CUSTOMER_TIPS[normalized_index][1]
+
+
+def customer_tip_position(index, focus="ALL", favorite_ids=()):
+    indexes = customer_tip_indexes(focus, favorite_ids)
+    if not indexes:
+        return 0, 0
     try:
         normalized_index = int(index) % len(CUSTOMER_TIPS)
     except (TypeError, ValueError):
@@ -6076,7 +6131,14 @@ class USBFileLocker(tk.Tk):
         self.overview_activity_var = tk.StringVar(value="READY")
         self.customer_message_index = -1
         self.customer_message_text = customer_idle_message(0)
-        self.customer_message_focus = "ALL"
+        self.customer_tip_favorites = normalize_customer_tip_favorites(
+            self.settings.get("tip_center_favorites", [])
+        )
+        self.customer_message_focus = normalize_customer_tip_focus(
+            self.settings.get("tip_center_focus", "ALL")
+        )
+        if self.customer_message_focus == "FAVORITES" and not self.customer_tip_favorites:
+            self.customer_message_focus = "ALL"
         self.customer_message_paused = False
         self.customer_message_after_id = None
         self.overview_refresh_after_id = None
@@ -6098,6 +6160,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_mode_var = None
         self.tip_center_focus_var = None
         self.tip_center_focus_button = None
+        self.tip_center_favorite_button = None
         self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
@@ -6988,7 +7051,13 @@ class USBFileLocker(tk.Tk):
         )
 
     def set_customer_message(self, index, restart_timer=True):
-        allowed_indexes = customer_tip_indexes(self.customer_message_focus)
+        allowed_indexes = customer_tip_indexes(
+            self.customer_message_focus,
+            self.customer_tip_favorites,
+        )
+        if not allowed_indexes:
+            self.customer_message_focus = "ALL"
+            allowed_indexes = customer_tip_indexes("ALL")
         try:
             normalized_index = int(index) % len(CUSTOMER_IDLE_MESSAGES)
         except (TypeError, ValueError):
@@ -7007,7 +7076,13 @@ class USBFileLocker(tk.Tk):
             delta = int(step)
         except (TypeError, ValueError):
             delta = 1
-        allowed_indexes = customer_tip_indexes(self.customer_message_focus)
+        allowed_indexes = customer_tip_indexes(
+            self.customer_message_focus,
+            self.customer_tip_favorites,
+        )
+        if not allowed_indexes:
+            self.customer_message_focus = "ALL"
+            allowed_indexes = customer_tip_indexes("ALL")
         try:
             current_position = allowed_indexes.index(self.customer_message_index)
         except ValueError:
@@ -7015,12 +7090,88 @@ class USBFileLocker(tk.Tk):
         target = allowed_indexes[(current_position + delta) % len(allowed_indexes)]
         self.set_customer_message(target, restart_timer=restart_timer)
 
+    def save_customer_tip_preferences(self):
+        candidate = dict(self.settings)
+        favorites = normalize_customer_tip_favorites(self.customer_tip_favorites)
+        if favorites:
+            candidate["tip_center_favorites"] = favorites
+        else:
+            candidate.pop("tip_center_favorites", None)
+        focus = normalize_customer_tip_focus(self.customer_message_focus)
+        if focus == "FAVORITES" and not favorites:
+            focus = "ALL"
+        if focus == "ALL":
+            candidate.pop("tip_center_focus", None)
+        else:
+            candidate["tip_center_focus"] = focus
+        save_settings(candidate)
+        self.settings = candidate
+
     def set_customer_message_focus(self, focus):
-        self.customer_message_focus = normalize_customer_tip_focus(focus)
-        self.set_customer_message(customer_tip_indexes(self.customer_message_focus)[0])
+        selected_focus = normalize_customer_tip_focus(focus)
+        allowed_indexes = customer_tip_indexes(
+            selected_focus,
+            self.customer_tip_favorites,
+        )
+        if not allowed_indexes:
+            self.status.set("Favorite at least one fixed tip before using Favorites focus.")
+            self.refresh_tip_center()
+            return False
+        previous_focus = self.customer_message_focus
+        self.customer_message_focus = selected_focus
+        try:
+            self.save_customer_tip_preferences()
+        except Exception:
+            self.customer_message_focus = previous_focus
+            self.status.set("Could not save the Tip Center focus.")
+            self.refresh_tip_center()
+            return False
+        self.set_customer_message(allowed_indexes[0])
+        return True
 
     def reset_customer_message(self):
-        self.set_customer_message(customer_tip_indexes(self.customer_message_focus)[0])
+        indexes = customer_tip_indexes(
+            self.customer_message_focus,
+            self.customer_tip_favorites,
+        )
+        self.set_customer_message(indexes[0] if indexes else 0)
+
+    def toggle_customer_tip_favorite(self):
+        tip_id = customer_tip_id(self.customer_message_index)
+        previous_favorites = list(self.customer_tip_favorites)
+        previous_focus = self.customer_message_focus
+        if tip_id in self.customer_tip_favorites:
+            self.customer_tip_favorites.remove(tip_id)
+        else:
+            if len(self.customer_tip_favorites) >= MAX_CUSTOMER_TIP_FAVORITES:
+                self.status.set("Tip Center supports up to 8 favorites. Remove one first.")
+                return False
+            self.customer_tip_favorites.append(tip_id)
+        if self.customer_message_focus == "FAVORITES" and not self.customer_tip_favorites:
+            self.customer_message_focus = "ALL"
+        try:
+            self.save_customer_tip_preferences()
+        except Exception:
+            self.customer_tip_favorites = previous_favorites
+            self.customer_message_focus = previous_focus
+            self.status.set("Could not save the favorite tip change.")
+            self.refresh_tip_center()
+            return False
+        indexes = customer_tip_indexes(
+            self.customer_message_focus,
+            self.customer_tip_favorites,
+        )
+        self.set_customer_message(
+            self.customer_message_index
+            if self.customer_message_index in indexes
+            else indexes[0]
+        )
+        self.status.set(
+            "Removed the current tip from favorites."
+            if tip_id not in self.customer_tip_favorites
+            else "Added the current tip to favorites."
+        )
+        return True
 
     def copy_customer_message(self):
         try:
@@ -7052,8 +7203,10 @@ class USBFileLocker(tk.Tk):
             position, total = customer_tip_position(
                 self.customer_message_index,
                 self.customer_message_focus,
+                self.customer_tip_favorites,
             )
             category = customer_tip_category(self.customer_message_index)
+            favorite = customer_tip_id(self.customer_message_index) in self.customer_tip_favorites
             self.tip_center_message_var.set(self.customer_message_text)
             self.tip_center_position_var.set(
                 f"TIP {position} OF {total} | {category}"
@@ -7066,6 +7219,9 @@ class USBFileLocker(tk.Tk):
             )
             self.tip_center_toggle_button.configure(
                 text="RESUME" if self.customer_message_paused else "PAUSE"
+            )
+            self.tip_center_favorite_button.configure(
+                text="UNFAVORITE" if favorite else "FAVORITE TIP"
             )
         except (AttributeError, tk.TclError):
             return
@@ -7173,6 +7329,20 @@ class USBFileLocker(tk.Tk):
                 command=lambda selected=focus: self.set_customer_message_focus(selected),
             )
         self.tip_center_focus_button.configure(menu=focus_menu)
+        self.tip_center_favorite_button = tk.Button(
+            focus_row,
+            text="FAVORITE TIP",
+            command=self.toggle_customer_tip_favorite,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.tip_center_favorite_button.pack(
+            side="right", ipadx=12, ipady=5
+        )
 
         message_panel = tk.Frame(
             outer,
@@ -7278,6 +7448,7 @@ class USBFileLocker(tk.Tk):
                 self.tip_center_mode_var = None
                 self.tip_center_focus_var = None
                 self.tip_center_focus_button = None
+                self.tip_center_favorite_button = None
                 self.tip_center_toggle_button = None
             try:
                 self.secondary_windows.remove(window)
