@@ -124,7 +124,15 @@ class DesktopHelperTests(unittest.TestCase):
     def test_customer_tip_focuses_are_fixed_balanced_and_bounded(self):
         self.assertEqual(
             locker.CUSTOMER_TIP_FOCUSES,
-            ("ALL", "LOCKING", "RECOVERY", "PRIVACY", "UPDATES", "FAVORITES"),
+            (
+                "ALL",
+                "LOCKING",
+                "RECOVERY",
+                "PRIVACY",
+                "UPDATES",
+                "TO REVIEW",
+                "FAVORITES",
+            ),
         )
         self.assertEqual(locker.normalize_customer_tip_focus("bad"), "ALL")
         self.assertEqual(len(locker.customer_tip_indexes("ALL")), 16)
@@ -148,6 +156,23 @@ class DesktopHelperTests(unittest.TestCase):
             locker.customer_tip_position(favorite_indexes[-1], "FAVORITES", favorite_ids),
             (2, 2),
         )
+        self.assertEqual(len(locker.customer_tip_indexes("TO REVIEW")), 16)
+        reviewed_ids = list(locker.CUSTOMER_TIP_IDS[:3])
+        review_indexes = locker.customer_tip_indexes(
+            "TO REVIEW",
+            reviewed_ids=reviewed_ids,
+        )
+        self.assertEqual(len(review_indexes), 13)
+        self.assertTrue(
+            all(locker.customer_tip_id(index) not in reviewed_ids for index in review_indexes)
+        )
+        self.assertEqual(
+            locker.customer_tip_indexes(
+                "TO REVIEW",
+                reviewed_ids=locker.CUSTOMER_TIP_IDS,
+            ),
+            (),
+        )
 
     def test_customer_tip_favorites_reject_unknown_duplicates_and_overflow(self):
         raw = [
@@ -161,6 +186,20 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(len(normalized), locker.MAX_CUSTOMER_TIP_FAVORITES)
         with self.assertRaises(ValueError):
             locker.normalize_customer_tip_favorites([], 0)
+
+    def test_customer_tip_reviewed_rejects_unknown_duplicates_and_overflow(self):
+        raw = [
+            locker.CUSTOMER_TIP_IDS[0],
+            "unknown-tip",
+            locker.CUSTOMER_TIP_IDS[0],
+            *locker.CUSTOMER_TIP_IDS[1:],
+            "another-unknown-tip",
+        ]
+        normalized = locker.normalize_customer_tip_reviewed(raw)
+        self.assertEqual(normalized, list(locker.CUSTOMER_TIP_IDS))
+        self.assertEqual(len(normalized), locker.MAX_CUSTOMER_TIP_REVIEWED)
+        with self.assertRaises(ValueError):
+            locker.normalize_customer_tip_reviewed([], 0)
 
     def test_customer_activity_prioritizes_live_progress(self):
         self.assertEqual(
@@ -221,6 +260,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("window.resizable(False, False)", source)
         self.assertIn('text="TIP FOCUS"', source)
         self.assertIn('text="FAVORITE TIP"', source)
+        self.assertIn('text="MARK REVIEWED"', source)
+        self.assertIn('label="Clear reviewed marks"', source)
         self.assertIn('text="PREVIOUS"', source)
         self.assertIn('text="NEXT"', source)
         self.assertIn('text="PAUSE"', source)
@@ -241,6 +282,19 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("save_settings", source)
         self.assertNotIn("log_event", source)
         self.assertNotIn("api_", source)
+
+    def test_tip_review_uses_only_fixed_tip_ids_and_local_settings(self):
+        toggle_source = inspect.getsource(
+            locker.USBFileLocker.toggle_customer_tip_reviewed
+        )
+        clear_source = inspect.getsource(locker.USBFileLocker.clear_customer_tip_reviews)
+        source = toggle_source + clear_source
+        self.assertIn("customer_tip_id(self.customer_message_index)", source)
+        self.assertIn("self.save_customer_tip_preferences()", source)
+        self.assertNotIn("clipboard", source)
+        self.assertNotIn("log_event", source)
+        self.assertNotIn("api_", source)
+        self.assertNotIn("request", source)
 
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
         self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 31)
@@ -382,7 +436,7 @@ class DesktopHelperTests(unittest.TestCase):
             ["open_shop", "open_log"],
         )
 
-    def test_save_settings_keeps_only_fixed_tip_favorites_and_valid_focus(self):
+    def test_save_settings_keeps_only_fixed_tip_preferences_and_valid_focus(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings_path = Path(temp_dir) / "settings.json"
             with mock.patch.object(locker, "SETTINGS_FILE", settings_path):
@@ -394,7 +448,13 @@ class DesktopHelperTests(unittest.TestCase):
                             "recovery-drill",
                             "privacy-audit",
                         ],
-                        "tip_center_focus": "favorites",
+                        "tip_center_reviewed": [
+                            "locking-preview",
+                            "unknown-tip",
+                            "locking-preview",
+                            "locking-key",
+                        ],
+                        "tip_center_focus": "to review",
                     }
                 )
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -402,7 +462,25 @@ class DesktopHelperTests(unittest.TestCase):
             saved["tip_center_favorites"],
             ["recovery-drill", "privacy-audit"],
         )
-        self.assertEqual(saved["tip_center_focus"], "FAVORITES")
+        self.assertEqual(
+            saved["tip_center_reviewed"],
+            ["locking-preview", "locking-key"],
+        )
+        self.assertEqual(saved["tip_center_focus"], "TO REVIEW")
+
+    def test_save_settings_reopens_all_focus_when_every_tip_is_reviewed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = Path(temp_dir) / "settings.json"
+            with mock.patch.object(locker, "SETTINGS_FILE", settings_path):
+                locker.save_settings(
+                    {
+                        "tip_center_reviewed": list(locker.CUSTOMER_TIP_IDS),
+                        "tip_center_focus": "to review",
+                    }
+                )
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["tip_center_reviewed"], list(locker.CUSTOMER_TIP_IDS))
+        self.assertNotIn("tip_center_focus", saved)
 
     def test_safe_lock_preview_classifies_queue_without_reading_contents(self):
         with tempfile.TemporaryDirectory() as temp_dir:

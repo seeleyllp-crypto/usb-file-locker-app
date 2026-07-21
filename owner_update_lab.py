@@ -46,18 +46,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Customers can favorite up to eight built-in Tip Center messages and use a dedicated Favorites focus.",
-    "Favorites are stored only as stable allowlisted IDs, so message wording can change without losing selections.",
-    "Unknown IDs, duplicates, malformed values, and favorites beyond the eight-item limit are discarded.",
-    "The selected fixed focus is preserved across updates; empty Favorites focus safely falls back to All.",
-    "Favorite and Unfavorite update the visible focused set immediately and never store copied message text.",
-    "Removing the last favorite while viewing Favorites returns to All without leaving an empty rotation.",
-    "The fixed 720x390 Tip Center still has no canvas, scrollbar, free-form field, or downloaded content.",
-    "Sixteen tips remain evenly split across Locking, Recovery, Privacy, and Updates categories.",
-    "Active job progress still replaces the Overview tip, and one 12-second timer controls idle rotation.",
-    "No filename, path, key ID, PIN, password, file content, webhook, or customer record enters favorites.",
-    "Tip IDs and fixed focus stay in local settings; navigation, pause state, and copied text remain session-only.",
-    "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
+    "Tip Center now tracks reviewed built-in guidance and shows exact progress out of sixteen tips.",
+    "To Review focus contains only pending tips and updates immediately after each review decision.",
+    "Mark Reviewed and Mark To Review are reversible and store only stable allowlisted tip IDs.",
+    "Completing the final pending tip safely returns the rotation to All instead of showing an empty set.",
+    "Clear reviewed marks restores all pending tips without changing favorites or customer files.",
+    "Reviewed marks and selected focus persist across restarts and signed app updates.",
+    "Unknown IDs, duplicate values, malformed settings, and excess entries are discarded.",
+    "Favorites and reviewed marks remain separate, bounded, local preference lists.",
+    "The fixed 720x390 Tip Center has no canvas, scrollbar, free-form field, or downloaded content.",
+    "No filename, path, key ID, PIN, password, file content, webhook, or customer record is stored.",
+    "One 12-second timer still controls idle tips while active job progress keeps priority.",
+    "Signed updates still require Ed25519 manifest and matching SHA-256 package verification.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (

@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.29"
+DESKTOP_APP_VERSION = "2026.07.18.30"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -53,9 +53,11 @@ CUSTOMER_TIP_FOCUSES = (
     "RECOVERY",
     "PRIVACY",
     "UPDATES",
+    "TO REVIEW",
     "FAVORITES",
 )
 MAX_CUSTOMER_TIP_FAVORITES = 8
+MAX_CUSTOMER_TIP_REVIEWED = 16
 CUSTOMER_TIPS = (
     ("locking-preview", "LOCKING", "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB."),
     ("locking-key", "LOCKING", "TIP | LOAD THE INTENDED USB KEY BEFORE ADDING PRIVATE FILES."),
@@ -1454,10 +1456,20 @@ def save_settings(settings):
         normalized["tip_center_favorites"] = tip_favorites
     else:
         normalized.pop("tip_center_favorites", None)
+    tip_reviewed = normalize_customer_tip_reviewed(
+        normalized.get("tip_center_reviewed", []),
+        MAX_CUSTOMER_TIP_REVIEWED,
+    )
+    if tip_reviewed:
+        normalized["tip_center_reviewed"] = tip_reviewed
+    else:
+        normalized.pop("tip_center_reviewed", None)
     tip_focus = normalize_customer_tip_focus(
         normalized.get("tip_center_focus", "ALL")
     )
     if tip_focus == "FAVORITES" and not tip_favorites:
+        tip_focus = "ALL"
+    if tip_focus == "TO REVIEW" and len(tip_reviewed) == len(CUSTOMER_TIP_IDS):
         tip_focus = "ALL"
     if tip_focus == "ALL":
         normalized.pop("tip_center_focus", None)
@@ -4137,14 +4149,32 @@ def normalize_customer_tip_favorites(value, limit=MAX_CUSTOMER_TIP_FAVORITES):
     return result
 
 
-def customer_tip_indexes(focus="ALL", favorite_ids=()):
+def normalize_customer_tip_reviewed(value, limit=MAX_CUSTOMER_TIP_REVIEWED):
+    if type(limit) is not int or not 1 <= limit <= len(CUSTOMER_TIP_IDS):
+        raise ValueError("Customer reviewed-tip limit is invalid.")
+    if not isinstance(value, (list, tuple)):
+        return []
+    allowed = set(CUSTOMER_TIP_IDS)
+    result = []
+    for raw_tip_id in value:
+        tip_id = str(raw_tip_id or "").strip().lower()
+        if tip_id in allowed and tip_id not in result:
+            result.append(tip_id)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def customer_tip_indexes(focus="ALL", favorite_ids=(), reviewed_ids=()):
     normalized_focus = normalize_customer_tip_focus(focus)
     favorites = set(normalize_customer_tip_favorites(favorite_ids))
+    reviewed = set(normalize_customer_tip_reviewed(reviewed_ids))
     return tuple(
         index
         for index, (tip_id, category, _message) in enumerate(CUSTOMER_TIPS)
         if normalized_focus == "ALL"
         or category == normalized_focus
+        or normalized_focus == "TO REVIEW" and tip_id not in reviewed
         or normalized_focus == "FAVORITES" and tip_id in favorites
     )
 
@@ -4165,8 +4195,8 @@ def customer_tip_category(index):
     return CUSTOMER_TIPS[normalized_index][1]
 
 
-def customer_tip_position(index, focus="ALL", favorite_ids=()):
-    indexes = customer_tip_indexes(focus, favorite_ids)
+def customer_tip_position(index, focus="ALL", favorite_ids=(), reviewed_ids=()):
+    indexes = customer_tip_indexes(focus, favorite_ids, reviewed_ids)
     if not indexes:
         return 0, 0
     try:
@@ -6134,10 +6164,18 @@ class USBFileLocker(tk.Tk):
         self.customer_tip_favorites = normalize_customer_tip_favorites(
             self.settings.get("tip_center_favorites", [])
         )
+        self.customer_tip_reviewed = normalize_customer_tip_reviewed(
+            self.settings.get("tip_center_reviewed", [])
+        )
         self.customer_message_focus = normalize_customer_tip_focus(
             self.settings.get("tip_center_focus", "ALL")
         )
         if self.customer_message_focus == "FAVORITES" and not self.customer_tip_favorites:
+            self.customer_message_focus = "ALL"
+        if (
+            self.customer_message_focus == "TO REVIEW"
+            and len(self.customer_tip_reviewed) == len(CUSTOMER_TIP_IDS)
+        ):
             self.customer_message_focus = "ALL"
         self.customer_message_paused = False
         self.customer_message_after_id = None
@@ -6161,6 +6199,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_focus_var = None
         self.tip_center_focus_button = None
         self.tip_center_favorite_button = None
+        self.tip_center_review_button = None
         self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
@@ -7054,6 +7093,7 @@ class USBFileLocker(tk.Tk):
         allowed_indexes = customer_tip_indexes(
             self.customer_message_focus,
             self.customer_tip_favorites,
+            self.customer_tip_reviewed,
         )
         if not allowed_indexes:
             self.customer_message_focus = "ALL"
@@ -7079,6 +7119,7 @@ class USBFileLocker(tk.Tk):
         allowed_indexes = customer_tip_indexes(
             self.customer_message_focus,
             self.customer_tip_favorites,
+            self.customer_tip_reviewed,
         )
         if not allowed_indexes:
             self.customer_message_focus = "ALL"
@@ -7097,8 +7138,15 @@ class USBFileLocker(tk.Tk):
             candidate["tip_center_favorites"] = favorites
         else:
             candidate.pop("tip_center_favorites", None)
+        reviewed = normalize_customer_tip_reviewed(self.customer_tip_reviewed)
+        if reviewed:
+            candidate["tip_center_reviewed"] = reviewed
+        else:
+            candidate.pop("tip_center_reviewed", None)
         focus = normalize_customer_tip_focus(self.customer_message_focus)
         if focus == "FAVORITES" and not favorites:
+            focus = "ALL"
+        if focus == "TO REVIEW" and len(reviewed) == len(CUSTOMER_TIP_IDS):
             focus = "ALL"
         if focus == "ALL":
             candidate.pop("tip_center_focus", None)
@@ -7112,9 +7160,14 @@ class USBFileLocker(tk.Tk):
         allowed_indexes = customer_tip_indexes(
             selected_focus,
             self.customer_tip_favorites,
+            self.customer_tip_reviewed,
         )
         if not allowed_indexes:
-            self.status.set("Favorite at least one fixed tip before using Favorites focus.")
+            self.status.set(
+                "Favorite at least one fixed tip before using Favorites focus."
+                if selected_focus == "FAVORITES"
+                else "Every fixed tip is reviewed. Clear reviewed marks to reopen To Review."
+            )
             self.refresh_tip_center()
             return False
         previous_focus = self.customer_message_focus
@@ -7133,6 +7186,7 @@ class USBFileLocker(tk.Tk):
         indexes = customer_tip_indexes(
             self.customer_message_focus,
             self.customer_tip_favorites,
+            self.customer_tip_reviewed,
         )
         self.set_customer_message(indexes[0] if indexes else 0)
 
@@ -7160,6 +7214,7 @@ class USBFileLocker(tk.Tk):
         indexes = customer_tip_indexes(
             self.customer_message_focus,
             self.customer_tip_favorites,
+            self.customer_tip_reviewed,
         )
         self.set_customer_message(
             self.customer_message_index
@@ -7171,6 +7226,60 @@ class USBFileLocker(tk.Tk):
             if tip_id not in self.customer_tip_favorites
             else "Added the current tip to favorites."
         )
+        return True
+
+    def toggle_customer_tip_reviewed(self):
+        tip_id = customer_tip_id(self.customer_message_index)
+        previous_reviewed = list(self.customer_tip_reviewed)
+        previous_focus = self.customer_message_focus
+        marked_reviewed = tip_id not in self.customer_tip_reviewed
+        if marked_reviewed:
+            self.customer_tip_reviewed.append(tip_id)
+        else:
+            self.customer_tip_reviewed.remove(tip_id)
+        indexes = customer_tip_indexes(
+            self.customer_message_focus,
+            self.customer_tip_favorites,
+            self.customer_tip_reviewed,
+        )
+        if self.customer_message_focus == "TO REVIEW" and not indexes:
+            self.customer_message_focus = "ALL"
+            indexes = customer_tip_indexes("ALL")
+        try:
+            self.save_customer_tip_preferences()
+        except Exception:
+            self.customer_tip_reviewed = previous_reviewed
+            self.customer_message_focus = previous_focus
+            self.status.set("Could not save the reviewed-tip change.")
+            self.refresh_tip_center()
+            return False
+        self.set_customer_message(
+            self.customer_message_index
+            if self.customer_message_index in indexes
+            else indexes[0]
+        )
+        self.status.set(
+            "Marked the current fixed tip reviewed."
+            if marked_reviewed
+            else "Marked the current fixed tip to review."
+        )
+        return True
+
+    def clear_customer_tip_reviews(self):
+        if not self.customer_tip_reviewed:
+            self.status.set("No reviewed tip marks are saved.")
+            return False
+        previous_reviewed = list(self.customer_tip_reviewed)
+        self.customer_tip_reviewed = []
+        try:
+            self.save_customer_tip_preferences()
+        except Exception:
+            self.customer_tip_reviewed = previous_reviewed
+            self.status.set("Could not clear reviewed tip marks.")
+            self.refresh_tip_center()
+            return False
+        self.set_customer_message(self.customer_message_index)
+        self.status.set("Cleared all reviewed tip marks; favorites were unchanged.")
         return True
 
     def copy_customer_message(self):
@@ -7204,24 +7313,30 @@ class USBFileLocker(tk.Tk):
                 self.customer_message_index,
                 self.customer_message_focus,
                 self.customer_tip_favorites,
+                self.customer_tip_reviewed,
             )
             category = customer_tip_category(self.customer_message_index)
-            favorite = customer_tip_id(self.customer_message_index) in self.customer_tip_favorites
+            tip_id = customer_tip_id(self.customer_message_index)
+            favorite = tip_id in self.customer_tip_favorites
+            reviewed = tip_id in self.customer_tip_reviewed
             self.tip_center_message_var.set(self.customer_message_text)
             self.tip_center_position_var.set(
                 f"TIP {position} OF {total} | {category}"
             )
             self.tip_center_focus_var.set(f"FOCUS: {self.customer_message_focus}")
             self.tip_center_mode_var.set(
-                "AUTO ROTATION PAUSED"
+                f"REVIEWED {len(self.customer_tip_reviewed)} OF {len(CUSTOMER_TIP_IDS)} | AUTO ROTATION PAUSED"
                 if self.customer_message_paused
-                else "AUTO ROTATES EVERY 12 SECONDS"
+                else f"REVIEWED {len(self.customer_tip_reviewed)} OF {len(CUSTOMER_TIP_IDS)} | AUTO ROTATES EVERY 12 SECONDS"
             )
             self.tip_center_toggle_button.configure(
                 text="RESUME" if self.customer_message_paused else "PAUSE"
             )
             self.tip_center_favorite_button.configure(
                 text="UNFAVORITE" if favorite else "FAVORITE TIP"
+            )
+            self.tip_center_review_button.configure(
+                text="MARK TO REVIEW" if reviewed else "MARK REVIEWED"
             )
         except (AttributeError, tk.TclError):
             return
@@ -7328,6 +7443,11 @@ class USBFileLocker(tk.Tk):
                 label=focus.title(),
                 command=lambda selected=focus: self.set_customer_message_focus(selected),
             )
+        focus_menu.add_separator()
+        focus_menu.add_command(
+            label="Clear reviewed marks",
+            command=self.clear_customer_tip_reviews,
+        )
         self.tip_center_focus_button.configure(menu=focus_menu)
         self.tip_center_favorite_button = tk.Button(
             focus_row,
@@ -7342,6 +7462,20 @@ class USBFileLocker(tk.Tk):
         )
         self.tip_center_favorite_button.pack(
             side="right", ipadx=12, ipady=5
+        )
+        self.tip_center_review_button = tk.Button(
+            focus_row,
+            text="MARK REVIEWED",
+            command=self.toggle_customer_tip_reviewed,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.tip_center_review_button.pack(
+            side="right", padx=(0, 8), ipadx=10, ipady=5
         )
 
         message_panel = tk.Frame(
@@ -7449,6 +7583,7 @@ class USBFileLocker(tk.Tk):
                 self.tip_center_focus_var = None
                 self.tip_center_focus_button = None
                 self.tip_center_favorite_button = None
+                self.tip_center_review_button = None
                 self.tip_center_toggle_button = None
             try:
                 self.secondary_windows.remove(window)
