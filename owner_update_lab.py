@@ -46,16 +46,15 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Last Lock Receipt shows the aggregate result of the latest LOCK COPY or LOCK + REMOVE ORIGINAL job.",
-    "Each receipt includes an anonymous ID, UTC start and finish times, and requested, successful, failed, and unprocessed counts.",
-    "Lock-and-remove receipts also show verified and removed-original counts; both modes report whether Preview Guard was used.",
-    "Receipts exclude filenames, paths, USB key IDs, PINs, secrets, file contents, and detailed errors.",
-    "The receipt is session-only, updates while open, and clears on USB unload or app exit.",
-    "Open the fixed no-scroll receipt from the Locker row, MORE TOOLS, or Tool Finder and copy a privacy-safe text summary.",
+    "Receipt History keeps only the latest 10 aggregate LOCK COPY and LOCK + REMOVE ORIGINAL results in session memory.",
+    "The fixed no-scroll dashboard shows session jobs, successful items, success rate, and jobs needing review.",
+    "PREVIOUS and NEXT move between receipts while new completed jobs automatically become the current receipt.",
+    "Customers can copy one privacy-safe receipt or a bounded aggregate session summary.",
+    "CLEAR removes receipt memory without changing locked files or audit logs.",
+    "Every entry is revalidated and normalized; duplicate IDs fail closed and unknown fields are discarded.",
+    "History excludes filenames, paths, USB key IDs, PINs, secrets, file contents, and detailed errors.",
+    "Receipt History clears on USB unload or app exit and is never saved or sent to the API.",
     "Optional one-time Preview Guard binds the next lock start to the exact reviewed queue and selected targets.",
-    "An armed guard blocks changed queues, changed targets, over-limit work, or stale file readiness without changing files.",
-    "A matching guard is consumed only when LOCK COPY or LOCK + REMOVE ORIGINAL starts successfully.",
-    "Guard approvals stay in session memory and clear on USB unload, panic lock, app exit, or manual clear.",
     "QUEUE TOOLS keeps the session-only checkpoint, guarded undo, and queue-repair controls from earlier releases.",
     "Signed updates still require Ed25519 manifest verification and matching SHA-256 package verification.",
 ]

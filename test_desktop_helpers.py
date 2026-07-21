@@ -589,6 +589,122 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(canceled["status"], "CANCELED")
         self.assertEqual(canceled["unprocessed_items"], 2)
 
+    def test_lock_receipt_history_is_bounded_normalized_and_duplicate_safe(self):
+        history = []
+        for index in range(12):
+            receipt = locker.build_lock_job_receipt(
+                mode="lock_copy",
+                requested_items=1,
+                successful_items=1,
+                failed_items=0,
+                canceled=False,
+                preview_guard_used=index % 2 == 0,
+                verified_items=0,
+                originals_removed=0,
+                started_at_utc=f"2026-07-18T12:00:{index:02d}Z",
+                finished_at_utc=f"2026-07-18T12:00:{index + 1:02d}Z",
+                receipt_id=f"{index:012x}",
+            )
+            receipt["private_path"] = rf"C:\private\customer-{index}.txt"
+            history = locker.append_lock_job_receipt(history, receipt)
+
+        self.assertEqual(len(history), locker.MAX_SESSION_LOCK_RECEIPTS)
+        self.assertEqual(history[0]["receipt_id"], f"{2:012x}")
+        self.assertEqual(history[-1]["receipt_id"], f"{11:012x}")
+        self.assertTrue(all("private_path" not in item for item in history))
+        self.assertNotIn("customer-", json.dumps(history))
+        with self.assertRaises(ValueError):
+            locker.append_lock_job_receipt(history, history[-1])
+        with self.assertRaises(ValueError):
+            locker.append_lock_job_receipt(history, history[-1], max_items=0)
+
+    def test_lock_receipt_session_report_and_summary_are_exact_and_private(self):
+        copy_receipt = locker.build_lock_job_receipt(
+            mode="lock_copy",
+            requested_items=4,
+            successful_items=4,
+            failed_items=0,
+            canceled=False,
+            preview_guard_used=True,
+            verified_items=0,
+            originals_removed=0,
+            started_at_utc="2026-07-18T12:00:00Z",
+            finished_at_utc="2026-07-18T12:00:04Z",
+            receipt_id="000000000001",
+        )
+        remove_receipt = locker.build_lock_job_receipt(
+            mode="lock_remove",
+            requested_items=3,
+            successful_items=1,
+            failed_items=1,
+            canceled=True,
+            preview_guard_used=False,
+            verified_items=1,
+            originals_removed=1,
+            started_at_utc="2026-07-18T12:01:00Z",
+            finished_at_utc="2026-07-18T12:01:04Z",
+            receipt_id="000000000002",
+        )
+        remove_receipt["private_error"] = r"C:\People\name.txt: PIN 1234"
+        history = locker.append_lock_job_receipt([], copy_receipt)
+        history = locker.append_lock_job_receipt(history, remove_receipt)
+        report = locker.lock_receipt_session_report(history)
+        self.assertEqual(report["status"], "REVIEW")
+        self.assertEqual(report["receipt_count"], 2)
+        self.assertEqual(report["lock_copy_jobs"], 1)
+        self.assertEqual(report["lock_remove_jobs"], 1)
+        self.assertEqual(report["completed_jobs"], 1)
+        self.assertEqual(report["canceled_jobs"], 1)
+        self.assertEqual(report["review_jobs"], 1)
+        self.assertEqual(report["guarded_jobs"], 1)
+        self.assertEqual(report["requested_items"], 7)
+        self.assertEqual(report["successful_items"], 5)
+        self.assertEqual(report["failed_items"], 1)
+        self.assertEqual(report["unprocessed_items"], 1)
+        self.assertEqual(report["verified_items"], 1)
+        self.assertEqual(report["originals_removed"], 1)
+        self.assertEqual(report["success_percent"], 71)
+        summary = locker.lock_receipt_session_summary(history)
+        self.assertIn("Receipts kept: 2 of 10", summary)
+        self.assertIn("Jobs needing review: 1", summary)
+        self.assertIn("Success rate: 71%", summary)
+        self.assertIn("not a malware scan", summary)
+        self.assertNotIn("People", summary)
+        self.assertNotIn("1234", summary)
+        self.assertNotIn("C:\\", summary)
+
+    def test_lock_receipt_session_rejects_oversized_or_invalid_history(self):
+        receipt = locker.build_lock_job_receipt(
+            mode="lock_copy",
+            requested_items=1,
+            successful_items=1,
+            failed_items=0,
+            canceled=False,
+            preview_guard_used=False,
+            verified_items=0,
+            originals_removed=0,
+            started_at_utc="2026-07-18T12:00:00Z",
+            finished_at_utc="2026-07-18T12:00:01Z",
+            receipt_id="123456abcdef",
+        )
+        with self.assertRaises(ValueError):
+            locker.lock_receipt_session_report([receipt] * 2)
+        with self.assertRaises(ValueError):
+            locker.lock_receipt_session_report(
+                [
+                    {**receipt, "receipt_id": f"{index:012x}"}
+                    for index in range(locker.MAX_SESSION_LOCK_RECEIPTS + 1)
+                ]
+            )
+        with self.assertRaises(ValueError):
+            locker.normalize_lock_job_receipt(
+                {**receipt, "schema_version": 99}
+            )
+        with self.assertRaises(ValueError):
+            locker.normalize_lock_job_receipt(
+                {**receipt, "receipt_type": "unknown"}
+            )
+
     def test_lock_job_receipt_rejects_inconsistent_or_identifying_data(self):
         valid = {
             "mode": "lock_copy",
@@ -623,18 +739,29 @@ class DesktopHelperTests(unittest.TestCase):
     def test_last_lock_receipt_window_is_fixed_private_and_reachable(self):
         source = inspect.getsource(locker.USBFileLocker.open_last_lock_receipt)
         app_source = Path(locker.__file__).read_text(encoding="utf-8")
-        self.assertIn('window.geometry("700x440")', source)
+        self.assertIn('window.geometry("760x500")', source)
         self.assertIn("window.resizable(False, False)", source)
-        self.assertIn('text="COPY SAFE RECEIPT"', source)
+        self.assertIn('text="PREVIOUS"', source)
+        self.assertIn('text="NEXT"', source)
+        self.assertIn('text="COPY RECEIPT"', source)
+        self.assertIn('text="COPY SESSION"', source)
+        self.assertIn('text="CLEAR"', source)
         self.assertIn('window.bind("<<LastLockReceiptChanged>>"', source)
         self.assertIn("lock_job_receipt_summary", source)
+        self.assertIn("lock_receipt_session_summary", source)
+        self.assertIn("lock_receipt_session_report", source)
+        self.assertIn("CLEAR SESSION HISTORY TO RECOVER", source)
+        self.assertIn(
+            'state="normal" if self.lock_receipt_history else "disabled"',
+            source,
+        )
         self.assertIn("filenames, paths, key IDs, PINs", source)
         self.assertNotIn("tk.Canvas", source)
         self.assertNotIn("Scrollbar", source)
-        self.assertIn('text="LAST RECEIPT"', app_source)
-        self.assertIn('label="View last lock receipt"', app_source)
+        self.assertIn('text="RECEIPT HISTORY"', app_source)
+        self.assertIn('label="View receipt history"', app_source)
         self.assertIn(
-            ("Locking", "Last Lock Receipt", "open_last_lock_receipt"),
+            ("Locking", "Receipt History", "open_last_lock_receipt"),
             locker.TOOL_FINDER_ACTIONS,
         )
 
@@ -656,11 +783,16 @@ class DesktopHelperTests(unittest.TestCase):
             self.assertNotIn("path", keyword_names)
             self.assertNotIn("paths", keyword_names)
             self.assertNotIn("errors", keyword_names)
-            self.assertIn("self.notify_last_lock_receipt_changed()", source)
+            self.assertIn("self.record_lock_job_receipt(receipt)", source)
             self.assertLess(
                 source.index("receipt_guard_used ="),
                 source.index("self.consume_safe_lock_preview_guard()"),
             )
+
+        recorder = inspect.getsource(locker.USBFileLocker.record_lock_job_receipt)
+        self.assertIn("append_lock_job_receipt", recorder)
+        self.assertIn("self.last_lock_receipt = self.lock_receipt_history[-1]", recorder)
+        self.assertIn("self.notify_last_lock_receipt_changed()", recorder)
 
     def test_safe_lock_preview_summary_includes_aggregate_checkpoint_state(self):
         report = locker.build_safe_lock_preview(
@@ -726,6 +858,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("self.safe_lock_queue_checkpoint = None", source)
         self.assertIn("self.safe_lock_preview_approval = None", source)
         self.assertIn("self.last_lock_receipt = None", source)
+        self.assertIn("self.lock_receipt_history.clear()", source)
+        self.assertIn("self.lock_receipt_history_index = -1", source)
 
     def test_close_handler_cancels_tracked_recurring_timers(self):
         source = inspect.getsource(locker.USBFileLocker.close_requested)
@@ -744,6 +878,8 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("self.safe_lock_queue_checkpoint = None", source)
         self.assertIn("self.safe_lock_preview_approval = None", source)
         self.assertIn("self.last_lock_receipt = None", source)
+        self.assertIn("self.lock_receipt_history.clear()", source)
+        self.assertIn("self.lock_receipt_history_index = -1", source)
 
     def test_preview_guard_enforces_both_lock_starts_and_uses_aggregate_logs(self):
         guard_source = inspect.getsource(
