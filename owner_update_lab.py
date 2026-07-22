@@ -8,6 +8,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -46,18 +47,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Review Pending opens the first remaining built-in tip and stays inside the pending queue.",
-    "Tip Center shows separate Locking, Recovery, Privacy, and Updates completion counts.",
-    "Undo Review restores the prior reviewed-ID set, focus, and visible tip position.",
-    "Up to twenty review changes are undoable during the current app session.",
-    "Undo history is memory-only and starts empty after every app restart or signed update.",
-    "Clearing reviewed marks is undoable and never changes favorites or customer files.",
-    "Review Pending disables at sixteen of sixteen and never leaves an empty view.",
-    "Fixed-width state buttons prevent the Tip Center controls from shifting during review.",
-    "The 720x390 Tip Center still has no canvas, scrollbar, free-form field, or remote content.",
-    "Review workflow stores no path, key ID, PIN, password, file content, webhook, or customer record.",
-    "Only allowlisted reviewed IDs and focus persist; navigation and undo history remain session-only.",
-    "Signed updates still require Ed25519 manifest and matching SHA-256 package verification.",
+    "Signed ZIPs must embed the exact desktop version declared by their release manifest.",
+    "The verifier parses app syntax only and never executes packaged source during identity checks.",
+    "Every package must contain exactly one bounded usb_file_locker.py desktop entrypoint.",
+    "The package filename must match the declared version and the compatibility floor cannot be newer.",
+    "An older Owner Lab can no longer label newer source code with its own older version number.",
+    "Candidate verification rejects version disagreement before a package can enter the private lab.",
+    "Live verification checks signature, filename, size, hash, and embedded desktop version together.",
+    "Owner Update Lab now includes a sixteenth preflight check for live package identity.",
+    "A mismatched public manifest and ZIP visibly block release readiness instead of passing silently.",
+    "Temporary live-verification downloads are removed automatically after each bounded check.",
+    "No customer file, path, key, PIN, password, license, audit record, or vault content is inspected.",
+    "Ed25519 manifest verification and SHA-256 package verification remain mandatory.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
@@ -628,20 +629,27 @@ def verify_live_package(server_url, update):
     request = urllib.request.Request(url, headers={"Accept": "application/zip"}, method="GET")
     digest = hashlib.sha256()
     size = 0
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_LIVE_PACKAGE_BYTES:
-                    raise ValueError("The live update package is larger than the owner verifier allows.")
-                digest.update(chunk)
-    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
-        raise ValueError(f"Could not download the live update for verification.\n\n{exc}") from exc
-    if size != int(update["size_bytes"]) or digest.hexdigest() != str(update["sha256"]).lower():
-        raise ValueError("The live update download did not match its signed manifest.")
+    package_name = str(update.get("package_filename", ""))
+    if not package_name or Path(package_name).name != package_name:
+        raise ValueError("The live update package filename is invalid.")
+    with tempfile.TemporaryDirectory(prefix="vaultlink-live-update-") as temp_dir:
+        package_path = Path(temp_dir) / package_name
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response, package_path.open("xb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_LIVE_PACKAGE_BYTES:
+                        raise ValueError("The live update package is larger than the owner verifier allows.")
+                    digest.update(chunk)
+                    output.write(chunk)
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise ValueError(f"Could not download the live update for verification.\n\n{exc}") from exc
+        if size != int(update["size_bytes"]) or digest.hexdigest() != str(update["sha256"]).lower():
+            raise ValueError("The live update download did not match its signed manifest.")
+        vaultlink_updater.validate_manifest(update, package_path)
     return size, digest.hexdigest()
 
 
@@ -738,11 +746,26 @@ def owner_preflight(app_repo, api_repo, owner_key_path, minimum_supported, notes
     else:
         blocked("Verified candidate gate", "Blocked until both repositories are valid.")
 
+    live_release = {}
+
     def live_check():
         update = live_release_payload(server_url)["update"]
+        live_release["update"] = update
         return f"Live API serves desktop {update.get('version', 'unknown')} with SHA-256 {str(update.get('sha256', ''))[:16]}..."
 
     check("Live update service", live_check)
+    if live_release.get("update"):
+        def live_identity_check():
+            update = live_release["update"]
+            size, digest = verify_live_package(server_url, update)
+            return (
+                f"Signed live ZIP embeds desktop {update.get('version', 'unknown')} and matches "
+                f"{size} bytes / SHA-256 {digest[:16]}..."
+            )
+
+        check("Live package identity", live_identity_check)
+    else:
+        blocked("Live package identity", "Blocked until the live update service returns a signed release.")
     passed = sum(bool(item["passed"]) for item in checks)
     report = {
         "schema_version": 1,
@@ -916,7 +939,7 @@ class OwnerUpdateLab(tk.Tk):
 
         actions = tk.Frame(panel, bg=PANEL)
         actions.pack(fill="x", padx=18, pady=(12, 8))
-        self.preflight_button = tk.Button(actions, text="RUN 15-CHECK PREFLIGHT", command=self.start_preflight, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 9, "bold"))
+        self.preflight_button = tk.Button(actions, text="RUN 16-CHECK PREFLIGHT", command=self.start_preflight, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 9, "bold"))
         self.preflight_button.pack(side="left", ipadx=12, ipady=9)
         self.test_button = tk.Button(actions, text="TEST CANDIDATE", command=self.start_test, bg=YELLOW, fg="#090b0f", relief="flat", font=("Segoe UI", 10, "bold"))
         self.test_button.pack(side="left", padx=(10, 0), ipadx=14, ipady=9)

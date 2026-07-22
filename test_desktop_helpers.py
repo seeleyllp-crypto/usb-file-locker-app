@@ -3,6 +3,7 @@ import base64
 import hashlib
 import http.client
 import inspect
+import io
 import json
 import os
 import queue
@@ -4817,6 +4818,151 @@ class DesktopHelperTests(unittest.TestCase):
             validate.assert_called_once_with(manifest, package_path)
             self.assertEqual(validated, manifest)
 
+    def test_signed_package_identity_requires_manifest_and_embedded_version_match(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+
+        def signed_fixture(root, declared_version, embedded_version):
+            package_path = root / f"VaultLink-Windows-{declared_version}.zip"
+            with zipfile.ZipFile(package_path, "w") as archive:
+                archive.writestr(
+                    "usb_file_locker.py",
+                    f'DESKTOP_APP_VERSION = "{embedded_version}"\n',
+                )
+            manifest = {
+                "schema_version": 1,
+                "product": "USB File Locker",
+                "platform": "windows-source",
+                "version": declared_version,
+                "minimum_supported_version": declared_version,
+                "published_at_utc": "2026-07-22T00:00:00Z",
+                "package_filename": package_path.name,
+                "download_path": "/api/v1/updates/windows/download",
+                "sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
+                "size_bytes": package_path.stat().st_size,
+                "signing_key_id": key_id,
+                "notes": ["Identity regression fixture"],
+                "preserves_local_app_data": True,
+            }
+            manifest["signature"] = base64.urlsafe_b64encode(
+                private_key.sign(vaultlink_updater.canonical_manifest_bytes(manifest))
+            ).rstrip(b"=").decode("ascii")
+            return package_path, manifest
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_package_identity_") as temp_dir:
+            root = Path(temp_dir)
+            valid_package, valid_manifest = signed_fixture(root, "9999.10", "9999.10")
+            mismatched_package, mismatched_manifest = signed_fixture(
+                root,
+                "9999.11",
+                "9999.12",
+            )
+            with mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64), \
+                    mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id):
+                vaultlink_updater.validate_manifest(valid_manifest, valid_package)
+                self.assertEqual(
+                    vaultlink_updater.package_desktop_version(valid_package),
+                    "9999.10",
+                )
+                with self.assertRaisesRegex(ValueError, "embedded desktop version"):
+                    vaultlink_updater.validate_manifest(
+                        mismatched_manifest,
+                        mismatched_package,
+                    )
+
+    def test_release_builder_rejects_old_lab_version_packaging_newer_source(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        with tempfile.TemporaryDirectory(prefix="vaultlink_old_lab_release_") as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            updates = root / "updates"
+            source.mkdir()
+            (source / "usb_file_locker.py").write_text(
+                'DESKTOP_APP_VERSION = "9999.21"\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(build_signed_update, "PACKAGE_FILES", ["usb_file_locker.py"]), \
+                    mock.patch.object(build_signed_update.locker, "DESKTOP_APP_VERSION", "9999.20"), \
+                    mock.patch.object(build_signed_update.locker, "UPDATE_SIGNING_KEY_ID", key_id), \
+                    mock.patch.object(build_signed_update, "load_owner_signing_key", return_value=(private_key, {})), \
+                    mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64), \
+                    mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id):
+                with self.assertRaisesRegex(ValueError, "embedded desktop version"):
+                    build_signed_update.build_signed_release(
+                        source,
+                        updates,
+                        "9999.1",
+                        ["Old lab regression fixture"],
+                        root / "owner.key",
+                    )
+
+    def test_live_package_verification_runs_full_identity_validation(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        with tempfile.TemporaryDirectory(prefix="vaultlink_live_identity_") as temp_dir:
+            root = Path(temp_dir)
+            package_path = root / "VaultLink-Windows-9999.30.zip"
+            with zipfile.ZipFile(package_path, "w") as archive:
+                archive.writestr(
+                    "usb_file_locker.py",
+                    'DESKTOP_APP_VERSION = "9999.30"\n',
+                )
+            package_bytes = package_path.read_bytes()
+        update = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.30",
+            "minimum_supported_version": "9999.1",
+            "published_at_utc": "2026-07-22T00:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.30.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": hashlib.sha256(package_bytes).hexdigest(),
+            "size_bytes": len(package_bytes),
+            "signing_key_id": key_id,
+            "notes": ["Live identity fixture"],
+            "preserves_local_app_data": True,
+        }
+        update["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(vaultlink_updater.canonical_manifest_bytes(update))
+        ).rstrip(b"=").decode("ascii")
+
+        class TestResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+                return False
+
+        with mock.patch.object(
+            owner_update_lab.urllib.request,
+            "urlopen",
+            side_effect=lambda *_args, **_kwargs: TestResponse(package_bytes),
+        ), mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64), \
+                mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id):
+            size, digest = owner_update_lab.verify_live_package(
+                locker.DEFAULT_LICENSE_SERVER,
+                update,
+            )
+        self.assertEqual(size, len(package_bytes))
+        self.assertEqual(digest, update["sha256"])
+        self.assertIn(
+            'check("Live package identity", live_identity_check)',
+            inspect.getsource(owner_update_lab.owner_preflight),
+        )
+        self.assertIn(
+            'text="RUN 16-CHECK PREFLIGHT"',
+            inspect.getsource(owner_update_lab.OwnerUpdateLab.build_ui),
+        )
+
     def test_owner_lab_runtime_extracts_verified_candidate_into_private_runtime(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_lab_runtime_") as temp_dir:
             root = Path(temp_dir)
@@ -5217,7 +5363,13 @@ class DesktopHelperTests(unittest.TestCase):
         public_raw = private_key.public_key().public_bytes_raw()
         public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
         key_id = hashlib.sha256(public_raw).hexdigest()[:16]
-        package_bytes = b"PK-signed-vaultlink-update"
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr(
+                "usb_file_locker.py",
+                'DESKTOP_APP_VERSION = "9999.1"\n',
+            )
+        package_bytes = package_buffer.getvalue()
         manifest = {
             "schema_version": 1,
             "product": "USB File Locker",
@@ -5239,6 +5391,8 @@ class DesktopHelperTests(unittest.TestCase):
         with (
             mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
             mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
+            mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
+            mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id),
         ):
             validated = locker.validate_windows_update_manifest(
                 {"api_version": "test", "update": manifest}
@@ -5265,6 +5419,57 @@ class DesktopHelperTests(unittest.TestCase):
                         target,
                     )
                 self.assertEqual(saved.read_bytes(), package_bytes)
+
+    def test_customer_update_download_rejects_embedded_version_mismatch_before_writing(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr(
+                "usb_file_locker.py",
+                'DESKTOP_APP_VERSION = "9999.41"\n',
+            )
+        package_bytes = package_buffer.getvalue()
+        manifest = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.40",
+            "minimum_supported_version": "9999.1",
+            "published_at_utc": "2026-07-22T00:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.40.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": hashlib.sha256(package_bytes).hexdigest(),
+            "size_bytes": len(package_bytes),
+            "signing_key_id": key_id,
+            "notes": ["Customer mismatch fixture"],
+            "preserves_local_app_data": True,
+        }
+        manifest["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(locker.canonical_update_manifest_bytes(manifest))
+        ).rstrip(b"=").decode("ascii")
+        response = mock.MagicMock()
+        response.read.return_value = package_bytes
+        context = mock.MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = False
+        with tempfile.TemporaryDirectory(prefix="vaultlink_customer_identity_") as temp_dir:
+            target = Path(temp_dir) / manifest["package_filename"]
+            target.write_bytes(b"existing customer copy")
+            with mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64), \
+                    mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id), \
+                    mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64), \
+                    mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id), \
+                    mock.patch.object(locker.API_URL_OPENER, "open", return_value=context):
+                with self.assertRaisesRegex(ValueError, "embedded desktop version"):
+                    locker.download_windows_update_package(
+                        locker.DEFAULT_LICENSE_SERVER,
+                        manifest,
+                        target,
+                    )
+            self.assertEqual(target.read_bytes(), b"existing customer copy")
 
     def test_update_verification_receipt_is_signed_and_privacy_safe(self):
         private_key = Ed25519PrivateKey.generate()
@@ -5315,7 +5520,7 @@ class DesktopHelperTests(unittest.TestCase):
             mock.patch.object(locker, "UPDATE_SIGNING_PUBLIC_KEY_B64", public_b64),
             mock.patch.object(locker, "UPDATE_SIGNING_KEY_ID", key_id),
         ):
-            with self.assertRaisesRegex(ValueError, "signature did not verify"):
+            with self.assertRaisesRegex(ValueError, "filename does not match the declared version"):
                 locker.update_verification_receipt(tampered)
 
     def test_update_size_formatting(self):

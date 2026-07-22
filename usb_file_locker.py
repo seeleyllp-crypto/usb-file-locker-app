@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.31"
+DESKTOP_APP_VERSION = "2026.07.18.32"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -3246,13 +3246,19 @@ def validate_windows_update_manifest(response):
         raise ValueError("Update manifest schema is not supported.")
     if manifest.get("product") != "USB File Locker" or manifest.get("platform") != "windows-source":
         raise ValueError("Update manifest is for a different product or platform.")
-    update_version_tuple(manifest.get("version"))
-    update_version_tuple(manifest.get("minimum_supported_version"))
+    version = str(manifest.get("version", "")).strip()
+    minimum_supported = str(manifest.get("minimum_supported_version", "")).strip()
+    update_version_tuple(version)
+    update_version_tuple(minimum_supported)
+    if compare_update_versions(minimum_supported, version):
+        raise ValueError("Update compatibility floor cannot be newer than the update version.")
     if parse_utc_text(manifest.get("published_at_utc")) is None:
         raise ValueError("Update manifest timestamp is invalid.")
     filename = str(manifest.get("package_filename", ""))
     if not filename.endswith(".zip") or Path(filename).name != filename or len(filename) > 120:
         raise ValueError("Update package filename is invalid.")
+    if filename != f"VaultLink-Windows-{version}.zip":
+        raise ValueError("Update package filename does not match the declared version.")
     if manifest.get("download_path") != "/api/v1/updates/windows/download":
         raise ValueError("Update package path is invalid.")
     expected_hash = str(manifest.get("sha256", "")).lower()
@@ -3468,6 +3474,18 @@ def download_windows_update_package(server_url, manifest, destination):
     actual_hash = hashlib.sha256(raw).hexdigest()
     if not hmac.compare_digest(actual_hash, validated["sha256"]):
         raise ValueError("Downloaded update SHA-256 did not match the signed manifest.")
+    verification_dir = secure_mkdtemp(prefix="vaultlink_update_verify_")
+    verification_package = verification_dir / validated["package_filename"]
+    try:
+        write_bytes_atomic(verification_package, raw)
+        import vaultlink_updater
+
+        vaultlink_updater.validate_manifest(
+            signed_update_manifest_fields(validated),
+            verification_package,
+        )
+    finally:
+        shutil.rmtree(verification_dir, ignore_errors=True)
     target = Path(destination)
     write_bytes_atomic(target, raw)
     return target

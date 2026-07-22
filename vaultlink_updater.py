@@ -1,9 +1,11 @@
 import argparse
+import ast
 import base64
 import ctypes
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -22,6 +24,8 @@ UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
 MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_FILES = 5000
 MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
+MAX_EMBEDDED_APP_SOURCE_BYTES = 4 * 1024 * 1024
+UPDATE_VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){1,7}\Z")
 FORBIDDEN_FILE_NAMES = {
     "settings.json",
     "audit_log.jsonl",
@@ -43,6 +47,61 @@ def canonical_manifest_bytes(manifest):
     payload = dict(manifest)
     payload.pop("signature", None)
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def validated_update_version(value):
+    version = str(value or "").strip()
+    if len(version) > 80 or not UPDATE_VERSION_PATTERN.fullmatch(version):
+        raise ValueError("Update version is invalid.")
+    return version
+
+
+def update_version_tuple(value):
+    return tuple(int(part) for part in validated_update_version(value).split("."))
+
+
+def update_version_is_newer(left, right):
+    left_parts = update_version_tuple(left)
+    right_parts = update_version_tuple(right)
+    length = max(len(left_parts), len(right_parts))
+    return (left_parts + (0,) * (length - len(left_parts))) > (
+        right_parts + (0,) * (length - len(right_parts))
+    )
+
+
+def package_desktop_version(package_path):
+    try:
+        with zipfile.ZipFile(package_path, "r") as archive:
+            matches = [
+                info
+                for info in archive.infolist()
+                if not info.is_dir() and info.filename == "usb_file_locker.py"
+            ]
+            if len(matches) != 1:
+                raise ValueError("Update package must contain exactly one desktop entrypoint.")
+            if not 0 < matches[0].file_size <= MAX_EMBEDDED_APP_SOURCE_BYTES:
+                raise ValueError("Update package desktop entrypoint size is invalid.")
+            source = archive.read(matches[0]).decode("utf-8")
+    except (OSError, UnicodeError, zipfile.BadZipFile) as exc:
+        raise ValueError("Update package desktop entrypoint could not be inspected.") from exc
+    try:
+        module = ast.parse(source, filename="usb_file_locker.py")
+    except SyntaxError as exc:
+        raise ValueError("Update package desktop entrypoint is not valid Python syntax.") from exc
+    versions = []
+    for statement in module.body:
+        targets = statement.targets if isinstance(statement, ast.Assign) else []
+        if isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+        if not any(isinstance(target, ast.Name) and target.id == "DESKTOP_APP_VERSION" for target in targets):
+            continue
+        value = statement.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            raise ValueError("Update package desktop version must be a literal string.")
+        versions.append(validated_update_version(value.value))
+    if len(versions) != 1:
+        raise ValueError("Update package must declare exactly one desktop version.")
+    return versions[0]
 
 
 def validate_manifest(manifest, package_path):
@@ -74,9 +133,15 @@ def validate_manifest(manifest, package_path):
         raise ValueError("Update was signed by an unknown release key.")
     if manifest.get("preserves_local_app_data") is not True:
         raise ValueError("Update does not promise to preserve app data.")
+    version = validated_update_version(manifest.get("version"))
+    minimum_supported = validated_update_version(manifest.get("minimum_supported_version"))
+    if update_version_is_newer(minimum_supported, version):
+        raise ValueError("Update compatibility floor cannot be newer than the update version.")
     filename = str(manifest.get("package_filename", ""))
     if Path(filename).name != filename or filename != package_path.name:
         raise ValueError("Update package filename does not match the signed manifest.")
+    if filename != f"VaultLink-Windows-{version}.zip":
+        raise ValueError("Update package filename does not match the declared version.")
     expected_hash = str(manifest.get("sha256", "")).lower()
     if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
         raise ValueError("Update package SHA-256 is invalid.")
@@ -101,6 +166,9 @@ def validate_manifest(manifest, package_path):
             digest.update(chunk)
     if digest.hexdigest() != expected_hash:
         raise ValueError("Update package SHA-256 did not match the signed manifest.")
+    embedded_version = package_desktop_version(package_path)
+    if embedded_version != version:
+        raise ValueError("Update package embedded desktop version does not match the signed manifest.")
 
 
 def safe_member_path(name):
