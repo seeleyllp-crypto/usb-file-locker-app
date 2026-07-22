@@ -46,17 +46,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Tip Center now tracks reviewed built-in guidance and shows exact progress out of sixteen tips.",
-    "To Review focus contains only pending tips and updates immediately after each review decision.",
-    "Mark Reviewed and Mark To Review are reversible and store only stable allowlisted tip IDs.",
-    "Completing the final pending tip safely returns the rotation to All instead of showing an empty set.",
-    "Clear reviewed marks restores all pending tips without changing favorites or customer files.",
-    "Reviewed marks and selected focus persist across restarts and signed app updates.",
-    "Unknown IDs, duplicate values, malformed settings, and excess entries are discarded.",
-    "Favorites and reviewed marks remain separate, bounded, local preference lists.",
-    "The fixed 720x390 Tip Center has no canvas, scrollbar, free-form field, or downloaded content.",
-    "No filename, path, key ID, PIN, password, file content, webhook, or customer record is stored.",
-    "One 12-second timer still controls idle tips while active job progress keeps priority.",
+    "Review Pending opens the first remaining built-in tip and stays inside the pending queue.",
+    "Tip Center shows separate Locking, Recovery, Privacy, and Updates completion counts.",
+    "Undo Review restores the prior reviewed-ID set, focus, and visible tip position.",
+    "Up to twenty review changes are undoable during the current app session.",
+    "Undo history is memory-only and starts empty after every app restart or signed update.",
+    "Clearing reviewed marks is undoable and never changes favorites or customer files.",
+    "Review Pending disables at sixteen of sixteen and never leaves an empty view.",
+    "Fixed-width state buttons prevent the Tip Center controls from shifting during review.",
+    "The 720x390 Tip Center still has no canvas, scrollbar, free-form field, or remote content.",
+    "Review workflow stores no path, key ID, PIN, password, file content, webhook, or customer record.",
+    "Only allowlisted reviewed IDs and focus persist; navigation and undo history remain session-only.",
     "Signed updates still require Ed25519 manifest and matching SHA-256 package verification.",
 ]
 

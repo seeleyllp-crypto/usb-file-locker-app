@@ -201,6 +201,50 @@ class DesktopHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             locker.normalize_customer_tip_reviewed([], 0)
 
+    def test_customer_tip_review_progress_is_fixed_and_category_bounded(self):
+        reviewed = [
+            "locking-preview",
+            "locking-key",
+            "recovery-drill",
+            "unknown-tip",
+            "locking-preview",
+        ]
+        self.assertEqual(
+            locker.customer_tip_review_progress(reviewed),
+            (
+                ("LOCKING", 2, 4),
+                ("RECOVERY", 1, 4),
+                ("PRIVACY", 0, 4),
+                ("UPDATES", 0, 4),
+            ),
+        )
+        self.assertEqual(
+            locker.customer_tip_review_progress_text(reviewed),
+            "LOCKING 2/4 | RECOVERY 1/4 | PRIVACY 0/4 | UPDATES 0/4",
+        )
+
+    def test_customer_tip_review_history_is_session_only_and_bounded(self):
+        app = mock.Mock()
+        app.customer_tip_review_history = []
+        for index in range(25):
+            locker.USBFileLocker.remember_customer_tip_review_state(
+                app,
+                [locker.CUSTOMER_TIP_IDS[index % len(locker.CUSTOMER_TIP_IDS)]],
+                "all",
+                index,
+            )
+        self.assertEqual(locker.MAX_CUSTOMER_TIP_REVIEW_HISTORY, 20)
+        self.assertEqual(len(app.customer_tip_review_history), 20)
+        self.assertTrue(
+            all(
+                isinstance(entry, tuple)
+                and isinstance(entry[0], tuple)
+                and entry[1] == "ALL"
+                and 0 <= entry[2] < len(locker.CUSTOMER_TIP_IDS)
+                for entry in app.customer_tip_review_history
+            )
+        )
+
     def test_customer_activity_prioritizes_live_progress(self):
         self.assertEqual(
             locker.customer_activity_text(True, "Lock copy: 2/4", "TIP | IDLE"),
@@ -261,12 +305,16 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('text="TIP FOCUS"', source)
         self.assertIn('text="FAVORITE TIP"', source)
         self.assertIn('text="MARK REVIEWED"', source)
+        self.assertIn('text="REVIEW PENDING 16"', source)
+        self.assertIn('text="UNDO REVIEW"', source)
         self.assertIn('label="Clear reviewed marks"', source)
         self.assertIn('text="PREVIOUS"', source)
         self.assertIn('text="NEXT"', source)
         self.assertIn('text="PAUSE"', source)
         self.assertIn('text="RESET"', source)
         self.assertIn('text="COPY TIP"', source)
+        self.assertIn('window.bind("<Control-Return>"', source)
+        self.assertIn('window.bind("<Control-z>"', source)
         self.assertNotIn("Canvas", source)
         self.assertNotIn("Scrollbar", source)
         self.assertNotIn("save_settings", source)
@@ -288,9 +336,18 @@ class DesktopHelperTests(unittest.TestCase):
             locker.USBFileLocker.toggle_customer_tip_reviewed
         )
         clear_source = inspect.getsource(locker.USBFileLocker.clear_customer_tip_reviews)
-        source = toggle_source + clear_source
+        source = "".join(
+            (
+                toggle_source,
+                clear_source,
+                inspect.getsource(locker.USBFileLocker.remember_customer_tip_review_state),
+                inspect.getsource(locker.USBFileLocker.start_customer_tip_review),
+                inspect.getsource(locker.USBFileLocker.undo_customer_tip_review),
+            )
+        )
         self.assertIn("customer_tip_id(self.customer_message_index)", source)
         self.assertIn("self.save_customer_tip_preferences()", source)
+        self.assertIn("MAX_CUSTOMER_TIP_REVIEW_HISTORY", source)
         self.assertNotIn("clipboard", source)
         self.assertNotIn("log_event", source)
         self.assertNotIn("api_", source)

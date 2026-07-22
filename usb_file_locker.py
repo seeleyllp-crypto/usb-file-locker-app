@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.30"
+DESKTOP_APP_VERSION = "2026.07.18.31"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -58,6 +58,7 @@ CUSTOMER_TIP_FOCUSES = (
 )
 MAX_CUSTOMER_TIP_FAVORITES = 8
 MAX_CUSTOMER_TIP_REVIEWED = 16
+MAX_CUSTOMER_TIP_REVIEW_HISTORY = 20
 CUSTOMER_TIPS = (
     ("locking-preview", "LOCKING", "TIP | REVIEW SAFE LOCK PREVIEW BEFORE STARTING A LARGE JOB."),
     ("locking-key", "LOCKING", "TIP | LOAD THE INTENDED USB KEY BEFORE ADDING PRIVATE FILES."),
@@ -4165,6 +4166,25 @@ def normalize_customer_tip_reviewed(value, limit=MAX_CUSTOMER_TIP_REVIEWED):
     return result
 
 
+def customer_tip_review_progress(reviewed_ids=()):
+    reviewed = set(normalize_customer_tip_reviewed(reviewed_ids))
+    return tuple(
+        (
+            category,
+            sum(tip_id in reviewed for tip_id, tip_category, _message in CUSTOMER_TIPS if tip_category == category),
+            sum(tip_category == category for _tip_id, tip_category, _message in CUSTOMER_TIPS),
+        )
+        for category in CUSTOMER_TIP_FOCUSES[1:5]
+    )
+
+
+def customer_tip_review_progress_text(reviewed_ids=()):
+    return " | ".join(
+        f"{category} {reviewed}/{total}"
+        for category, reviewed, total in customer_tip_review_progress(reviewed_ids)
+    )
+
+
 def customer_tip_indexes(focus="ALL", favorite_ids=(), reviewed_ids=()):
     normalized_focus = normalize_customer_tip_focus(focus)
     favorites = set(normalize_customer_tip_favorites(favorite_ids))
@@ -6179,6 +6199,7 @@ class USBFileLocker(tk.Tk):
             self.customer_message_focus = "ALL"
         self.customer_message_paused = False
         self.customer_message_after_id = None
+        self.customer_tip_review_history = []
         self.overview_refresh_after_id = None
         self.breach_refresh_after_id = None
         self.key_monitor_after_id = None
@@ -6196,10 +6217,13 @@ class USBFileLocker(tk.Tk):
         self.tip_center_message_var = None
         self.tip_center_position_var = None
         self.tip_center_mode_var = None
+        self.tip_center_progress_var = None
         self.tip_center_focus_var = None
         self.tip_center_focus_button = None
         self.tip_center_favorite_button = None
         self.tip_center_review_button = None
+        self.tip_center_pending_button = None
+        self.tip_center_undo_button = None
         self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
@@ -7228,10 +7252,36 @@ class USBFileLocker(tk.Tk):
         )
         return True
 
+    def remember_customer_tip_review_state(self, reviewed_ids, focus, index):
+        entry = (
+            tuple(normalize_customer_tip_reviewed(reviewed_ids)),
+            normalize_customer_tip_focus(focus),
+            int(index) % len(CUSTOMER_TIP_IDS),
+        )
+        if self.customer_tip_review_history[-1:] != [entry]:
+            self.customer_tip_review_history.append(entry)
+            del self.customer_tip_review_history[:-MAX_CUSTOMER_TIP_REVIEW_HISTORY]
+
+    def start_customer_tip_review(self):
+        indexes = customer_tip_indexes(
+            "TO REVIEW",
+            self.customer_tip_favorites,
+            self.customer_tip_reviewed,
+        )
+        if not indexes:
+            self.status.set("Every fixed tip is reviewed. Clear reviewed marks to restart.")
+            self.refresh_tip_center()
+            return False
+        if not self.set_customer_message_focus("TO REVIEW"):
+            return False
+        self.status.set("Reviewing pending fixed guidance only.")
+        return True
+
     def toggle_customer_tip_reviewed(self):
         tip_id = customer_tip_id(self.customer_message_index)
         previous_reviewed = list(self.customer_tip_reviewed)
         previous_focus = self.customer_message_focus
+        previous_index = self.customer_message_index
         marked_reviewed = tip_id not in self.customer_tip_reviewed
         if marked_reviewed:
             self.customer_tip_reviewed.append(tip_id)
@@ -7253,6 +7303,11 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not save the reviewed-tip change.")
             self.refresh_tip_center()
             return False
+        self.remember_customer_tip_review_state(
+            previous_reviewed,
+            previous_focus,
+            previous_index,
+        )
         self.set_customer_message(
             self.customer_message_index
             if self.customer_message_index in indexes
@@ -7270,6 +7325,8 @@ class USBFileLocker(tk.Tk):
             self.status.set("No reviewed tip marks are saved.")
             return False
         previous_reviewed = list(self.customer_tip_reviewed)
+        previous_focus = self.customer_message_focus
+        previous_index = self.customer_message_index
         self.customer_tip_reviewed = []
         try:
             self.save_customer_tip_preferences()
@@ -7278,8 +7335,51 @@ class USBFileLocker(tk.Tk):
             self.status.set("Could not clear reviewed tip marks.")
             self.refresh_tip_center()
             return False
+        self.remember_customer_tip_review_state(
+            previous_reviewed,
+            previous_focus,
+            previous_index,
+        )
         self.set_customer_message(self.customer_message_index)
         self.status.set("Cleared all reviewed tip marks; favorites were unchanged.")
+        return True
+
+    def undo_customer_tip_review(self):
+        if not self.customer_tip_review_history:
+            self.status.set("No Tip Center review change is available to undo.")
+            self.refresh_tip_center()
+            return False
+        restored_reviewed, restored_focus, restored_index = self.customer_tip_review_history.pop()
+        current_reviewed = list(self.customer_tip_reviewed)
+        current_focus = self.customer_message_focus
+        current_index = self.customer_message_index
+        self.customer_tip_reviewed = list(restored_reviewed)
+        self.customer_message_focus = normalize_customer_tip_focus(restored_focus)
+        if self.customer_message_focus == "FAVORITES" and not self.customer_tip_favorites:
+            self.customer_message_focus = "ALL"
+        if (
+            self.customer_message_focus == "TO REVIEW"
+            and not customer_tip_indexes(
+                "TO REVIEW",
+                self.customer_tip_favorites,
+                self.customer_tip_reviewed,
+            )
+        ):
+            self.customer_message_focus = "ALL"
+        try:
+            self.save_customer_tip_preferences()
+        except Exception:
+            self.customer_tip_reviewed = current_reviewed
+            self.customer_message_focus = current_focus
+            self.customer_message_index = current_index
+            self.customer_tip_review_history.append(
+                (restored_reviewed, restored_focus, restored_index)
+            )
+            self.status.set("Could not undo the Tip Center review change.")
+            self.refresh_tip_center()
+            return False
+        self.set_customer_message(restored_index)
+        self.status.set("Restored the previous Tip Center review state.")
         return True
 
     def copy_customer_message(self):
@@ -7324,6 +7424,9 @@ class USBFileLocker(tk.Tk):
                 f"TIP {position} OF {total} | {category}"
             )
             self.tip_center_focus_var.set(f"FOCUS: {self.customer_message_focus}")
+            self.tip_center_progress_var.set(
+                customer_tip_review_progress_text(self.customer_tip_reviewed)
+            )
             self.tip_center_mode_var.set(
                 f"REVIEWED {len(self.customer_tip_reviewed)} OF {len(CUSTOMER_TIP_IDS)} | AUTO ROTATION PAUSED"
                 if self.customer_message_paused
@@ -7337,6 +7440,14 @@ class USBFileLocker(tk.Tk):
             )
             self.tip_center_review_button.configure(
                 text="MARK TO REVIEW" if reviewed else "MARK REVIEWED"
+            )
+            pending_count = len(CUSTOMER_TIP_IDS) - len(self.customer_tip_reviewed)
+            self.tip_center_pending_button.configure(
+                text=f"REVIEW PENDING {pending_count}",
+                state="normal" if pending_count else "disabled",
+            )
+            self.tip_center_undo_button.configure(
+                state="normal" if self.customer_tip_review_history else "disabled"
             )
         except (AttributeError, tk.TclError):
             return
@@ -7375,6 +7486,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_message_var = tk.StringVar(window)
         self.tip_center_position_var = tk.StringVar(window)
         self.tip_center_mode_var = tk.StringVar(window)
+        self.tip_center_progress_var = tk.StringVar(window)
         self.tip_center_focus_var = tk.StringVar(window)
 
         outer = tk.Frame(window, bg=BG)
@@ -7423,6 +7535,7 @@ class USBFileLocker(tk.Tk):
             activeforeground=TEXT,
             relief="flat",
             font=("Segoe UI", 8, "bold"),
+            width=17,
             direction="below",
         )
         self.tip_center_focus_button.pack(
@@ -7459,6 +7572,7 @@ class USBFileLocker(tk.Tk):
             activeforeground=TEXT,
             relief="flat",
             font=("Segoe UI", 8, "bold"),
+            width=13,
         )
         self.tip_center_favorite_button.pack(
             side="right", ipadx=12, ipady=5
@@ -7473,9 +7587,25 @@ class USBFileLocker(tk.Tk):
             activeforeground=TEXT,
             relief="flat",
             font=("Segoe UI", 8, "bold"),
+            width=15,
         )
         self.tip_center_review_button.pack(
             side="right", padx=(0, 8), ipadx=10, ipady=5
+        )
+        self.tip_center_pending_button = tk.Button(
+            focus_row,
+            text="REVIEW PENDING 16",
+            command=self.start_customer_tip_review,
+            bg=GREEN,
+            fg=BLACK,
+            activebackground=GREEN,
+            activeforeground=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+            width=18,
+        )
+        self.tip_center_pending_button.pack(
+            side="right", padx=(0, 8), ipadx=8, ipady=5
         )
 
         message_panel = tk.Frame(
@@ -7497,11 +7627,19 @@ class USBFileLocker(tk.Tk):
 
         tk.Label(
             outer,
+            textvariable=self.tip_center_progress_var,
+            bg=BG,
+            fg=BLUE,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(10, 0))
+
+        tk.Label(
+            outer,
             textvariable=self.tip_center_mode_var,
             bg=BG,
             fg=GREEN,
             font=("Segoe UI", 9, "bold"),
-        ).pack(anchor="w", pady=(14, 2))
+        ).pack(anchor="w", pady=(4, 2))
         tk.Label(
             outer,
             text="Messages are fixed inside VaultLink and use no webhooks, files, paths, secrets, or downloaded commands.",
@@ -7562,6 +7700,22 @@ class USBFileLocker(tk.Tk):
             relief="flat",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(8, 0), ipadx=11, ipady=7)
+        self.tip_center_undo_button = tk.Button(
+            actions,
+            text="UNDO REVIEW",
+            command=self.undo_customer_tip_review,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+            state="disabled",
+            width=13,
+        )
+        self.tip_center_undo_button.pack(
+            side="left", padx=(8, 0), ipadx=10, ipady=7
+        )
         tk.Button(
             actions,
             text="CLOSE",
@@ -7580,10 +7734,13 @@ class USBFileLocker(tk.Tk):
                 self.tip_center_message_var = None
                 self.tip_center_position_var = None
                 self.tip_center_mode_var = None
+                self.tip_center_progress_var = None
                 self.tip_center_focus_var = None
                 self.tip_center_focus_button = None
                 self.tip_center_favorite_button = None
                 self.tip_center_review_button = None
+                self.tip_center_pending_button = None
+                self.tip_center_undo_button = None
                 self.tip_center_toggle_button = None
             try:
                 self.secondary_windows.remove(window)
@@ -7594,6 +7751,8 @@ class USBFileLocker(tk.Tk):
         window.bind("<Right>", lambda _event: self.move_customer_message(1))
         window.bind("<space>", lambda _event: self.toggle_customer_message_pause())
         window.bind("<Control-c>", lambda _event: self.copy_customer_message())
+        window.bind("<Control-Return>", lambda _event: self.start_customer_tip_review())
+        window.bind("<Control-z>", lambda _event: self.undo_customer_tip_review())
         window.bind("<Escape>", lambda _event: window.destroy())
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
