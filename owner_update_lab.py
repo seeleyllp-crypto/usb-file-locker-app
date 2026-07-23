@@ -6,6 +6,7 @@ import queue
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,22 +44,23 @@ PUBLISH_REPORT_FILE = LAB_DIR / "last_publish.json"
 PREFLIGHT_REPORT_FILE = LAB_DIR / "last_preflight.json"
 HISTORY_FILE = LAB_DIR / "release_history.jsonl"
 MAX_LIVE_PACKAGE_BYTES = 250 * 1024 * 1024
+MAX_DELTA_REPORT_NAMES = 200
 PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git"
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Update Lab adds a Live Identity Report for the currently served public update.",
-    "The report compares declared and embedded desktop versions without executing packaged source.",
-    "Filename, size, SHA-256, embedded version, and complete signed identity each show a clear result.",
-    "A failed identity check includes one bounded validation reason instead of hiding the mismatch.",
-    "The latest verified private candidate is compared by version, test count, and newer-release state.",
-    "Repair guidance always requires another candidate test and the explicit owner-only Publish button.",
-    "The report never publishes, edits the API repository, changes settings, or replaces the stable app.",
-    "Live inspection runs in the existing background worker so the Owner Lab interface stays responsive.",
-    "Temporary public ZIP downloads are deleted automatically after each bounded report.",
-    "The report contains release metadata only and excludes customer files, vault data, keys, and licenses.",
-    "A privacy-safe history event records only the reviewed public version and success or failure.",
-    "Strict manifest, filename, compatibility-floor, hash, and embedded-version gates remain mandatory.",
+    "Owner Update Lab adds a read-only Release Delta Report for public-to-candidate review.",
+    "The report lists added, changed, removed, and unchanged packaged app file counts.",
+    "Packaged filenames may be shown, but source contents and per-file hashes are never displayed.",
+    "Python code, launchers, documentation, configuration, and other impact areas are summarized.",
+    "The live ZIP must pass signed-manifest, size, and SHA-256 checks before comparison.",
+    "The known embedded-version mismatch is clearly reported and never treated as a healthy identity.",
+    "Unsafe paths, links, duplicate names, oversized archives, and private runtime data are rejected.",
+    "The verified private candidate is revalidated before any delta is calculated.",
+    "Temporary live ZIP downloads are removed automatically after the report completes.",
+    "Delta analysis runs in the background so the Owner Update Lab stays responsive.",
+    "The report cannot publish, edit repositories, replace app files, or change customer settings.",
+    "Publishing still requires candidate tests, owner preflight, and the explicit owner-only button.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
@@ -822,6 +824,207 @@ def format_live_package_identity_report(report):
     return "\n".join(lines)
 
 
+def package_file_digests(package_path):
+    package_path = Path(package_path)
+    if not package_path.is_file() or not 0 < package_path.stat().st_size <= MAX_LIVE_PACKAGE_BYTES:
+        raise ValueError("Release delta package size is invalid.")
+    try:
+        with zipfile.ZipFile(package_path, "r") as archive:
+            infos = archive.infolist()
+            file_infos = [info for info in infos if not info.is_dir()]
+            total_size = sum(info.file_size for info in file_infos)
+            if (
+                len(infos) > vaultlink_updater.MAX_UPDATE_ARCHIVE_FILES
+                or total_size > vaultlink_updater.MAX_UPDATE_EXTRACTED_BYTES
+            ):
+                raise ValueError("Release delta package expands beyond the allowed safety limit.")
+            digests = {}
+            casefolded_names = set()
+            for info in infos:
+                relative = vaultlink_updater.safe_member_path(info.filename)
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == stat.S_IFLNK:
+                    raise ValueError("Release delta packages containing links are not supported.")
+                if info.is_dir():
+                    continue
+                name = relative.as_posix()
+                folded = name.casefold()
+                if name in digests or folded in casefolded_names:
+                    raise ValueError("Release delta package contains duplicate file names.")
+                casefolded_names.add(folded)
+                digest = hashlib.sha256()
+                with archive.open(info, "r") as source:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                digests[name] = digest.hexdigest()
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("Release delta package could not be inspected.") from exc
+    return digests
+
+
+def release_delta_area(name):
+    suffix = Path(name).suffix.lower()
+    if suffix == ".py":
+        return "Python code"
+    if suffix in {".bat", ".cmd"}:
+        return "Launchers"
+    if suffix in {".md", ".txt", ".rst"}:
+        return "Documentation"
+    if suffix in {".json", ".toml", ".ini", ".cfg", ".yaml", ".yml"}:
+        return "Configuration"
+    return "Other files"
+
+
+def release_delta_report(server_url, candidate_report=None):
+    candidate = candidate_report if isinstance(candidate_report, dict) else (load_candidate_report() or {})
+    candidate_info = candidate_package_info(candidate)
+    candidate_path = CANDIDATE_DIR / candidate_info["package_filename"]
+    candidate_files = package_file_digests(candidate_path)
+
+    update = live_release_payload(server_url)["update"]
+    package_name = str(update.get("package_filename", ""))
+    if not package_name or Path(package_name).name != package_name:
+        raise ValueError("The live update package filename is invalid.")
+    with tempfile.TemporaryDirectory(prefix="vaultlink-release-delta-") as temp_dir:
+        live_path = Path(temp_dir) / package_name
+        downloaded_size, downloaded_hash = download_live_package_to_path(server_url, update, live_path)
+        if (
+            downloaded_size != int(update.get("size_bytes", 0) or 0)
+            or downloaded_hash != str(update.get("sha256", "")).lower()
+        ):
+            raise ValueError("The live update download did not match its signed manifest.")
+        try:
+            vaultlink_updater.validate_manifest(update, live_path)
+        except ValueError as exc:
+            identity_error = str(exc).strip()[:240]
+            if identity_error != "Update package embedded desktop version does not match the signed manifest.":
+                raise ValueError(
+                    f"The live update is not trusted enough for delta comparison. {identity_error}"
+                ) from exc
+            live_identity_valid = False
+        else:
+            identity_error = ""
+            live_identity_valid = True
+        live_embedded_version = vaultlink_updater.package_desktop_version(live_path)
+        live_files = package_file_digests(live_path)
+
+    live_names = set(live_files)
+    candidate_names = set(candidate_files)
+    added_all = sorted(candidate_names - live_names, key=str.casefold)
+    removed_all = sorted(live_names - candidate_names, key=str.casefold)
+    changed_all = sorted(
+        (name for name in live_names & candidate_names if live_files[name] != candidate_files[name]),
+        key=str.casefold,
+    )
+    unchanged_count = len(live_names & candidate_names) - len(changed_all)
+    impacted = added_all + changed_all + removed_all
+    impact_areas = {
+        area: sum(release_delta_area(name) == area for name in impacted)
+        for area in ("Python code", "Launchers", "Documentation", "Configuration", "Other files")
+    }
+    has_changes = bool(impacted)
+    return {
+        "schema_version": 1,
+        "checked_at_utc": locker.utc_now_text(),
+        "status": "changes" if has_changes else "same-files",
+        "live": {
+            "manifest_version": str(update.get("version", ""))[:80],
+            "embedded_version": live_embedded_version,
+            "identity_valid": live_identity_valid,
+            "identity_error": identity_error,
+            "file_count": len(live_files),
+        },
+        "candidate": {
+            "version": str(candidate_info.get("version", ""))[:80],
+            "file_count": len(candidate_files),
+        },
+        "files": {
+            "added_count": len(added_all),
+            "changed_count": len(changed_all),
+            "removed_count": len(removed_all),
+            "unchanged_count": unchanged_count,
+            "added": added_all[:MAX_DELTA_REPORT_NAMES],
+            "changed": changed_all[:MAX_DELTA_REPORT_NAMES],
+            "removed": removed_all[:MAX_DELTA_REPORT_NAMES],
+            "name_limit": MAX_DELTA_REPORT_NAMES,
+        },
+        "impact_areas": impact_areas,
+        "review": {
+            "required": has_changes or not live_identity_valid,
+            "automatic_publish": False,
+            "owner_publish_required": True,
+            "action": (
+                "Review the listed package changes, run TEST CANDIDATE again, review all preflight results, "
+                "then use the explicit owner-only Publish button only when the release is intended."
+            ),
+        },
+        "privacy": (
+            "This report shows packaged app filenames and aggregate counts only. It excludes file contents, "
+            "per-file hashes, USB paths, keys, PINs, passwords, licenses, customer records, audit records, "
+            "vault data, and personal files."
+        ),
+    }
+
+
+def format_release_delta_report(report):
+    if not isinstance(report, dict) or not isinstance(report.get("files"), dict):
+        raise ValueError("Release delta report is invalid.")
+    live = report.get("live", {})
+    candidate = report.get("candidate", {})
+    files = report["files"]
+    lines = [
+        "VAULTLINK RELEASE DELTA REPORT",
+        "==============================",
+        f"Checked UTC: {str(report.get('checked_at_utc', ''))[:24]}",
+        f"Live manifest: {live.get('manifest_version', 'unknown')}",
+        f"Live embedded: {live.get('embedded_version', 'unknown')}",
+        f"Live signed identity: {'PASS' if live.get('identity_valid') else 'BLOCKED'}",
+        f"Private candidate: {candidate.get('version', 'unknown')}",
+        "",
+        "CHANGE SUMMARY",
+        f"Added: {int(files.get('added_count', 0) or 0)}",
+        f"Changed: {int(files.get('changed_count', 0) or 0)}",
+        f"Removed: {int(files.get('removed_count', 0) or 0)}",
+        f"Unchanged: {int(files.get('unchanged_count', 0) or 0)}",
+        "",
+        "IMPACT AREAS",
+    ]
+    if live.get("identity_error"):
+        lines.insert(7, f"Identity reason: {str(live.get('identity_error'))[:240]}")
+    for area, count in report.get("impact_areas", {}).items():
+        lines.append(f"{area}: {int(count or 0)}")
+
+    def add_names(label, key, marker):
+        lines.extend(["", label])
+        names = files.get(key, [])
+        if names:
+            lines.extend(f"{marker} {name}" for name in names)
+            hidden = int(files.get(f"{key}_count", 0) or 0) - len(names)
+            if hidden > 0:
+                lines.append(f"... and {hidden} more")
+        else:
+            lines.append("None")
+
+    add_names("ADDED FILES", "added", "+")
+    add_names("CHANGED FILES", "changed", "*")
+    add_names("REMOVED FILES", "removed", "-")
+    lines.extend(
+        [
+            "",
+            "OWNER ACTION",
+            str(report.get("review", {}).get("action", "Review the candidate before publishing."))[:500],
+            "Automatic publish: no",
+            "Registered owner approval required: yes",
+            "",
+            str(report.get("privacy", "")),
+        ]
+    )
+    return "\n".join(lines)
+
+
 def owner_preflight(app_repo, api_repo, owner_key_path, minimum_supported, notes, server_url):
     checks = []
 
@@ -1120,8 +1323,6 @@ class OwnerUpdateLab(tk.Tk):
         secondary.pack(fill="x", padx=18, pady=(0, 8))
         self.package_button = tk.Button(secondary, text="PACKAGE CONTENTS", command=self.show_package_contents, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.package_button.pack(side="left", ipadx=9, ipady=6)
-        self.identity_button = tk.Button(secondary, text="LIVE IDENTITY REPORT", command=self.start_live_identity_report, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"))
-        self.identity_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         self.export_button = tk.Button(secondary, text="EXPORT OWNER REPORT", command=self.export_owner_report, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.export_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         self.copy_hash_button = tk.Button(secondary, text="COPY SHA-256", command=self.copy_candidate_hash, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
@@ -1129,6 +1330,14 @@ class OwnerUpdateLab(tk.Tk):
         tk.Button(secondary, text="RELEASE HISTORY", command=self.show_release_history, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         self.run_lab_button = tk.Button(secondary, text="RUN LAB VERSION", command=self.start_lab_runtime, bg=GREEN, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.run_lab_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+
+        analysis = tk.Frame(panel, bg=PANEL)
+        analysis.pack(fill="x", padx=18, pady=(0, 8))
+        self.identity_button = tk.Button(analysis, text="LIVE IDENTITY REPORT", command=self.start_live_identity_report, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"))
+        self.identity_button.pack(side="left", ipadx=9, ipady=6)
+        self.delta_button = tk.Button(analysis, text="RELEASE DELTA REPORT", command=self.start_release_delta_report, bg=YELLOW, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.delta_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+        tk.Label(analysis, text="READ-ONLY RELEASE ANALYSIS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left", padx=(12, 0))
 
         links = tk.Frame(panel, bg=PANEL)
         links.pack(fill="x", padx=18, pady=(0, 8))
@@ -1216,6 +1425,7 @@ class OwnerUpdateLab(tk.Tk):
         self.publish_button.configure(state="normal" if current and active and owner_ready else "disabled")
         self.package_button.configure(state="normal" if package_ready and active else "disabled")
         self.identity_button.configure(state="normal" if active else "disabled")
+        self.delta_button.configure(state="normal" if package_ready and active else "disabled")
         self.copy_hash_button.configure(state="normal" if report and report.get("sha256") and active else "disabled")
         self.export_button.configure(state="normal" if (report or preflight or HISTORY_FILE.is_file()) and active else "disabled")
         self.run_lab_button.configure(state="normal" if current and active and owner_ready else "disabled")
@@ -1228,6 +1438,7 @@ class OwnerUpdateLab(tk.Tk):
         self.publish_button.configure(state="disabled")
         self.package_button.configure(state="disabled" if enabled else self.package_button.cget("state"))
         self.identity_button.configure(state="disabled" if enabled else self.identity_button.cget("state"))
+        self.delta_button.configure(state="disabled" if enabled else self.delta_button.cget("state"))
         self.export_button.configure(state="disabled" if enabled else self.export_button.cget("state"))
         self.copy_hash_button.configure(state="disabled" if enabled else self.copy_hash_button.cget("state"))
         self.run_lab_button.configure(state="disabled")
@@ -1263,6 +1474,7 @@ class OwnerUpdateLab(tk.Tk):
             history_action = {
                 "Owner preflight": "owner_preflight",
                 "Live identity report": "live_identity_review",
+                "Release delta report": "release_delta_review",
                 "Candidate test": "candidate_test",
                 "Lab runtime": "lab_runtime_launch",
                 "Verified publish": "release_publish",
@@ -1305,6 +1517,29 @@ class OwnerUpdateLab(tk.Tk):
                 "Live Release Identity",
                 format_live_package_identity_report(result),
             )
+        elif action == "Release delta report":
+            live = result.get("live", {})
+            files = result.get("files", {})
+            self.append_log(
+                f"Release delta live {live.get('manifest_version', 'unknown')} -> "
+                f"candidate {result.get('candidate', {}).get('version', 'unknown')} | "
+                f"+{files.get('added_count', 0)} *{files.get('changed_count', 0)} "
+                f"-{files.get('removed_count', 0)}"
+            )
+            try:
+                append_lab_history(
+                    "release_delta_review",
+                    "ok",
+                    {"version": str(live.get("manifest_version", ""))},
+                )
+            except Exception:
+                pass
+            self.set_busy(False, "Release delta report is ready. Nothing was published or changed.")
+            self.show_text_window(
+                "VaultLink Release Delta",
+                "Release Delta Report",
+                format_release_delta_report(result),
+            )
         elif action == "Candidate test":
             self.append_log(f"Candidate {result['version']} passed {result['test_count']} tests, signature validation, and Defender scans.")
             self.set_busy(False, "Candidate verified locally. The Publish button is now available.")
@@ -1344,6 +1579,15 @@ class OwnerUpdateLab(tk.Tk):
         self.run_background(
             "Live identity report",
             lambda: live_package_identity_report(
+                self.server_url(),
+                load_candidate_report(),
+            ),
+        )
+
+    def start_release_delta_report(self):
+        self.run_background(
+            "Release delta report",
+            lambda: release_delta_report(
                 self.server_url(),
                 load_candidate_report(),
             ),

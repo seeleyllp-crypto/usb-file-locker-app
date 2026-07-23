@@ -5063,6 +5063,133 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('elif action == "Live identity report":', ui_source)
         self.assertIn("Nothing was published.", ui_source)
 
+    def test_release_delta_report_is_bounded_private_and_read_only(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+
+        def package_bytes(files):
+            package_buffer = io.BytesIO()
+            with zipfile.ZipFile(package_buffer, "w") as archive:
+                for name, content in files.items():
+                    archive.writestr(name, content)
+            return package_buffer.getvalue()
+
+        live_bytes = package_bytes(
+            {
+                "usb_file_locker.py": 'DESKTOP_APP_VERSION = "9999.61"\n',
+                "same.txt": "same",
+                "changed.py": "old",
+                "removed.cmd": "@echo old",
+            }
+        )
+        update = {
+            "schema_version": 1,
+            "product": "USB File Locker",
+            "platform": "windows-source",
+            "version": "9999.60",
+            "minimum_supported_version": "9999.60",
+            "published_at_utc": "2026-07-23T00:00:00Z",
+            "package_filename": "VaultLink-Windows-9999.60.zip",
+            "download_path": "/api/v1/updates/windows/download",
+            "sha256": hashlib.sha256(live_bytes).hexdigest(),
+            "size_bytes": len(live_bytes),
+            "signing_key_id": key_id,
+            "notes": ["Release delta fixture"],
+            "preserves_local_app_data": True,
+        }
+        update["signature"] = base64.urlsafe_b64encode(
+            private_key.sign(vaultlink_updater.canonical_manifest_bytes(update))
+        ).rstrip(b"=").decode("ascii")
+
+        class TestResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+                return False
+
+        with tempfile.TemporaryDirectory(prefix="vaultlink_release_delta_") as temp_dir:
+            candidate_dir = Path(temp_dir)
+            candidate_path = candidate_dir / "candidate.zip"
+            candidate_path.write_bytes(
+                package_bytes(
+                    {
+                        "usb_file_locker.py": 'DESKTOP_APP_VERSION = "9999.62"\n',
+                        "same.txt": "same",
+                        "changed.py": "new",
+                        "added.json": "{}",
+                    }
+                )
+            )
+            candidate_report = {
+                "status": "verified",
+                "version": "9999.62",
+                "owner_key_path": "D:/private-owner.key",
+                "license_key": "DO-NOT-STORE-LICENSE",
+            }
+            candidate_info = {
+                "version": "9999.62",
+                "package_filename": candidate_path.name,
+            }
+            with mock.patch.object(owner_update_lab, "CANDIDATE_DIR", candidate_dir), \
+                    mock.patch.object(owner_update_lab, "candidate_package_info", return_value=candidate_info), \
+                    mock.patch.object(owner_update_lab, "live_release_payload", return_value={"update": update}), \
+                    mock.patch.object(
+                        owner_update_lab.urllib.request,
+                        "urlopen",
+                        side_effect=lambda *_args, **_kwargs: TestResponse(live_bytes),
+                    ), mock.patch.object(
+                        vaultlink_updater,
+                        "UPDATE_SIGNING_PUBLIC_KEY_B64",
+                        public_b64,
+                    ), mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id):
+                report = owner_update_lab.release_delta_report(
+                    locker.DEFAULT_LICENSE_SERVER,
+                    candidate_report,
+                )
+
+            self.assertEqual(report["status"], "changes")
+            self.assertFalse(report["live"]["identity_valid"])
+            self.assertEqual(report["live"]["manifest_version"], "9999.60")
+            self.assertEqual(report["live"]["embedded_version"], "9999.61")
+            self.assertEqual(report["candidate"]["version"], "9999.62")
+            self.assertEqual(report["files"]["added_count"], 1)
+            self.assertEqual(report["files"]["changed_count"], 2)
+            self.assertEqual(report["files"]["removed_count"], 1)
+            self.assertEqual(report["files"]["unchanged_count"], 1)
+            self.assertEqual(report["files"]["added"], ["added.json"])
+            self.assertEqual(report["files"]["removed"], ["removed.cmd"])
+            self.assertEqual(report["impact_areas"]["Python code"], 2)
+            self.assertEqual(report["impact_areas"]["Launchers"], 1)
+            self.assertEqual(report["impact_areas"]["Configuration"], 1)
+            self.assertTrue(report["review"]["required"])
+            self.assertFalse(report["review"]["automatic_publish"])
+            self.assertTrue(report["review"]["owner_publish_required"])
+            formatted = owner_update_lab.format_release_delta_report(report)
+            self.assertIn("Live signed identity: BLOCKED", formatted)
+            self.assertIn("+ added.json", formatted)
+            self.assertIn("* changed.py", formatted)
+            self.assertIn("- removed.cmd", formatted)
+            self.assertIn("Automatic publish: no", formatted)
+            serialized = json.dumps(report) + formatted
+            self.assertNotIn("private-owner.key", serialized)
+            self.assertNotIn("DO-NOT-STORE-LICENSE", serialized)
+            self.assertNotIn(hashlib.sha256(b"new").hexdigest(), serialized)
+
+            unsafe_path = candidate_dir / "unsafe.zip"
+            with zipfile.ZipFile(unsafe_path, "w") as archive:
+                archive.writestr("../escape.py", "pass")
+            with self.assertRaisesRegex(ValueError, "unsafe path"):
+                owner_update_lab.package_file_digests(unsafe_path)
+
+        ui_source = inspect.getsource(owner_update_lab.OwnerUpdateLab)
+        self.assertIn('text="RELEASE DELTA REPORT"', ui_source)
+        self.assertIn('elif action == "Release delta report":', ui_source)
+        self.assertIn("Nothing was published or changed.", ui_source)
+
     def test_owner_lab_runtime_extracts_verified_candidate_into_private_runtime(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_lab_runtime_") as temp_dir:
             root = Path(temp_dir)
