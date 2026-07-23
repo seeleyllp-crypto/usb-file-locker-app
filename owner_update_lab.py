@@ -47,18 +47,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Signed ZIPs must embed the exact desktop version declared by their release manifest.",
-    "The verifier parses app syntax only and never executes packaged source during identity checks.",
-    "Every package must contain exactly one bounded usb_file_locker.py desktop entrypoint.",
-    "The package filename must match the declared version and the compatibility floor cannot be newer.",
-    "An older Owner Lab can no longer label newer source code with its own older version number.",
-    "Candidate verification rejects version disagreement before a package can enter the private lab.",
-    "Live verification checks signature, filename, size, hash, and embedded desktop version together.",
-    "Owner Update Lab now includes a sixteenth preflight check for live package identity.",
-    "A mismatched public manifest and ZIP visibly block release readiness instead of passing silently.",
-    "Temporary live-verification downloads are removed automatically after each bounded check.",
-    "No customer file, path, key, PIN, password, license, audit record, or vault content is inspected.",
-    "Ed25519 manifest verification and SHA-256 package verification remain mandatory.",
+    "Owner Update Lab adds a Live Identity Report for the currently served public update.",
+    "The report compares declared and embedded desktop versions without executing packaged source.",
+    "Filename, size, SHA-256, embedded version, and complete signed identity each show a clear result.",
+    "A failed identity check includes one bounded validation reason instead of hiding the mismatch.",
+    "The latest verified private candidate is compared by version, test count, and newer-release state.",
+    "Repair guidance always requires another candidate test and the explicit owner-only Publish button.",
+    "The report never publishes, edits the API repository, changes settings, or replaces the stable app.",
+    "Live inspection runs in the existing background worker so the Owner Lab interface stays responsive.",
+    "Temporary public ZIP downloads are deleted automatically after each bounded report.",
+    "The report contains release metadata only and excludes customer files, vault data, keys, and licenses.",
+    "A privacy-safe history event records only the reviewed public version and success or failure.",
+    "Strict manifest, filename, compatibility-floor, hash, and embedded-version gates remain mandatory.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
@@ -624,7 +624,9 @@ def live_release_payload(server_url):
     return payload
 
 
-def verify_live_package(server_url, update):
+def download_live_package_to_path(server_url, update, package_path):
+    if str(update.get("download_path", "")) != "/api/v1/updates/windows/download":
+        raise ValueError("The live update download path is invalid.")
     url = locker.validated_license_server_url(server_url) + str(update["download_path"])
     request = urllib.request.Request(url, headers={"Accept": "application/zip"}, method="GET")
     digest = hashlib.sha256()
@@ -632,25 +634,192 @@ def verify_live_package(server_url, update):
     package_name = str(update.get("package_filename", ""))
     if not package_name or Path(package_name).name != package_name:
         raise ValueError("The live update package filename is invalid.")
+    destination = Path(package_path)
+    if destination.name != package_name or not destination.parent.is_dir():
+        raise ValueError("The live update verification destination is invalid.")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_LIVE_PACKAGE_BYTES:
+                    raise ValueError("The live update package is larger than the owner verifier allows.")
+                digest.update(chunk)
+                output.write(chunk)
+    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"Could not download the live update for verification.\n\n{exc}") from exc
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return size, digest.hexdigest()
+
+
+def verify_live_package(server_url, update):
+    package_name = str(update.get("package_filename", ""))
+    if not package_name or Path(package_name).name != package_name:
+        raise ValueError("The live update package filename is invalid.")
     with tempfile.TemporaryDirectory(prefix="vaultlink-live-update-") as temp_dir:
         package_path = Path(temp_dir) / package_name
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response, package_path.open("xb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_LIVE_PACKAGE_BYTES:
-                        raise ValueError("The live update package is larger than the owner verifier allows.")
-                    digest.update(chunk)
-                    output.write(chunk)
-        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
-            raise ValueError(f"Could not download the live update for verification.\n\n{exc}") from exc
-        if size != int(update["size_bytes"]) or digest.hexdigest() != str(update["sha256"]).lower():
+        size, digest = download_live_package_to_path(server_url, update, package_path)
+        if size != int(update["size_bytes"]) or digest != str(update["sha256"]).lower():
             raise ValueError("The live update download did not match its signed manifest.")
         vaultlink_updater.validate_manifest(update, package_path)
-    return size, digest.hexdigest()
+    return size, digest
+
+
+def live_package_identity_report(server_url, candidate_report=None):
+    update = live_release_payload(server_url)["update"]
+    package_name = str(update.get("package_filename", ""))
+    if not package_name or Path(package_name).name != package_name:
+        raise ValueError("The live update package filename is invalid.")
+    with tempfile.TemporaryDirectory(prefix="vaultlink-live-identity-") as temp_dir:
+        package_path = Path(temp_dir) / package_name
+        downloaded_size, downloaded_hash = download_live_package_to_path(
+            server_url,
+            update,
+            package_path,
+        )
+        try:
+            embedded_version = vaultlink_updater.package_desktop_version(package_path)
+        except Exception as exc:
+            embedded_version = "unavailable"
+            embedded_error = str(exc).strip()[:240]
+        else:
+            embedded_error = ""
+        try:
+            vaultlink_updater.validate_manifest(update, package_path)
+        except Exception as exc:
+            validation_error = str(exc).strip()[:240]
+            fully_valid = False
+        else:
+            validation_error = ""
+            fully_valid = True
+
+    manifest_version = str(update.get("version", "")).strip()
+    expected_filename = f"VaultLink-Windows-{manifest_version}.zip"
+    size_matches = downloaded_size == int(update.get("size_bytes", 0) or 0)
+    hash_matches = downloaded_hash == str(update.get("sha256", "")).lower()
+    version_matches = embedded_version == manifest_version
+    candidate = candidate_report if isinstance(candidate_report, dict) else (load_candidate_report() or {})
+    candidate_status = str(candidate.get("status", ""))
+    candidate_version = str(candidate.get("version", "")).strip()
+    candidate_hash = str(candidate.get("sha256", "")).lower()
+    candidate_verified = (
+        candidate_status == "verified"
+        and len(candidate_hash) == 64
+        and all(character in "0123456789abcdef" for character in candidate_hash)
+    )
+    try:
+        locker.update_version_tuple(candidate_version)
+    except ValueError:
+        candidate_verified = False
+    try:
+        candidate_test_count = max(0, min(int(candidate.get("test_count", 0) or 0), 1_000_000))
+    except (TypeError, ValueError):
+        candidate_test_count = 0
+    try:
+        candidate_newer = candidate_verified and locker.compare_update_versions(
+            candidate_version,
+            manifest_version,
+        )
+    except ValueError:
+        candidate_newer = False
+    needs_repair = not fully_valid
+    if needs_repair and candidate_verified and candidate_newer:
+        action = (
+            "Run TEST CANDIDATE again, review every preflight result, then use the explicit owner-only Publish button."
+        )
+    elif needs_repair:
+        action = "Build and test a newer private candidate before using the owner-only Publish button."
+    else:
+        action = "No live identity repair is needed. Keep the verified candidate private until an update is intended."
+    return {
+        "schema_version": 1,
+        "checked_at_utc": locker.utc_now_text(),
+        "status": "healthy" if fully_valid else "needs-repair",
+        "live": {
+            "manifest_version": manifest_version,
+            "embedded_version": embedded_version,
+            "package_filename": package_name,
+            "expected_package_filename": expected_filename,
+            "downloaded_size_bytes": downloaded_size,
+            "manifest_size_bytes": int(update.get("size_bytes", 0) or 0),
+            "downloaded_sha256": downloaded_hash,
+            "manifest_sha256": str(update.get("sha256", "")).lower(),
+            "filename_matches": package_name == expected_filename,
+            "size_matches": size_matches,
+            "hash_matches": hash_matches,
+            "version_matches": version_matches,
+            "fully_valid": fully_valid,
+            "validation_error": validation_error or embedded_error,
+        },
+        "candidate": {
+            "available": candidate_verified,
+            "version": candidate_version if candidate_verified else "unavailable",
+            "sha256": candidate_hash if candidate_verified else "",
+            "test_count": candidate_test_count if candidate_verified else 0,
+            "newer_than_live_manifest": bool(candidate_newer),
+        },
+        "repair": {
+            "needed": needs_repair,
+            "automatic_publish": False,
+            "owner_publish_required": True,
+            "action": action,
+        },
+        "privacy": (
+            "This report contains release metadata only. It excludes USB paths, keys, PINs, passwords, licenses, "
+            "customer records, audit records, vault data, and customer file contents."
+        ),
+    }
+
+
+def format_live_package_identity_report(report):
+    if not isinstance(report, dict) or not isinstance(report.get("live"), dict):
+        raise ValueError("Live identity report is invalid.")
+    live = report["live"]
+    candidate = report.get("candidate", {})
+    repair = report.get("repair", {})
+    status = "HEALTHY" if report.get("status") == "healthy" else "NEEDS REPAIR"
+    validation = "PASS" if live.get("fully_valid") else "BLOCKED"
+    lines = [
+        "VAULTLINK LIVE RELEASE IDENTITY",
+        "================================",
+        f"Status: {status}",
+        f"Checked UTC: {str(report.get('checked_at_utc', ''))[:24]}",
+        "",
+        "LIVE RELEASE",
+        f"Manifest desktop: {live.get('manifest_version', 'unknown')}",
+        f"Embedded desktop: {live.get('embedded_version', 'unknown')}",
+        f"Package filename: {live.get('package_filename', 'unknown')}",
+        f"Filename matches version: {'yes' if live.get('filename_matches') else 'no'}",
+        f"Size matches manifest: {'yes' if live.get('size_matches') else 'no'}",
+        f"SHA-256 matches manifest: {'yes' if live.get('hash_matches') else 'no'}",
+        f"Embedded version matches: {'yes' if live.get('version_matches') else 'no'}",
+        f"Full signed identity: {validation}",
+    ]
+    if live.get("validation_error"):
+        lines.append(f"Reason: {str(live.get('validation_error'))[:240]}")
+    lines.extend(
+        [
+            "",
+            "PRIVATE CANDIDATE",
+            f"Available: {'yes' if candidate.get('available') else 'no'}",
+            f"Version: {candidate.get('version', 'unavailable')}",
+            f"Tests: {int(candidate.get('test_count', 0) or 0)}",
+            f"Newer than live manifest: {'yes' if candidate.get('newer_than_live_manifest') else 'no'}",
+            "",
+            "OWNER ACTION",
+            str(repair.get("action", "Review release identity before publishing."))[:400],
+            "Automatic publish: no",
+            "Registered owner approval required: yes",
+            "",
+            str(report.get("privacy", "")),
+        ]
+    )
+    return "\n".join(lines)
 
 
 def owner_preflight(app_repo, api_repo, owner_key_path, minimum_supported, notes, server_url):
@@ -951,6 +1120,8 @@ class OwnerUpdateLab(tk.Tk):
         secondary.pack(fill="x", padx=18, pady=(0, 8))
         self.package_button = tk.Button(secondary, text="PACKAGE CONTENTS", command=self.show_package_contents, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.package_button.pack(side="left", ipadx=9, ipady=6)
+        self.identity_button = tk.Button(secondary, text="LIVE IDENTITY REPORT", command=self.start_live_identity_report, bg=BLUE, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"))
+        self.identity_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         self.export_button = tk.Button(secondary, text="EXPORT OWNER REPORT", command=self.export_owner_report, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.export_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
         self.copy_hash_button = tk.Button(secondary, text="COPY SHA-256", command=self.copy_candidate_hash, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
@@ -1044,6 +1215,7 @@ class OwnerUpdateLab(tk.Tk):
         active = not self.busy
         self.publish_button.configure(state="normal" if current and active and owner_ready else "disabled")
         self.package_button.configure(state="normal" if package_ready and active else "disabled")
+        self.identity_button.configure(state="normal" if active else "disabled")
         self.copy_hash_button.configure(state="normal" if report and report.get("sha256") and active else "disabled")
         self.export_button.configure(state="normal" if (report or preflight or HISTORY_FILE.is_file()) and active else "disabled")
         self.run_lab_button.configure(state="normal" if current and active and owner_ready else "disabled")
@@ -1055,6 +1227,7 @@ class OwnerUpdateLab(tk.Tk):
         self.test_button.configure(state="disabled" if enabled else "normal")
         self.publish_button.configure(state="disabled")
         self.package_button.configure(state="disabled" if enabled else self.package_button.cget("state"))
+        self.identity_button.configure(state="disabled" if enabled else self.identity_button.cget("state"))
         self.export_button.configure(state="disabled" if enabled else self.export_button.cget("state"))
         self.copy_hash_button.configure(state="disabled" if enabled else self.copy_hash_button.cget("state"))
         self.run_lab_button.configure(state="disabled")
@@ -1089,6 +1262,7 @@ class OwnerUpdateLab(tk.Tk):
             self.append_log(f"{action} FAILED: {error}")
             history_action = {
                 "Owner preflight": "owner_preflight",
+                "Live identity report": "live_identity_review",
                 "Candidate test": "candidate_test",
                 "Lab runtime": "lab_runtime_launch",
                 "Verified publish": "release_publish",
@@ -1110,6 +1284,27 @@ class OwnerUpdateLab(tk.Tk):
                 messagebox.showwarning("Preflight needs attention", f"{result['passed']}/{result['total']} checks passed. Review the failed checks in the private activity panel.", parent=self)
             else:
                 messagebox.showinfo("Preflight ready", "Every owner release preflight check passed.", parent=self)
+        elif action == "Live identity report":
+            live = result.get("live", {})
+            self.append_log(
+                f"Live identity {str(result.get('status', 'unknown')).upper()} | "
+                f"manifest {live.get('manifest_version', 'unknown')} | "
+                f"embedded {live.get('embedded_version', 'unknown')}"
+            )
+            try:
+                append_lab_history(
+                    "live_identity_review",
+                    "ok",
+                    {"version": str(live.get("manifest_version", ""))},
+                )
+            except Exception:
+                pass
+            self.set_busy(False, "Live release identity report is ready. Nothing was published.")
+            self.show_text_window(
+                "VaultLink Live Release Identity",
+                "Live Release Identity",
+                format_live_package_identity_report(result),
+            )
         elif action == "Candidate test":
             self.append_log(f"Candidate {result['version']} passed {result['test_count']} tests, signature validation, and Defender scans.")
             self.set_busy(False, "Candidate verified locally. The Publish button is now available.")
@@ -1142,6 +1337,15 @@ class OwnerUpdateLab(tk.Tk):
                 self.minimum_var.get().strip(),
                 self.notes_value(),
                 self.server_url(),
+            ),
+        )
+
+    def start_live_identity_report(self):
+        self.run_background(
+            "Live identity report",
+            lambda: live_package_identity_report(
+                self.server_url(),
+                load_candidate_report(),
             ),
         )
 

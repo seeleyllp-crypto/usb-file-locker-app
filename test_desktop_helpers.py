@@ -4963,6 +4963,106 @@ class DesktopHelperTests(unittest.TestCase):
             inspect.getsource(owner_update_lab.OwnerUpdateLab.build_ui),
         )
 
+    def test_live_identity_report_handles_healthy_and_repair_states_privately(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+
+        def signed_fixture(declared_version, embedded_version):
+            package_buffer = io.BytesIO()
+            with zipfile.ZipFile(package_buffer, "w") as archive:
+                archive.writestr(
+                    "usb_file_locker.py",
+                    f'DESKTOP_APP_VERSION = "{embedded_version}"\n',
+                )
+            package_bytes = package_buffer.getvalue()
+            update = {
+                "schema_version": 1,
+                "product": "USB File Locker",
+                "platform": "windows-source",
+                "version": declared_version,
+                "minimum_supported_version": declared_version,
+                "published_at_utc": "2026-07-22T00:00:00Z",
+                "package_filename": f"VaultLink-Windows-{declared_version}.zip",
+                "download_path": "/api/v1/updates/windows/download",
+                "sha256": hashlib.sha256(package_bytes).hexdigest(),
+                "size_bytes": len(package_bytes),
+                "signing_key_id": key_id,
+                "notes": ["Live report fixture"],
+                "preserves_local_app_data": True,
+            }
+            update["signature"] = base64.urlsafe_b64encode(
+                private_key.sign(vaultlink_updater.canonical_manifest_bytes(update))
+            ).rstrip(b"=").decode("ascii")
+            return update, package_bytes
+
+        class TestResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+                return False
+
+        candidate = {
+            "status": "verified",
+            "version": "9999.99",
+            "sha256": "a" * 64,
+            "test_count": 321,
+            "owner_key_path": "D:/private-owner.key",
+            "license_key": "DO-NOT-STORE-LICENSE",
+        }
+        healthy_update, healthy_package = signed_fixture("9999.50", "9999.50")
+        broken_update, broken_package = signed_fixture("9999.51", "9999.52")
+
+        def run_report(update, package_bytes):
+            with mock.patch.object(
+                owner_update_lab,
+                "live_release_payload",
+                return_value={"update": update},
+            ), mock.patch.object(
+                owner_update_lab.urllib.request,
+                "urlopen",
+                side_effect=lambda *_args, **_kwargs: TestResponse(package_bytes),
+            ), mock.patch.object(
+                vaultlink_updater,
+                "UPDATE_SIGNING_PUBLIC_KEY_B64",
+                public_b64,
+            ), mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id):
+                return owner_update_lab.live_package_identity_report(
+                    locker.DEFAULT_LICENSE_SERVER,
+                    candidate,
+                )
+
+        healthy = run_report(healthy_update, healthy_package)
+        broken = run_report(broken_update, broken_package)
+        self.assertEqual(healthy["status"], "healthy")
+        self.assertTrue(healthy["live"]["fully_valid"])
+        self.assertFalse(healthy["repair"]["needed"])
+        self.assertEqual(broken["status"], "needs-repair")
+        self.assertEqual(broken["live"]["manifest_version"], "9999.51")
+        self.assertEqual(broken["live"]["embedded_version"], "9999.52")
+        self.assertFalse(broken["live"]["version_matches"])
+        self.assertFalse(broken["live"]["fully_valid"])
+        self.assertTrue(broken["candidate"]["available"])
+        self.assertTrue(broken["candidate"]["newer_than_live_manifest"])
+        self.assertTrue(broken["repair"]["needed"])
+        self.assertFalse(broken["repair"]["automatic_publish"])
+        self.assertTrue(broken["repair"]["owner_publish_required"])
+        formatted = owner_update_lab.format_live_package_identity_report(broken)
+        self.assertIn("Status: NEEDS REPAIR", formatted)
+        self.assertIn("Manifest desktop: 9999.51", formatted)
+        self.assertIn("Embedded desktop: 9999.52", formatted)
+        self.assertIn("Automatic publish: no", formatted)
+        serialized = json.dumps(broken) + formatted
+        self.assertNotIn("private-owner.key", serialized)
+        self.assertNotIn("DO-NOT-STORE-LICENSE", serialized)
+        ui_source = inspect.getsource(owner_update_lab.OwnerUpdateLab)
+        self.assertIn('text="LIVE IDENTITY REPORT"', ui_source)
+        self.assertIn('elif action == "Live identity report":', ui_source)
+        self.assertIn("Nothing was published.", ui_source)
+
     def test_owner_lab_runtime_extracts_verified_candidate_into_private_runtime(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_lab_runtime_") as temp_dir:
             root = Path(temp_dir)
