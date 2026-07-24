@@ -39,6 +39,7 @@ SOURCE_DIR = Path(__file__).resolve().parent
 LAB_DIR = locker.APP_DIR / "owner_update_lab"
 CANDIDATE_DIR = LAB_DIR / "candidate"
 LAB_RUNTIME_DIR = LAB_DIR / "runtime"
+ROLLBACK_SNAPSHOT_DIR = LAB_DIR / "rollback_snapshots"
 REPORT_FILE = LAB_DIR / "verified_candidate.json"
 PUBLISH_REPORT_FILE = LAB_DIR / "last_publish.json"
 PREFLIGHT_REPORT_FILE = LAB_DIR / "last_preflight.json"
@@ -49,18 +50,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Update Lab adds a read-only Release Delta Report for public-to-candidate review.",
-    "The report lists added, changed, removed, and unchanged packaged app file counts.",
-    "Packaged filenames may be shown, but source contents and per-file hashes are never displayed.",
-    "Python code, launchers, documentation, configuration, and other impact areas are summarized.",
-    "The live ZIP must pass signed-manifest, size, and SHA-256 checks before comparison.",
-    "The known embedded-version mismatch is clearly reported and never treated as a healthy identity.",
-    "Unsafe paths, links, duplicate names, oversized archives, and private runtime data are rejected.",
-    "The verified private candidate is revalidated before any delta is calculated.",
-    "Temporary live ZIP downloads are removed automatically after the report completes.",
-    "Delta analysis runs in the background so the Owner Update Lab stays responsive.",
-    "The report cannot publish, edit repositories, replace app files, or change customer settings.",
-    "Publishing still requires candidate tests, owner preflight, and the explicit owner-only button.",
+    "Owner Update Lab adds owner-authorized Verified Rollback Snapshots of the live signed release.",
+    "Each snapshot stores only the public release ZIP, signed manifest, and bounded metadata.",
+    "The public ZIP is downloaded again and must pass signature, size, SHA-256, and version checks.",
+    "Safe extraction is tested in a temporary folder before a snapshot can be retained.",
+    "Microsoft Defender must report no threats for the downloaded ZIP.",
+    "Unsafe paths, links, oversized archives, and private runtime data block snapshot creation.",
+    "Existing matching snapshots are reverified and reused instead of being overwritten.",
+    "Snapshots never contain USB keys, signing keys, licenses, vaults, audit logs, or personal files.",
+    "Snapshot history stores release metadata only and never stores an owner key path.",
+    "Creating a snapshot does not install, restore, publish, or change any customer app.",
+    "Rollback remains an explicit owner recovery action and is never triggered remotely.",
+    "Signed-package identity, release delta, tests, preflight, and explicit publishing remain required.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
@@ -327,6 +328,179 @@ def safe_lab_runtime_root():
         raise ValueError("Lab runtime path is outside the private Owner Update Lab folder.")
     resolved_runtime.mkdir(parents=True, exist_ok=True)
     return resolved_runtime
+
+
+def safe_rollback_snapshot_root():
+    LAB_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_lab = LAB_DIR.resolve()
+    snapshot_path = Path(ROLLBACK_SNAPSHOT_DIR)
+    if snapshot_path.is_symlink():
+        raise ValueError("Rollback snapshot folder cannot be a link.")
+    resolved_snapshots = snapshot_path.resolve()
+    if resolved_snapshots.parent != resolved_lab:
+        raise ValueError("Rollback snapshot folder is outside the private owner lab.")
+    resolved_snapshots.mkdir(parents=True, exist_ok=True)
+    return resolved_snapshots
+
+
+def verify_rollback_snapshot(snapshot_dir):
+    snapshot_dir = Path(snapshot_dir)
+    root = safe_rollback_snapshot_root()
+    if snapshot_dir.is_symlink():
+        raise ValueError("Rollback snapshot folder is invalid.")
+    resolved = snapshot_dir.resolve()
+    if resolved.parent != root or not resolved.is_dir():
+        raise ValueError("Rollback snapshot folder is invalid.")
+    metadata_path = resolved / "snapshot.json"
+    manifest_path = resolved / "windows-manifest.json"
+    if (
+        not metadata_path.is_file()
+        or metadata_path.is_symlink()
+        or not manifest_path.is_file()
+        or manifest_path.is_symlink()
+    ):
+        raise ValueError("Rollback snapshot metadata is incomplete.")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict) or metadata.get("schema_version") != 1:
+        raise ValueError("Rollback snapshot metadata is invalid.")
+    package_name = str(manifest.get("package_filename", ""))
+    package_path = resolved / package_name
+    if (
+        not package_name
+        or package_path.parent != resolved
+        or not package_path.is_file()
+        or package_path.is_symlink()
+    ):
+        raise ValueError("Rollback snapshot package is missing.")
+    children = list(resolved.iterdir())
+    expected_names = {"snapshot.json", "windows-manifest.json", package_name}
+    if (
+        {child.name for child in children} != expected_names
+        or any(not child.is_file() or child.is_symlink() for child in children)
+    ):
+        raise ValueError("Rollback snapshot contains unexpected files.")
+    vaultlink_updater.validate_manifest(manifest, package_path)
+    if package_sensitive_entries(package_path):
+        raise ValueError("Rollback snapshot package contains private app-data files.")
+    if (
+        metadata.get("version") != manifest.get("version")
+        or metadata.get("sha256") != manifest.get("sha256")
+        or metadata.get("size_bytes") != manifest.get("size_bytes")
+        or metadata.get("package_filename") != package_name
+        or metadata.get("verified") is not True
+    ):
+        raise ValueError("Rollback snapshot metadata does not match its signed package.")
+    return {
+        "version": str(manifest["version"]),
+        "sha256": str(manifest["sha256"]),
+        "size_bytes": int(manifest["size_bytes"]),
+        "package_filename": package_name,
+        "created_at_utc": str(metadata.get("created_at_utc", ""))[:40],
+        "snapshot_name": resolved.name,
+    }
+
+
+def create_verified_rollback_snapshot(server_url, owner_key_path):
+    release_builder.authorize_owner_release(owner_key_path)
+    update = live_release_payload(server_url)["update"]
+    version = vaultlink_updater.validated_update_version(update.get("version"))
+    expected_hash = str(update.get("sha256", "")).lower()
+    if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
+        raise ValueError("The live update package SHA-256 is invalid.")
+    root = safe_rollback_snapshot_root()
+    snapshot_name = f"{version}-{expected_hash[:12]}"
+    destination = root / snapshot_name
+    if destination.exists():
+        existing = verify_rollback_snapshot(destination)
+        defender_scan(destination / existing["package_filename"])
+        return {
+            **existing,
+            "created": False,
+            "defender": "no threats",
+            "safe_extraction": "previously verified",
+            "automatic_restore": False,
+            "customer_changes": False,
+        }
+
+    temporary = Path(tempfile.mkdtemp(prefix=".building-", dir=root))
+    try:
+        package_name = str(update.get("package_filename", ""))
+        if not package_name or Path(package_name).name != package_name:
+            raise ValueError("The live update package filename is invalid.")
+        package_path = temporary / package_name
+        downloaded_size, downloaded_hash = download_live_package_to_path(server_url, update, package_path)
+        if downloaded_size != int(update.get("size_bytes", 0) or 0) or downloaded_hash != expected_hash:
+            raise ValueError("The live update download did not match its signed manifest.")
+        vaultlink_updater.validate_manifest(update, package_path)
+        if package_sensitive_entries(package_path):
+            raise ValueError("Rollback snapshot package contains private app-data files.")
+        extraction_test = temporary / ".safe-extraction-test"
+        vaultlink_updater.extract_verified_package(package_path, extraction_test)
+        shutil.rmtree(extraction_test)
+        defender_scan(package_path)
+        metadata = {
+            "schema_version": 1,
+            "snapshot_type": "vaultlink-verified-public-release",
+            "version": version,
+            "sha256": expected_hash,
+            "size_bytes": downloaded_size,
+            "package_filename": package_name,
+            "created_at_utc": locker.utc_now_text(),
+            "verified": True,
+            "safe_extraction": True,
+            "defender": "no threats",
+            "automatic_restore": False,
+            "customer_changes": False,
+        }
+        locker.write_text_atomic(
+            temporary / "windows-manifest.json",
+            json.dumps(update, indent=2, sort_keys=True),
+        )
+        locker.write_text_atomic(
+            temporary / "snapshot.json",
+            json.dumps(metadata, indent=2, sort_keys=True),
+        )
+        os.replace(temporary, destination)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    verified = verify_rollback_snapshot(destination)
+    return {
+        **verified,
+        "created": True,
+        "defender": "no threats",
+        "safe_extraction": "passed",
+        "automatic_restore": False,
+        "customer_changes": False,
+    }
+
+
+def format_rollback_snapshot_report(report):
+    if not isinstance(report, dict) or not report.get("version"):
+        raise ValueError("Rollback snapshot report is invalid.")
+    return "\n".join(
+        [
+            "VAULTLINK VERIFIED ROLLBACK SNAPSHOT",
+            "====================================",
+            f"Release: {report.get('version')}",
+            f"Package: {report.get('package_filename', 'unknown')}",
+            f"Size: {int(report.get('size_bytes', 0) or 0):,} bytes",
+            f"SHA-256: {report.get('sha256', 'unknown')}",
+            f"Snapshot: {report.get('snapshot_name', 'unknown')}",
+            f"Created now: {'yes' if report.get('created') else 'no - existing snapshot reverified'}",
+            f"Safe extraction: {report.get('safe_extraction', 'unknown')}",
+            f"Microsoft Defender: {report.get('defender', 'unknown')}",
+            "",
+            "SAFETY",
+            "Automatic restore: no",
+            "Customer installations changed: no",
+            "Publishing performed: no",
+            "",
+            "The snapshot contains only the public signed release ZIP, signed manifest, and bounded metadata.",
+            "It excludes USB keys, signing keys, licenses, vault data, audit logs, customer records, and personal files.",
+        ]
+    )
 
 
 def cleanup_old_lab_runtimes(runtime_root, keep_path, keep_count=4):
@@ -1337,7 +1511,9 @@ class OwnerUpdateLab(tk.Tk):
         self.identity_button.pack(side="left", ipadx=9, ipady=6)
         self.delta_button = tk.Button(analysis, text="RELEASE DELTA REPORT", command=self.start_release_delta_report, bg=YELLOW, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
         self.delta_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
-        tk.Label(analysis, text="READ-ONLY RELEASE ANALYSIS", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left", padx=(12, 0))
+        self.snapshot_button = tk.Button(analysis, text="CREATE ROLLBACK SNAPSHOT", command=self.start_rollback_snapshot, bg=GREEN, fg="#090b0f", relief="flat", font=("Segoe UI", 8, "bold"), state="disabled")
+        self.snapshot_button.pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
+        tk.Button(analysis, text="OPEN SNAPSHOTS", command=self.open_rollback_snapshots, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), ipadx=9, ipady=6)
 
         links = tk.Frame(panel, bg=PANEL)
         links.pack(fill="x", padx=18, pady=(0, 8))
@@ -1426,6 +1602,7 @@ class OwnerUpdateLab(tk.Tk):
         self.package_button.configure(state="normal" if package_ready and active else "disabled")
         self.identity_button.configure(state="normal" if active else "disabled")
         self.delta_button.configure(state="normal" if package_ready and active else "disabled")
+        self.snapshot_button.configure(state="normal" if owner_ready and active else "disabled")
         self.copy_hash_button.configure(state="normal" if report and report.get("sha256") and active else "disabled")
         self.export_button.configure(state="normal" if (report or preflight or HISTORY_FILE.is_file()) and active else "disabled")
         self.run_lab_button.configure(state="normal" if current and active and owner_ready else "disabled")
@@ -1439,6 +1616,7 @@ class OwnerUpdateLab(tk.Tk):
         self.package_button.configure(state="disabled" if enabled else self.package_button.cget("state"))
         self.identity_button.configure(state="disabled" if enabled else self.identity_button.cget("state"))
         self.delta_button.configure(state="disabled" if enabled else self.delta_button.cget("state"))
+        self.snapshot_button.configure(state="disabled" if enabled else self.snapshot_button.cget("state"))
         self.export_button.configure(state="disabled" if enabled else self.export_button.cget("state"))
         self.copy_hash_button.configure(state="disabled" if enabled else self.copy_hash_button.cget("state"))
         self.run_lab_button.configure(state="disabled")
@@ -1475,6 +1653,7 @@ class OwnerUpdateLab(tk.Tk):
                 "Owner preflight": "owner_preflight",
                 "Live identity report": "live_identity_review",
                 "Release delta report": "release_delta_review",
+                "Rollback snapshot": "rollback_snapshot",
                 "Candidate test": "candidate_test",
                 "Lab runtime": "lab_runtime_launch",
                 "Verified publish": "release_publish",
@@ -1540,6 +1719,30 @@ class OwnerUpdateLab(tk.Tk):
                 "Release Delta Report",
                 format_release_delta_report(result),
             )
+        elif action == "Rollback snapshot":
+            self.append_log(
+                f"Rollback snapshot {result.get('snapshot_name', 'unknown')} | "
+                f"{'created' if result.get('created') else 'reverified'} | Defender no threats"
+            )
+            try:
+                append_lab_history(
+                    "rollback_snapshot",
+                    "ok",
+                    {
+                        "version": str(result.get("version", "")),
+                        "sha256": str(result.get("sha256", "")),
+                        "size_bytes": int(result.get("size_bytes", 0) or 0),
+                        "defender": "no threats",
+                    },
+                )
+            except Exception:
+                pass
+            self.set_busy(False, "Verified rollback snapshot is ready. No customer installation was changed.")
+            self.show_text_window(
+                "VaultLink Rollback Snapshot",
+                "Verified Rollback Snapshot",
+                format_rollback_snapshot_report(result),
+            )
         elif action == "Candidate test":
             self.append_log(f"Candidate {result['version']} passed {result['test_count']} tests, signature validation, and Defender scans.")
             self.set_busy(False, "Candidate verified locally. The Publish button is now available.")
@@ -1590,6 +1793,15 @@ class OwnerUpdateLab(tk.Tk):
             lambda: release_delta_report(
                 self.server_url(),
                 load_candidate_report(),
+            ),
+        )
+
+    def start_rollback_snapshot(self):
+        self.run_background(
+            "Rollback snapshot",
+            lambda: create_verified_rollback_snapshot(
+                self.server_url(),
+                self.owner_key_var.get(),
             ),
         )
 
@@ -1651,6 +1863,9 @@ class OwnerUpdateLab(tk.Tk):
     def open_candidate_folder(self):
         CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(CANDIDATE_DIR)
+
+    def open_rollback_snapshots(self):
+        os.startfile(safe_rollback_snapshot_root())
 
     def show_text_window(self, title, heading, content):
         window = tk.Toplevel(self)

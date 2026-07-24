@@ -5190,6 +5190,145 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn('elif action == "Release delta report":', ui_source)
         self.assertIn("Nothing was published or changed.", ui_source)
 
+    def test_verified_rollback_snapshot_is_safe_private_and_reusable(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_raw = private_key.public_key().public_bytes_raw()
+        public_b64 = base64.urlsafe_b64encode(public_raw).rstrip(b"=").decode("ascii")
+        key_id = hashlib.sha256(public_raw).hexdigest()[:16]
+
+        def signed_release(version, files):
+            package_buffer = io.BytesIO()
+            with zipfile.ZipFile(package_buffer, "w") as archive:
+                for name, content in files.items():
+                    archive.writestr(name, content)
+            package_bytes = package_buffer.getvalue()
+            update = {
+                "schema_version": 1,
+                "product": "USB File Locker",
+                "platform": "windows-source",
+                "version": version,
+                "minimum_supported_version": version,
+                "published_at_utc": "2026-07-23T00:00:00Z",
+                "package_filename": f"VaultLink-Windows-{version}.zip",
+                "download_path": "/api/v1/updates/windows/download",
+                "sha256": hashlib.sha256(package_bytes).hexdigest(),
+                "size_bytes": len(package_bytes),
+                "signing_key_id": key_id,
+                "notes": ["Rollback snapshot fixture"],
+                "preserves_local_app_data": True,
+            }
+            update["signature"] = base64.urlsafe_b64encode(
+                private_key.sign(vaultlink_updater.canonical_manifest_bytes(update))
+            ).rstrip(b"=").decode("ascii")
+            return update, package_bytes
+
+        class TestResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+                return False
+
+        update, package_bytes = signed_release(
+            "9999.70",
+            {
+                "usb_file_locker.py": 'DESKTOP_APP_VERSION = "9999.70"\n',
+                "README.txt": "safe public release",
+            },
+        )
+        with tempfile.TemporaryDirectory(prefix="vaultlink_rollback_snapshot_") as temp_dir:
+            lab_dir = Path(temp_dir) / "owner_update_lab"
+            snapshot_root = lab_dir / "rollback_snapshots"
+            with mock.patch.object(owner_update_lab, "LAB_DIR", lab_dir), \
+                    mock.patch.object(owner_update_lab, "ROLLBACK_SNAPSHOT_DIR", snapshot_root), \
+                    mock.patch.object(owner_update_lab.release_builder, "authorize_owner_release"), \
+                    mock.patch.object(owner_update_lab, "live_release_payload", return_value={"update": update}), \
+                    mock.patch.object(
+                        owner_update_lab.urllib.request,
+                        "urlopen",
+                        side_effect=lambda *_args, **_kwargs: TestResponse(package_bytes),
+                    ), mock.patch.object(
+                        vaultlink_updater,
+                        "UPDATE_SIGNING_PUBLIC_KEY_B64",
+                        public_b64,
+                    ), mock.patch.object(vaultlink_updater, "UPDATE_SIGNING_KEY_ID", key_id), \
+                    mock.patch.object(owner_update_lab, "defender_scan", return_value="no threats") as scan:
+                created = owner_update_lab.create_verified_rollback_snapshot(
+                    locker.DEFAULT_LICENSE_SERVER,
+                    "D:/private-owner.key",
+                )
+                reused = owner_update_lab.create_verified_rollback_snapshot(
+                    locker.DEFAULT_LICENSE_SERVER,
+                    "D:/private-owner.key",
+                )
+
+                self.assertTrue(created["created"])
+                self.assertFalse(reused["created"])
+                self.assertEqual(created["version"], "9999.70")
+                self.assertEqual(created["sha256"], update["sha256"])
+                self.assertFalse(created["automatic_restore"])
+                self.assertFalse(created["customer_changes"])
+                self.assertEqual(scan.call_count, 2)
+                snapshot_dir = snapshot_root / created["snapshot_name"]
+                self.assertEqual(
+                    {path.name for path in snapshot_dir.iterdir()},
+                    {"VaultLink-Windows-9999.70.zip", "windows-manifest.json", "snapshot.json"},
+                )
+                self.assertEqual(
+                    (snapshot_dir / "VaultLink-Windows-9999.70.zip").read_bytes(),
+                    package_bytes,
+                )
+                metadata = json.loads((snapshot_dir / "snapshot.json").read_text(encoding="utf-8"))
+                self.assertTrue(metadata["verified"])
+                self.assertFalse(metadata["automatic_restore"])
+                self.assertFalse(metadata["customer_changes"])
+                serialized = "\n".join(
+                    path.read_text(encoding="utf-8", errors="ignore")
+                    for path in snapshot_dir.iterdir()
+                )
+                self.assertNotIn("private-owner.key", serialized)
+                formatted = owner_update_lab.format_rollback_snapshot_report(created)
+                self.assertIn("Microsoft Defender: no threats", formatted)
+                self.assertIn("Automatic restore: no", formatted)
+                self.assertIn("Customer installations changed: no", formatted)
+                self.assertNotIn(str(snapshot_root), formatted)
+                extra_file = snapshot_dir / "unexpected.txt"
+                extra_file.write_text("not part of the verified snapshot", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "unexpected files"):
+                    owner_update_lab.verify_rollback_snapshot(snapshot_dir)
+                extra_file.unlink()
+
+                unsafe_update, unsafe_bytes = signed_release(
+                    "9999.71",
+                    {
+                        "usb_file_locker.py": 'DESKTOP_APP_VERSION = "9999.71"\n',
+                        "../escape.py": "pass",
+                    },
+                )
+                with mock.patch.object(
+                    owner_update_lab,
+                    "live_release_payload",
+                    return_value={"update": unsafe_update},
+                ), mock.patch.object(
+                    owner_update_lab.urllib.request,
+                    "urlopen",
+                    side_effect=lambda *_args, **_kwargs: TestResponse(unsafe_bytes),
+                ):
+                    with self.assertRaisesRegex(ValueError, "unsafe path"):
+                        owner_update_lab.create_verified_rollback_snapshot(
+                            locker.DEFAULT_LICENSE_SERVER,
+                            "D:/private-owner.key",
+                        )
+                self.assertFalse(any(path.name.startswith(".building-") for path in snapshot_root.iterdir()))
+                self.assertFalse(any(path.name.startswith("9999.71-") for path in snapshot_root.iterdir()))
+
+        ui_source = inspect.getsource(owner_update_lab.OwnerUpdateLab)
+        self.assertIn('text="CREATE ROLLBACK SNAPSHOT"', ui_source)
+        self.assertIn('text="OPEN SNAPSHOTS"', ui_source)
+        self.assertIn('elif action == "Rollback snapshot":', ui_source)
+        self.assertIn("No customer installation was changed.", ui_source)
+
     def test_owner_lab_runtime_extracts_verified_candidate_into_private_runtime(self):
         with tempfile.TemporaryDirectory(prefix="vaultlink_owner_lab_runtime_") as temp_dir:
             root = Path(temp_dir)

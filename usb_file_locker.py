@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.34"
+DESKTOP_APP_VERSION = "2026.07.18.35"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
