@@ -397,14 +397,16 @@ class LicenseIssuer(tk.Tk):
         self.show_token_var = tk.BooleanVar(value=False)
         self.plan_var = tk.StringVar(value="$20,000+ Pro Baseline")
         self.rank_detail_var = tk.StringVar(value="")
-        self.customer_var = tk.StringVar(value="")
-        self.email_var = tk.StringVar(value="")
+        self.account_var = tk.StringVar(value="")
+        self.account_choices = {}
         self.note_var = tk.StringVar(value="")
         self.max_devices_var = tk.StringVar(value="1")
         self.expiry_var = tk.StringVar(value="Never expires")
         self.status_var = tk.StringVar(value="Ready to issue a license.")
         self.issue_results = queue.Queue()
+        self.account_results = queue.Queue()
         self.issue_busy = False
+        self.accounts_busy = False
         self.latest_response = None
         self.issue_button = None
         self.copy_button = None
@@ -413,6 +415,8 @@ class LicenseIssuer(tk.Tk):
         self.revoke_button = None
         self.result_text = None
         self.token_entry = None
+        self.account_combo = None
+        self.refresh_accounts_button = None
         self.rank_buttons = {}
         self.api_logs_window = None
         self.management_results = queue.Queue()
@@ -586,26 +590,37 @@ class LicenseIssuer(tk.Tk):
             font=("Segoe UI", 10),
         ).grid(row=8, column=1, sticky="ew", padx=(8, 18), ipady=5)
 
-        self.add_label(form, "CUSTOMER LABEL, OPTIONAL", 9, 0)
-        self.add_label(form, "CUSTOMER EMAIL, OPTIONAL", 9, 1)
-        tk.Entry(
-            form,
-            textvariable=self.customer_var,
-            bg=locker.FIELD,
-            fg=locker.TEXT,
-            insertbackground=locker.TEXT,
-            relief="flat",
+        self.add_label(form, "CUSTOMER ACCOUNT, REQUIRED", 9, 0, columnspan=2)
+        account_row = tk.Frame(form, bg=locker.PANEL)
+        account_row.grid(row=10, column=0, columnspan=2, sticky="ew", padx=18)
+        account_row.columnconfigure(0, weight=1)
+        self.account_combo = ttk.Combobox(
+            account_row,
+            textvariable=self.account_var,
+            values=[],
+            state="readonly",
             font=("Segoe UI", 10),
-        ).grid(row=10, column=0, sticky="ew", padx=(18, 8), ipady=7)
-        tk.Entry(
-            form,
-            textvariable=self.email_var,
-            bg=locker.FIELD,
-            fg=locker.TEXT,
-            insertbackground=locker.TEXT,
+        )
+        self.account_combo.grid(row=0, column=0, sticky="ew", ipady=5)
+        self.refresh_accounts_button = tk.Button(
+            account_row,
+            text="LOAD ACCOUNTS",
+            command=self.refresh_accounts,
+            bg="#58b7e8",
+            fg=locker.BLACK,
             relief="flat",
-            font=("Segoe UI", 10),
-        ).grid(row=10, column=1, sticky="ew", padx=(8, 18), ipady=7)
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.refresh_accounts_button.grid(row=0, column=1, padx=(10, 0), ipadx=10, ipady=7)
+        tk.Button(
+            account_row,
+            text="OPEN ACCOUNT PAGE",
+            command=self.open_owner_accounts,
+            bg="#252936",
+            fg=locker.TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=2, padx=(10, 0), ipadx=10, ipady=7)
 
         self.add_label(form, "PRIVATE OWNER NOTE, OPTIONAL", 11, 0, columnspan=2)
         tk.Entry(
@@ -794,7 +809,80 @@ class LicenseIssuer(tk.Tk):
         self.admin_token_var.set("")
         self.show_token_var.set(False)
         self.toggle_token()
+        self.account_var.set("")
+        self.account_choices = {}
+        if self.account_combo is not None:
+            self.account_combo.configure(values=[])
         self.status_var.set("Admin token cleared from memory.")
+
+    def selected_account_id(self):
+        account_id = self.account_choices.get(self.account_var.get(), "")
+        if not account_id:
+            raise ValueError("Load accounts and choose the customer account first.")
+        return account_id
+
+    def refresh_accounts(self):
+        if self.accounts_busy:
+            return
+        try:
+            server = locker.validated_license_server_url(self.server_var.get())
+            token = locker.validated_admin_api_token(self.admin_token_var.get())
+        except Exception as exc:
+            messagebox.showerror("Cannot load accounts", str(exc), parent=self)
+            return
+        self.accounts_busy = True
+        if self.refresh_accounts_button is not None:
+            self.refresh_accounts_button.configure(state="disabled", text="LOADING...")
+        self.status_var.set("Loading customer accounts from the API...")
+
+        def worker():
+            try:
+                response = locker.list_admin_accounts_online(server, token)
+                self.account_results.put((response, ""))
+            except Exception as exc:
+                self.account_results.put((None, str(exc)))
+
+        threading.Thread(target=worker, name="LicenseIssuerAccounts", daemon=True).start()
+        self.after(50, self.poll_account_results)
+
+    def poll_account_results(self):
+        try:
+            response, error = self.account_results.get_nowait()
+        except queue.Empty:
+            if self.accounts_busy and self.winfo_exists():
+                self.after(50, self.poll_account_results)
+            return
+        self.accounts_busy = False
+        if self.refresh_accounts_button is not None:
+            self.refresh_accounts_button.configure(state="normal", text="LOAD ACCOUNTS")
+        if error:
+            self.status_var.set("Could not load customer accounts.")
+            messagebox.showerror("Account list failed", error, parent=self)
+            return
+        previous_id = self.account_choices.get(self.account_var.get(), "")
+        choices = {}
+        for account in response.get("items") or []:
+            if not isinstance(account, dict) or account.get("status") != "active":
+                continue
+            license_view = account.get("license") or {}
+            access = (
+                f"Rank {license_view.get('rank', '?')}"
+                if license_view.get("assigned")
+                else "No license"
+            )
+            label = f"{account.get('username', 'Unknown')} | {access} | {account.get('account_id', '')}"
+            choices[label] = str(account.get("account_id", ""))
+        self.account_choices = choices
+        values = list(choices)
+        if self.account_combo is not None:
+            self.account_combo.configure(values=values)
+        selected = next((label for label, account_id in choices.items() if account_id == previous_id), "")
+        self.account_var.set(selected)
+        self.status_var.set(
+            f"Loaded {len(values)} active customer account(s)."
+            if values
+            else "No active customer accounts. The customer must create one first."
+        )
 
     def expiry_text(self):
         days = EXPIRY_CHOICES.get(self.expiry_var.get(), 0)
@@ -813,6 +901,7 @@ class LicenseIssuer(tk.Tk):
             token = self.admin_token_var.get()
             if not token.strip():
                 raise ValueError("Enter the Railway LICENSE_ADMIN_TOKEN.")
+            account_id = self.selected_account_id()
         except Exception as exc:
             messagebox.showerror("Check issuer fields", str(exc), parent=self)
             return
@@ -823,9 +912,8 @@ class LicenseIssuer(tk.Tk):
         request_data = {
             "server_url": server,
             "admin_token": token,
+            "account_id": account_id,
             "plan_id": plan_id,
-            "customer_label": self.customer_var.get(),
-            "customer_email": self.email_var.get(),
             "license_note": self.note_var.get(),
             "max_devices": max_devices,
             "expires_at_utc": self.expiry_text(),
@@ -865,7 +953,7 @@ class LicenseIssuer(tk.Tk):
         self.save_button.configure(state="normal")
         self.revoke_button.configure(state="normal", text="REVOKE LATEST")
         locker.log_event("license_issue", "api", "ok")
-        self.status_var.set("License issued. Send only the license key to the customer.")
+        self.status_var.set("License issued and assigned to the selected customer account.")
 
     def show_response(self, response):
         license_info = response.get("license") or {}
@@ -969,6 +1057,14 @@ class LicenseIssuer(tk.Tk):
             self.status_var.set("Opened the owner keys and notes website. Enter the admin token there to connect.")
         except Exception as exc:
             messagebox.showerror("Could not open owner website", str(exc), parent=self)
+
+    def open_owner_accounts(self):
+        try:
+            server = locker.validated_license_server_url(self.server_var.get())
+            webbrowser.open(server + "/owner/accounts")
+            self.status_var.set("Opened the owner account list. Customers create accounts at /account.")
+        except Exception as exc:
+            messagebox.showerror("Could not open owner accounts", str(exc), parent=self)
 
     def open_owner_operations(self):
         try:

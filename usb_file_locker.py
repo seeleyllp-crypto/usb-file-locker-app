@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.35"
+DESKTOP_APP_VERSION = "2026.07.18.36"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -3561,14 +3561,23 @@ def validated_admin_api_token(admin_token):
 def issue_license_online(
     server_url,
     admin_token,
+    account_id,
     plan_id,
-    customer_label="",
-    customer_email="",
     license_note="",
     max_devices=1,
     expires_at_utc="",
 ):
     token = validated_admin_api_token(admin_token)
+    selected_account = str(account_id or "").strip()
+    if (
+        not selected_account.startswith("acct_")
+        or not 25 <= len(selected_account) <= 85
+        or any(
+            not (character.isalnum() or character in {"_", "-"})
+            for character in selected_account
+        )
+    ):
+        raise ValueError("Choose an existing customer account before issuing a license.")
     selected_plan = str(plan_id or "").strip().lower()
     if selected_plan not in LICENSE_PLAN_IDS:
         raise ValueError("Choose one of the seven available license ranks.")
@@ -3578,19 +3587,12 @@ def issue_license_online(
         raise ValueError("Max devices must be a whole number.") from exc
     if not 1 <= device_limit <= 1000:
         raise ValueError("Max devices must be between 1 and 1000.")
-    label = str(customer_label or "").strip()
-    email = str(customer_email or "").strip()
-    if len(label) > 160:
-        raise ValueError("Customer label must be 160 characters or fewer.")
-    if len(email) > 254:
-        raise ValueError("Customer email must be 254 characters or fewer.")
     note = " ".join(str(license_note or "").split())
     if len(note) > 2000:
         raise ValueError("License note must be 2000 characters or fewer.")
     payload = {
+        "account_id": selected_account,
         "plan_id": selected_plan,
-        "customer_label": label,
-        "customer_email": email,
         "license_note": note,
         "max_devices": device_limit,
     }
@@ -3610,6 +3612,15 @@ def list_admin_licenses_online(server_url, admin_token):
     return license_api_get_json(
         server_url,
         "/api/v1/admin/licenses",
+        extra_headers={"X-License-Admin-Token": token},
+    )
+
+
+def list_admin_accounts_online(server_url, admin_token):
+    token = validated_admin_api_token(admin_token)
+    return license_api_get_json(
+        server_url,
+        "/api/v1/admin/accounts",
         extra_headers={"X-License-Admin-Token": token},
     )
 

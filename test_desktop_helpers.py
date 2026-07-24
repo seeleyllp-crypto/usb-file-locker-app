@@ -6147,8 +6147,8 @@ class DesktopHelperTests(unittest.TestCase):
             result = locker.issue_license_online(
                 locker.DEFAULT_LICENSE_SERVER,
                 "admin-secret",
+                "acct_TestCustomerAccount_4092",
                 "family-safety",
-                customer_label="Customer",
                 license_note="Private renewal note",
                 max_devices=2,
             )
@@ -6156,9 +6156,28 @@ class DesktopHelperTests(unittest.TestCase):
         _server, path, payload = post.call_args.args
         self.assertEqual(path, "/api/v1/licenses/issue")
         self.assertNotIn("admin_token", payload)
+        self.assertEqual(payload["account_id"], "acct_TestCustomerAccount_4092")
+        self.assertNotIn("customer_label", payload)
+        self.assertNotIn("customer_email", payload)
         self.assertEqual(payload["license_note"], "Private renewal note")
         self.assertEqual(
             post.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
+            "admin-secret",
+        )
+
+        with mock.patch.object(
+            locker,
+            "license_api_get_json",
+            return_value={"ok": True, "items": [], "count": 0},
+        ) as get_json:
+            accounts = locker.list_admin_accounts_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "admin-secret",
+            )
+        self.assertEqual(accounts["count"], 0)
+        self.assertEqual(get_json.call_args.args[1], "/api/v1/admin/accounts")
+        self.assertEqual(
+            get_json.call_args.kwargs["extra_headers"]["X-License-Admin-Token"],
             "admin-secret",
         )
 

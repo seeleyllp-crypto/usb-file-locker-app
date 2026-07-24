@@ -50,18 +50,18 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Owner Update Lab adds owner-authorized Verified Rollback Snapshots of the live signed release.",
-    "Each snapshot stores only the public release ZIP, signed manifest, and bounded metadata.",
-    "The public ZIP is downloaded again and must pass signature, size, SHA-256, and version checks.",
-    "Safe extraction is tested in a temporary folder before a snapshot can be retained.",
-    "Microsoft Defender must report no threats for the downloaded ZIP.",
-    "Unsafe paths, links, oversized archives, and private runtime data block snapshot creation.",
-    "Existing matching snapshots are reverified and reused instead of being overwritten.",
-    "Snapshots never contain USB keys, signing keys, licenses, vaults, audit logs, or personal files.",
-    "Snapshot history stores release metadata only and never stores an owner key path.",
-    "Creating a snapshot does not install, restore, publish, or change any customer app.",
-    "Rollback remains an explicit owner recovery action and is never triggered remotely.",
-    "Signed-package identity, release delta, tests, preflight, and explicit publishing remain required.",
+    "VaultLink licensing is now account-first across the API, website, and Windows issuer.",
+    "A customer must create a username and password account before a new license can be issued.",
+    "The Windows issuer loads the owner-only account list and requires an active account selection.",
+    "Free-form customer labels and email fields no longer create unattached licenses.",
+    "Every newly issued signed license is bound and assigned to the selected account.",
+    "Replacing an account license clears the old license-to-account ledger binding.",
+    "Explicit transfers clear every previous account assignment before rebinding the license.",
+    "Disabled accounts cannot receive newly issued or reassigned licenses.",
+    "The owner account list never returns readable passwords, password hashes, or full license keys.",
+    "Customer account passwords remain one-way scrypt hashes inside encrypted account records.",
+    "Existing legacy licenses can still be deliberately assigned or transferred by the owner.",
+    "Tests, Defender scanning, signed-package identity, and explicit owner publishing remain required.",
 ]
 
 HISTORY_PAYLOAD_FIELDS = (
