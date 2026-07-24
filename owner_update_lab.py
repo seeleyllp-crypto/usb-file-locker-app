@@ -50,17 +50,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "VaultLink licensing is now account-first across the API, website, and Windows issuer.",
-    "A customer must create a username and password account before a new license can be issued.",
-    "The Windows issuer loads the owner-only account list and requires an active account selection.",
-    "Free-form customer labels and email fields no longer create unattached licenses.",
-    "Every newly issued signed license is bound and assigned to the selected account.",
-    "Replacing an account license clears the old license-to-account ledger binding.",
-    "Explicit transfers clear every previous account assignment before rebinding the license.",
-    "Disabled accounts cannot receive newly issued or reassigned licenses.",
-    "The owner account list never returns readable passwords, password hashes, or full license keys.",
-    "Customer account passwords remain one-way scrypt hashes inside encrypted account records.",
-    "Existing legacy licenses can still be deliberately assigned or transferred by the owner.",
+    "The customer Windows app now requires a successful account sign-in at startup.",
+    "Customers sign in with their VaultLink username and password directly inside the app.",
+    "Passwords are sent only to the configured HTTPS API and are never saved locally.",
+    "The signed account session stays only in app memory and is cleared at sign-out or exit.",
+    "The app retrieves only the license assigned to the authenticated customer account.",
+    "Assigned licenses activate automatically without copying or pasting a license key.",
+    "The app checks the account every twenty seconds while open for newly assigned access.",
+    "Changed assignments replace the local account-managed license and release the old seat when possible.",
+    "No-license accounts remain signed in and automatically receive access after owner assignment.",
+    "Expired or disabled account sessions return the customer to the required sign-in screen.",
+    "Licensed controls remain disabled whenever the customer account is signed out.",
     "Tests, Defender scanning, signed-package identity, and explicit owner publishing remain required.",
 ]
 

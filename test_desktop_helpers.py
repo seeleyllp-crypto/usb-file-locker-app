@@ -6181,6 +6181,136 @@ class DesktopHelperTests(unittest.TestCase):
             "admin-secret",
         )
 
+    def test_customer_account_login_uses_memory_session_and_bearer_header(self):
+        account = {
+            "account_id": "acct_TestCustomerAccount_4092",
+            "username": "Customer_1",
+            "status": "active",
+            "license": {
+                "assigned": True,
+                "status": "active",
+                "license_key": VALID_TEST_LICENSE,
+                "rank": 4,
+            },
+        }
+        with mock.patch.object(
+            locker,
+            "license_api_post_json",
+            return_value={
+                "ok": True,
+                "session_token": "vlas1." + ("A" * 24) + "." + ("B" * 24),
+                "account": account,
+            },
+        ) as post:
+            response = locker.customer_account_login_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "Customer_1",
+                "PrivatePassword9!",
+            )
+        self.assertTrue(response["ok"])
+        _server, path, payload = post.call_args.args
+        self.assertEqual(path, "/api/v1/accounts/login")
+        self.assertEqual(
+            payload,
+            {
+                "username": "Customer_1",
+                "password": "PrivatePassword9!",
+            },
+        )
+        self.assertNotIn("extra_headers", post.call_args.kwargs)
+
+        token = response["session_token"]
+        with mock.patch.object(
+            locker,
+            "license_api_get_json",
+            return_value={"ok": True, "account": account},
+        ) as get_json:
+            profile = locker.customer_account_profile_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                token,
+            )
+        self.assertEqual(profile["account"]["username"], "Customer_1")
+        self.assertEqual(get_json.call_args.args[1], "/api/v1/accounts/me")
+        self.assertEqual(
+            get_json.call_args.kwargs["extra_headers"]["Authorization"],
+            f"Bearer {token}",
+        )
+        self.assertEqual(
+            locker.assigned_account_license_key(account),
+            VALID_TEST_LICENSE,
+        )
+
+    def test_customer_account_license_sync_activates_and_marks_account_managed(self):
+        account = {
+            "account_id": "acct_TestCustomerAccount_4092",
+            "username": "Customer_1",
+            "status": "active",
+            "license": {
+                "assigned": True,
+                "status": "active",
+                "license_key": VALID_TEST_LICENSE,
+                "rank": 4,
+            },
+        }
+        activated = locker.license_state_template()
+        activated.update(
+            {
+                "license_key": VALID_TEST_LICENSE,
+                "receipt": "vlr1." + ("C" * 24) + "." + ("D" * 24),
+                "status": "active",
+                "plan_id": "family-safety",
+                "plan_name": "Family Safety",
+            }
+        )
+        with mock.patch.object(
+            locker,
+            "activate_license_online",
+            return_value=activated,
+        ) as activate:
+            result = locker.sync_license_from_customer_account(
+                account,
+                locker.license_state_template(),
+                locker.DEFAULT_LICENSE_SERVER,
+            )
+        self.assertEqual(
+            activate.call_args.args[0]["license_key"],
+            VALID_TEST_LICENSE,
+        )
+        self.assertTrue(result["account_managed"])
+        self.assertEqual(result["account_id"], account["account_id"])
+        self.assertEqual(result["account_username"], "Customer_1")
+
+        no_license = dict(account)
+        no_license["license"] = {"assigned": False, "status": "unassigned"}
+        self.assertIsNone(
+            locker.sync_license_from_customer_account(
+                no_license,
+                result,
+                locker.DEFAULT_LICENSE_SERVER,
+            )
+        )
+
+    def test_customer_account_session_and_profile_validation_are_bounded(self):
+        with self.assertRaisesRegex(ValueError, "session"):
+            locker.validated_customer_account_session("not-a-session")
+        with self.assertRaisesRegex(ValueError, "identity"):
+            locker.validated_customer_account_profile(
+                {
+                    "account": {
+                        "account_id": "bad",
+                        "username": "Customer_1",
+                        "status": "active",
+                        "license": {},
+                    }
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "password"):
+            locker.customer_account_login_online(
+                locker.DEFAULT_LICENSE_SERVER,
+                "Customer_1",
+                "\n",
+            )
+
     def test_license_management_uses_admin_header_and_device_deactivation(self):
         with mock.patch.object(
             locker,
@@ -6364,6 +6494,7 @@ class DesktopHelperTests(unittest.TestCase):
             busy_buttons=[lock_button],
         )
         fake.active_key_matches_owner_policy = lambda: fake.key is not None
+        fake.account_is_signed_in = lambda: True
 
         with mock.patch.object(
             locker,

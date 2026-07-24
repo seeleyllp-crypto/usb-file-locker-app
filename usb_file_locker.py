@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.36"
+DESKTOP_APP_VERSION = "2026.07.18.37"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -125,12 +125,14 @@ MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
 LICENSE_STATE_ENTROPY = b"USBFileLockerLicenseStateV1"
 LICENSE_MAX_AGE_DAYS = 30
 LICENSE_BACKGROUND_REFRESH_SECONDS = 60
+ACCOUNT_BACKGROUND_REFRESH_SECONDS = 20
 INITIAL_LICENSE_REFRESH_MS = 1000
 LICENSE_MIN_REFRESH_SECONDS = 30
 LICENSE_MAX_REFRESH_SECONDS = 300
 LICENSE_GATE_REFRESH_SECONDS = 75
 LICENSE_GATE_HTTP_TIMEOUT_SECONDS = 5
 MAX_API_RESPONSE_BYTES = 1024 * 1024
+MAX_ACCOUNT_SESSION_TOKEN_CHARS = 16 * 1024
 MAX_AUDIT_API_DOWNLOAD_BYTES = 4 * 1024 * 1024
 PLAN_FEATURE_TITLES = {
     "security-maintenance-center": "Security Maintenance Center",
@@ -1695,6 +1697,9 @@ def license_state_template():
         "machine_id": "",
         "machine_name": "",
         "license_id": "",
+        "account_id": "",
+        "account_username": "",
+        "account_managed": False,
         "customer_label": "",
         "customer_email": "",
         "license_expires_at": "",
@@ -1868,6 +1873,9 @@ def normalize_license_state(data=None):
     state["machine_id"] = str(state.get("machine_id", "") or "").strip() or current_machine_fingerprint()
     state["machine_name"] = str(state.get("machine_name", "") or "").strip() or current_machine_name()
     state["license_id"] = str(state.get("license_id", "") or "").strip()
+    state["account_id"] = str(state.get("account_id", "") or "").strip()[:85]
+    state["account_username"] = str(state.get("account_username", "") or "").strip()[:32]
+    state["account_managed"] = bool(state.get("account_managed", False))
     state["customer_label"] = str(state.get("customer_label", "") or "").strip()
     state["customer_email"] = str(state.get("customer_email", "") or "").strip()
     state["license_expires_at"] = str(state.get("license_expires_at", "") or "").strip()
@@ -3070,12 +3078,25 @@ def license_feature_lines(state):
 def license_required_message(feature_id):
     return (
         f"{feature_title(feature_id)} needs an active {feature_required_plan(feature_id)} license.\n\n"
-        f"Open License Center, paste the license key, and activate it on this PC.\n\n"
+        f"Open License Center and sign in to the customer account that owns the license.\n\n"
         f"Unlocking existing files and recovery tools still stay available."
     )
 
 
 def ensure_license_feature(feature_id, parent=None, show_message=True):
+    if (
+        not LAB_MODE
+        and parent is not None
+        and hasattr(parent, "account_is_signed_in")
+        and not parent.account_is_signed_in()
+    ):
+        if show_message:
+            messagebox.showwarning(
+                "Account sign-in required",
+                "Sign in to the customer account before using licensed controls.",
+                parent=parent,
+            )
+        return False
     state = refresh_license_for_feature_gate()
     if parent is not None and hasattr(parent, "update_license_state_ui"):
         try:
@@ -3558,6 +3579,79 @@ def validated_admin_api_token(admin_token):
     return token
 
 
+def validated_customer_account_session(session_token):
+    token = str(session_token or "").strip()
+    if not token.startswith("vlas1.") or len(token) > MAX_ACCOUNT_SESSION_TOKEN_CHARS:
+        raise ValueError("Customer account session is missing or invalid. Sign in again.")
+    if "\r" in token or "\n" in token:
+        raise ValueError("Customer account session format is invalid.")
+    return token
+
+
+def customer_account_login_online(server_url, username, password):
+    clean_username = str(username or "").strip()
+    if not 3 <= len(clean_username) <= 32:
+        raise ValueError("Enter the customer account username.")
+    if any(not (character.isalnum() or character in {"_", "-"}) for character in clean_username):
+        raise ValueError("Customer username format is invalid.")
+    if not isinstance(password, str) or not 1 <= len(password) <= 128:
+        raise ValueError("Enter the customer account password.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in password):
+        raise ValueError("Customer password format is invalid.")
+    return license_api_post_json(
+        server_url,
+        "/api/v1/accounts/login",
+        {"username": clean_username, "password": password},
+    )
+
+
+def customer_account_profile_online(server_url, session_token):
+    token = validated_customer_account_session(session_token)
+    return license_api_get_json(
+        server_url,
+        "/api/v1/accounts/me",
+        extra_headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def validated_customer_account_profile(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Customer account response was invalid.")
+    account = payload.get("account")
+    if not isinstance(account, dict):
+        raise ValueError("Customer account response did not include an account.")
+    account_id = str(account.get("account_id", "")).strip()
+    username = str(account.get("username", "")).strip()
+    status = str(account.get("status", "")).strip().lower()
+    if (
+        not account_id.startswith("acct_")
+        or not 25 <= len(account_id) <= 85
+        or any(not (character.isalnum() or character in {"_", "-"}) for character in account_id)
+    ):
+        raise ValueError("Customer account identity was invalid.")
+    if not 3 <= len(username) <= 32 or status != "active":
+        raise ValueError("Customer account is not active.")
+    license_view = account.get("license")
+    if not isinstance(license_view, dict):
+        license_view = {"assigned": False, "status": "unassigned"}
+    return {
+        "account_id": account_id,
+        "username": username,
+        "status": status,
+        "license": license_view,
+    }
+
+
+def assigned_account_license_key(account):
+    profile = validated_customer_account_profile({"account": account})
+    license_view = profile["license"]
+    if not license_view.get("assigned"):
+        return ""
+    if str(license_view.get("status", "")).strip().lower() != "active":
+        return ""
+    return require_valid_api_license_key(license_view.get("license_key"))
+
+
 def issue_license_online(
     server_url,
     admin_token,
@@ -3860,6 +3954,36 @@ def deactivate_license_online(state):
     if not payload.get("deactivated") or payload.get("status") != "deactivated":
         raise ValueError(payload.get("message") or "The API did not deactivate this PC.")
     return payload
+
+
+def sync_license_from_customer_account(account, current_state, server_url):
+    profile = validated_customer_account_profile({"account": account})
+    license_key = assigned_account_license_key(profile)
+    if not license_key:
+        return None
+    current = normalize_license_state(current_state)
+    selected_server = validated_license_server_url(server_url)
+    if (
+        current.get("license_key")
+        and current.get("license_key") != license_key
+        and current.get("receipt")
+    ):
+        try:
+            deactivate_license_online(current)
+        except Exception:
+            pass
+    source = license_state_with_key(current, license_key, selected_server)
+    source["account_id"] = profile["account_id"]
+    source["account_username"] = profile["username"]
+    source["account_managed"] = True
+    if source.get("receipt") and source.get("license_key") == current.get("license_key"):
+        updated = verify_license_online(source)
+    else:
+        updated = activate_license_online(source)
+    updated["account_id"] = profile["account_id"]
+    updated["account_username"] = profile["username"]
+    updated["account_managed"] = True
+    return normalize_license_state(updated)
 
 
 def support_license_payload(state):
@@ -6182,12 +6306,30 @@ class USBFileLocker(tk.Tk):
         self.access_status = tk.StringVar(value="")
         self.breach_status = tk.StringVar(value="Breach detection ready.")
         self.license_state = load_license_state(self.settings)
-        self.license_status = tk.StringVar(value=license_status_text(self.license_state))
+        self.license_status = tk.StringVar(
+            value=(
+                license_status_text(self.license_state)
+                if LAB_MODE
+                else "Account sign-in required"
+            )
+        )
         self.license_refresh_results = queue.Queue()
         self.license_refresh_in_progress = False
         self.license_refresh_after_id = None
         self.license_poll_after_id = None
         self.last_license_notice_status = ""
+        self.account_session_token = ""
+        self.account_id = ""
+        self.account_username = ""
+        self.account_server_url = normalize_license_server_url(
+            self.license_state.get("server_url")
+        )
+        self.account_status = tk.StringVar(value="SIGN IN REQUIRED")
+        self.account_refresh_results = queue.Queue()
+        self.account_refresh_in_progress = False
+        self.account_refresh_after_id = None
+        self.account_poll_after_id = None
+        self.account_login_window = None
         self.update_results = queue.Queue()
         self.update_operation = ""
         self.required_update_scheduled = False
@@ -6276,6 +6418,8 @@ class USBFileLocker(tk.Tk):
         )
         self.refresh_breach_status()
         self.schedule_license_refresh(INITIAL_LICENSE_REFRESH_MS)
+        if not LAB_MODE:
+            self.after(250, lambda: self.open_account_login(required=True))
         self.breach_refresh_after_id = self.after(
             20000,
             self.periodic_breach_refresh,
@@ -6774,8 +6918,57 @@ class USBFileLocker(tk.Tk):
         self.audit_button = tk.Button(top_tools_secondary, text="AUDIT LOG", command=self.open_log, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.audit_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
 
+        account_login_row = tk.Frame(account_panel, bg=PANEL)
+        account_login_row.pack(fill="x", padx=18, pady=(18, 10))
+        tk.Label(
+            account_login_row,
+            text="CUSTOMER ACCOUNT",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            account_login_row,
+            textvariable=self.account_status,
+            bg=PANEL,
+            fg=YELLOW,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(10, 0))
+        self.account_sign_in_button = tk.Button(
+            account_login_row,
+            text="SIGN IN",
+            command=self.open_account_login,
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.account_sign_in_button.pack(side="right", ipadx=10, ipady=6)
+        self.account_sign_out_button = tk.Button(
+            account_login_row,
+            text="SIGN OUT",
+            command=self.sign_out_customer_account,
+            state="disabled",
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.account_sign_out_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
+        self.account_check_button = tk.Button(
+            account_login_row,
+            text="CHECK LICENSE",
+            command=lambda: self.refresh_customer_account(interactive=True),
+            state="disabled",
+            bg=BLUE,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.account_check_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
+
         owner_row = tk.Frame(account_panel, bg=PANEL)
-        owner_row.pack(fill="x", padx=18, pady=(18, 10))
+        owner_row.pack(fill="x", padx=18, pady=(0, 10))
         tk.Label(owner_row, text="OWNER USB MODE", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(side="left")
         self.owner_enable_button = tk.Button(owner_row, text="REQUIRE THIS USB", command=self.enable_owner_usb_mode, bg=GREEN, fg=BLACK, relief="flat", font=("Segoe UI", 8, "bold"))
         self.owner_enable_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=6)
@@ -10015,9 +10208,19 @@ class USBFileLocker(tk.Tk):
             self.license_state = normalize_license_state(state)
             if save:
                 self.license_state = save_license_state(self.settings, self.license_state)
-        self.license_status.set(license_status_text(self.license_state))
+        account_check = getattr(self, "account_is_signed_in", None)
+        account_ready = LAB_MODE or bool(account_check and account_check())
+        self.license_status.set(
+            license_status_text(self.license_state)
+            if account_ready
+            else "Account sign-in required"
+        )
         status = self.license_state.get("status", "unlicensed")
-        color = GREEN if license_is_active(self.license_state) else (RED if status == "revoked" else YELLOW)
+        color = (
+            GREEN
+            if account_ready and license_is_active(self.license_state)
+            else (RED if account_ready and status == "revoked" else YELLOW)
+        )
         if getattr(self, "license_status_label", None):
             self.license_status_label.configure(fg=color)
         return self.license_state
@@ -10043,8 +10246,12 @@ class USBFileLocker(tk.Tk):
         disable_owner_off = not self.owner_policy or not self.active_key_matches_owner_policy()
         self.owner_disable_button.configure(state="disabled" if disable_owner_off else "normal")
         self.owner_verify_button.configure(state="normal" if self.owner_policy else "disabled")
+        account_ready = LAB_MODE or self.account_is_signed_in()
         for button, feature_id in self.license_gated_buttons.items():
-            allowed = license_feature_allowed(feature_id, state=self.license_state)
+            allowed = account_ready and license_feature_allowed(
+                feature_id,
+                state=self.license_state,
+            )
             if not allowed:
                 button.configure(state="disabled")
             elif (
@@ -10390,6 +10597,452 @@ class USBFileLocker(tk.Tk):
             log_event("shop_open", "api", "failed")
             messagebox.showerror("Could not open Shop", str(exc), parent=self)
 
+    def account_is_signed_in(self):
+        return bool(self.account_session_token and self.account_id and self.account_username)
+
+    def update_account_controls(self):
+        signed_in = self.account_is_signed_in()
+        if getattr(self, "account_sign_in_button", None):
+            self.account_sign_in_button.configure(state="disabled" if signed_in else "normal")
+        if getattr(self, "account_sign_out_button", None):
+            self.account_sign_out_button.configure(state="normal" if signed_in else "disabled")
+        if getattr(self, "account_check_button", None):
+            self.account_check_button.configure(state="normal" if signed_in else "disabled")
+        self.apply_access_state()
+
+    def schedule_account_refresh(self, delay_ms=None):
+        if self.closing or not self.account_session_token:
+            return
+        if self.account_refresh_after_id is not None:
+            try:
+                self.after_cancel(self.account_refresh_after_id)
+            except tk.TclError:
+                pass
+        if delay_ms is None:
+            delay_ms = ACCOUNT_BACKGROUND_REFRESH_SECONDS * 1000
+        self.account_refresh_after_id = self.after(
+            max(500, int(delay_ms)),
+            self.refresh_customer_account,
+        )
+
+    def account_session_error(self, error):
+        lowered = str(error or "").lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "session expired",
+                "session is no longer valid",
+                "session was missing or invalid",
+                "account access is disabled",
+                "sign in again",
+            )
+        )
+
+    def finish_customer_account_sync(self, profile, updated_state, clear_license, interactive=False):
+        self.account_id = profile["account_id"]
+        self.account_username = profile["username"]
+        license_view = profile.get("license") or {}
+        rank = license_view.get("rank")
+        if updated_state is not None:
+            self.finish_license_refresh(updated_state)
+            label = f"RANK {rank}" if rank else str(license_view.get("plan_name") or "LICENSE")
+            self.account_status.set(f"SIGNED IN: {self.account_username} | {label}")
+            self.status.set(f"Account license synced for {self.account_username}.")
+            if interactive:
+                messagebox.showinfo(
+                    "Account license ready",
+                    f"Signed in as {self.account_username}.\n\n"
+                    f"{license_view.get('plan_name') or 'The assigned license'} is active on this PC.",
+                    parent=self,
+                )
+        else:
+            if clear_license:
+                cleared = clear_license_state(self.settings, self.license_state.get("server_url"))
+                self.update_license_state_ui(cleared)
+            self.account_status.set(f"SIGNED IN: {self.account_username} | WAITING FOR LICENSE")
+            self.status.set("Signed in. Waiting for the owner to assign a license to this account.")
+            self.apply_access_state()
+            if interactive:
+                messagebox.showinfo(
+                    "Signed in",
+                    f"Signed in as {self.account_username}.\n\n"
+                    "No active license is assigned yet. The app will check automatically.",
+                    parent=self,
+                )
+        self.update_account_controls()
+        self.schedule_account_refresh()
+
+    def refresh_customer_account(self, interactive=False):
+        self.account_refresh_after_id = None
+        if self.closing:
+            return
+        if not self.account_session_token:
+            if interactive:
+                self.open_account_login(required=True)
+            return
+        if self.account_refresh_in_progress:
+            return
+        self.account_refresh_in_progress = True
+        if getattr(self, "account_check_button", None):
+            self.account_check_button.configure(state="disabled")
+        token = self.account_session_token
+        server = normalize_license_server_url(self.account_server_url)
+        current_state = normalize_license_state(self.license_state)
+
+        def worker():
+            try:
+                response = customer_account_profile_online(server, token)
+                profile = validated_customer_account_profile(response)
+                updated = sync_license_from_customer_account(
+                    profile,
+                    current_state,
+                    server,
+                )
+                clear_license = bool(
+                    updated is None
+                    and current_state.get("account_managed")
+                    and current_state.get("account_id") == profile["account_id"]
+                    and current_state.get("license_key")
+                )
+                if clear_license and current_state.get("receipt"):
+                    try:
+                        deactivate_license_online(current_state)
+                    except Exception:
+                        pass
+                error = None
+            except Exception as exc:
+                profile = None
+                updated = None
+                clear_license = False
+                error = exc
+            self.account_refresh_results.put(
+                (token, profile, updated, clear_license, error, bool(interactive))
+            )
+
+        threading.Thread(target=worker, name="CustomerAccountRefresh", daemon=True).start()
+        self.account_poll_after_id = self.after(50, self.poll_customer_account_refresh)
+
+    def poll_customer_account_refresh(self):
+        self.account_poll_after_id = None
+        if self.closing:
+            return
+        try:
+            token, profile, updated, clear_license, error, interactive = (
+                self.account_refresh_results.get_nowait()
+            )
+        except queue.Empty:
+            if self.account_refresh_in_progress and self.winfo_exists():
+                self.account_poll_after_id = self.after(
+                    50,
+                    self.poll_customer_account_refresh,
+                )
+            return
+        self.account_refresh_in_progress = False
+        if token != self.account_session_token:
+            if self.account_session_token:
+                self.schedule_account_refresh(500)
+            return
+        if error is not None:
+            if self.account_session_error(error):
+                self.sign_out_customer_account(prompt=False)
+                self.account_status.set("SESSION EXPIRED - SIGN IN AGAIN")
+                self.after(100, lambda: self.open_account_login(required=True))
+            else:
+                self.account_status.set(
+                    f"OFFLINE: {self.account_username or 'ACCOUNT CHECK PENDING'}"
+                )
+                self.status.set("Could not refresh the customer account. The app will retry.")
+                if interactive:
+                    messagebox.showerror(
+                        "Account check failed",
+                        str(error),
+                        parent=self,
+                    )
+                self.schedule_account_refresh()
+            self.update_account_controls()
+            return
+        self.finish_customer_account_sync(
+            profile,
+            updated,
+            clear_license,
+            interactive=interactive,
+        )
+
+    def sign_out_customer_account(self, prompt=True):
+        if prompt and not messagebox.askyesno(
+            "Sign out",
+            "Sign out of the customer account?\n\nLicensed controls will remain disabled until another successful sign-in.",
+            parent=self,
+        ):
+            return
+        self.account_session_token = ""
+        self.account_id = ""
+        self.account_username = ""
+        self.account_server_url = normalize_license_server_url(
+            self.license_state.get("server_url")
+        )
+        self.account_status.set("SIGN IN REQUIRED")
+        self.update_license_state_ui(self.license_state)
+        self.account_refresh_in_progress = False
+        while True:
+            try:
+                self.account_refresh_results.get_nowait()
+            except queue.Empty:
+                break
+        for attribute in ("account_refresh_after_id", "account_poll_after_id"):
+            after_id = getattr(self, attribute, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                setattr(self, attribute, None)
+        self.update_account_controls()
+        log_event("account_logout", "api", "ok")
+        if prompt and not self.closing:
+            self.open_account_login(required=True)
+
+    def open_account_login(self, required=False):
+        if self.closing:
+            return
+        if self.account_is_signed_in():
+            self.refresh_customer_account(interactive=True)
+            return
+        existing = self.account_login_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        dialog = tk.Toplevel(self)
+        self.account_login_window = dialog
+        dialog.title("VaultLink Account Sign In")
+        dialog.geometry("520x500")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        server_var = tk.StringVar(
+            value=self.license_state.get("server_url") or DEFAULT_LICENSE_SERVER
+        )
+        username_var = tk.StringVar(value="")
+        password_var = tk.StringVar(value="")
+        show_password_var = tk.BooleanVar(value=False)
+        status_var = tk.StringVar(
+            value="Sign in to receive the license assigned by the owner."
+        )
+        results = queue.Queue()
+        busy = False
+
+        outer = tk.Frame(dialog, bg=BG)
+        outer.pack(fill="both", expand=True, padx=26, pady=24)
+        tk.Label(
+            outer,
+            text="Customer Sign In",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 24, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            outer,
+            text="ACCOUNT REQUIRED | PASSWORD NEVER SAVED | LICENSE AUTO-SYNC",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", pady=(4, 16))
+        panel = tk.Frame(outer, bg=PANEL)
+        panel.pack(fill="x")
+
+        def field(label, variable, secret=False):
+            tk.Label(
+                panel,
+                text=label,
+                bg=PANEL,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=18, pady=(14, 4))
+            entry = tk.Entry(
+                panel,
+                textvariable=variable,
+                show="*" if secret else "",
+                bg=FIELD,
+                fg=TEXT,
+                insertbackground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 10),
+            )
+            entry.pack(fill="x", padx=18, ipady=7)
+            return entry
+
+        server_entry = field("LICENSE API URL", server_var)
+        username_entry = field("USERNAME", username_var)
+        password_entry = field("PASSWORD", password_var, secret=True)
+        tk.Checkbutton(
+            panel,
+            text="SHOW PASSWORD",
+            variable=show_password_var,
+            command=lambda: password_entry.configure(
+                show="" if show_password_var.get() else "*"
+            ),
+            bg=PANEL,
+            fg=TEXT,
+            selectcolor=FIELD,
+            activebackground=PANEL,
+            activeforeground=TEXT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=18, pady=(8, 0))
+        action_row = tk.Frame(panel, bg=PANEL)
+        action_row.pack(fill="x", padx=18, pady=16)
+
+        def close_dialog():
+            nonlocal busy
+            if busy:
+                return
+            self.account_login_window = None
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        def open_create_account():
+            try:
+                server = validated_license_server_url(server_var.get())
+                os.startfile(server + "/account")
+                status_var.set("Opened account creation in the browser.")
+            except Exception as exc:
+                status_var.set(str(exc))
+
+        def finish_login():
+            nonlocal busy
+            try:
+                response, profile, updated, clear_license, error = results.get_nowait()
+            except queue.Empty:
+                if busy and dialog.winfo_exists():
+                    dialog.after(50, finish_login)
+                return
+            busy = False
+            sign_in_button.configure(state="normal", text="SIGN IN")
+            password_var.set("")
+            if error is not None:
+                status_var.set(str(error))
+                log_event("account_login", "api", "failed")
+                return
+            self.account_session_token = validated_customer_account_session(
+                response.get("session_token")
+            )
+            self.account_server_url = validated_license_server_url(server_var.get())
+            close_dialog()
+            log_event("account_login", "api", "ok")
+            self.finish_customer_account_sync(
+                profile,
+                updated,
+                clear_license,
+                interactive=True,
+            )
+
+        def sign_in():
+            nonlocal busy
+            if busy:
+                return
+            try:
+                server = validated_license_server_url(server_var.get())
+                username = username_var.get().strip()
+                password = password_var.get()
+                if not password:
+                    raise ValueError("Enter the customer account password.")
+            except Exception as exc:
+                status_var.set(str(exc))
+                return
+            busy = True
+            sign_in_button.configure(state="disabled", text="SIGNING IN...")
+            status_var.set("Signing in and checking the assigned license...")
+            current_state = normalize_license_state(self.license_state)
+
+            def worker():
+                try:
+                    response = customer_account_login_online(
+                        server,
+                        username,
+                        password,
+                    )
+                    profile = validated_customer_account_profile(response)
+                    updated = sync_license_from_customer_account(
+                        profile,
+                        current_state,
+                        server,
+                    )
+                    clear_license = bool(
+                        updated is None
+                        and current_state.get("account_managed")
+                        and current_state.get("account_id") == profile["account_id"]
+                        and current_state.get("license_key")
+                    )
+                    if clear_license and current_state.get("receipt"):
+                        try:
+                            deactivate_license_online(current_state)
+                        except Exception:
+                            pass
+                    error = None
+                except Exception as exc:
+                    response = None
+                    profile = None
+                    updated = None
+                    clear_license = False
+                    error = exc
+                results.put((response, profile, updated, clear_license, error))
+
+            threading.Thread(
+                target=worker,
+                name="CustomerAccountLogin",
+                daemon=True,
+            ).start()
+            dialog.after(50, finish_login)
+
+        sign_in_button = tk.Button(
+            action_row,
+            text="SIGN IN",
+            command=sign_in,
+            bg=GREEN,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 10, "bold"),
+        )
+        sign_in_button.pack(side="left", ipadx=18, ipady=8)
+        tk.Button(
+            action_row,
+            text="CREATE ACCOUNT",
+            command=open_create_account,
+            bg=BLUE,
+            fg=BLACK,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
+        tk.Button(
+            action_row,
+            text="QUIT APP" if required else "CLOSE",
+            command=self.close_requested if required else close_dialog,
+            bg="#252936",
+            fg=TEXT,
+            relief="flat",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", ipadx=12, ipady=8)
+        tk.Label(
+            outer,
+            textvariable=status_var,
+            bg=BG,
+            fg=MUTED,
+            justify="left",
+            wraplength=460,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(12, 0))
+        dialog.protocol(
+            "WM_DELETE_WINDOW",
+            self.close_requested if required else close_dialog,
+        )
+        dialog.bind("<Return>", lambda _event: sign_in())
+        username_entry.focus_set()
+
     def schedule_license_refresh(self, delay_ms=None):
         if self.closing:
             return
@@ -10407,6 +11060,11 @@ class USBFileLocker(tk.Tk):
         if self.closing:
             return
         if self.license_refresh_in_progress:
+            return
+        if not LAB_MODE and not self.account_is_signed_in():
+            self.update_license_state_ui(self.license_state)
+            self.apply_access_state()
+            self.schedule_license_refresh(LICENSE_BACKGROUND_REFRESH_SECONDS * 1000)
             return
         state = load_license_state(self.settings)
         if not state.get("license_key") or not state.get("receipt"):
@@ -10470,6 +11128,9 @@ class USBFileLocker(tk.Tk):
         self.schedule_license_refresh()
 
     def open_license_center(self):
+        self.open_account_login(required=True)
+
+    def _open_manual_license_center(self):
         dialog = tk.Toplevel(self)
         self.register_secondary_window(dialog)
         dialog.title("License Center")
@@ -11167,6 +11828,8 @@ class USBFileLocker(tk.Tk):
             "overview_refresh_after_id",
             "license_refresh_after_id",
             "license_poll_after_id",
+            "account_refresh_after_id",
+            "account_poll_after_id",
             "breach_refresh_after_id",
             "key_monitor_after_id",
             "cloud_audit_after_id",
@@ -11182,6 +11845,9 @@ class USBFileLocker(tk.Tk):
                 pass
             setattr(self, attribute, None)
         self.safe_lock_queue_history.clear()
+        self.account_session_token = ""
+        self.account_id = ""
+        self.account_username = ""
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
         self.last_lock_receipt = None
