@@ -18,6 +18,14 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.18.39 makes every local customer tool free to use.
+- No license or account sign-in is required for local locking, unlocking,
+  recovery, privacy, audit viewing, diagnostics, or safety tools.
+- Customer account sign-in is optional and no longer opens automatically.
+- Signing out or losing an online session never disables local tools.
+- USB-key, optional PIN, owner-USB, and owner-only update publishing protections
+  are unchanged.
+- Cloud audit upload remains an optional authorized online service.
 - Version 2026.07.17.8 expands Download Verification Center with bounded
   file-header and ZIP central-directory inspection.
 - It detects common fixed headers, compares mapped extensions, reads PE

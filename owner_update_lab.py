@@ -50,17 +50,16 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "The customer Windows app now requires a successful account sign-in at startup.",
-    "Customers sign in with their VaultLink username and password directly inside the app.",
+    "Every local customer tool is available without a license.",
+    "Customer account sign-in is optional and no longer appears automatically at startup.",
+    "Signing out or losing an online session never disables local tools.",
+    "Diagnostics and Trust report free local access as ready instead of a missing-license warning.",
     "Passwords are sent only to the configured HTTPS API and are never saved locally.",
-    "The signed account session stays only in app memory and is cleared at sign-out or exit.",
-    "The app retrieves only the license assigned to the authenticated customer account.",
-    "Assigned licenses activate automatically without copying or pasting a license key.",
-    "The app checks the account every twenty seconds while open for newly assigned access.",
-    "Changed assignments replace the local account-managed license and release the old seat when possible.",
-    "No-license accounts remain signed in and automatically receive access after owner assignment.",
-    "Expired or disabled account sessions return the customer to the required sign-in screen.",
-    "Licensed controls remain disabled whenever the customer account is signed out.",
+    "Optional signed account sessions stay only in app memory and clear at sign-out or exit.",
+    "Existing online plans remain compatible with account services and cloud audit authorization.",
+    "Local customer tools remain available without a license or account sign-in.",
+    "USB-key, optional PIN, and owner-USB controls are unchanged.",
+    "The private Update Lab still requires the registered removable owner USB.",
     "Tests, Defender scanning, signed-package identity, and explicit owner publishing remain required.",
 ]
 

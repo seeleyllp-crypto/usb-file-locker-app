@@ -237,15 +237,14 @@ def build_local_trust_report(
         "A Windows-protected scrypt verifier is configured for the same-PC control website." if control_pin_ready else "The same-PC Local Control website does not have its separate PIN configured.",
         "Open Local Control Center and set a separate 6-64 character control PIN.",
     )
-    license_ready = locker.license_is_active(state)
     add(
         "license",
         "Account",
-        "Licensed customer services",
-        license_ready,
+        "Free local tools",
+        True,
         10,
-        str(details.get("license_status") or "License status is unavailable."),
-        "Refresh or activate the license in Customer Center. Local unlock and recovery remain available.",
+        "Every local locker, recovery, privacy, and safety tool is available without a license.",
+        "Sign in only when optional online account services are needed.",
     )
     release_ready = bool(signed_release.get("ready"))
     add(
