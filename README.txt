@@ -18,6 +18,12 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.18.41 requires a successful customer account sign-in and an
+  active license assigned to that account before customer controls can be used.
+- Signing out, an expired session, a revoked or expired license, or no active
+  assignment returns the app to blocked access.
+- Passwords are sent only to the configured HTTPS API and are never saved.
+- Signed account sessions stay only in memory and clear at sign-out or exit.
 - Version 2026.07.18.40 uses a compact signed full-release package for more
   reliable updates on slower hosted connections.
 - The package still contains the exact 56-file customer allowlist. Current
@@ -27,14 +33,6 @@ Updates:
   incomplete payloads, and payload tampering are rejected.
 - Replaced app files are backed up, a failed legacy install restores the prior
   desktop entrypoint, and temporary payload files are removed.
-- Version 2026.07.18.39 makes every local customer tool free to use.
-- No license or account sign-in is required for local locking, unlocking,
-  recovery, privacy, audit viewing, diagnostics, or safety tools.
-- Customer account sign-in is optional and no longer opens automatically.
-- Signing out or losing an online session never disables local tools.
-- USB-key, optional PIN, owner-USB, and owner-only update publishing protections
-  are unchanged.
-- Cloud audit upload remains an optional authorized online service.
 - Version 2026.07.17.8 expands Download Verification Center with bounded
   file-header and ZIP central-directory inspection.
 - It detects common fixed headers, compares mapped extensions, reads PE

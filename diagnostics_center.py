@@ -292,14 +292,15 @@ def build_diagnostics_report(
         "A Windows-protected scrypt verifier is configured." if control_pin_ready else "The same-PC controller does not have its separate PIN configured.",
         "Set a separate 6-64 character PIN in Local Control Center.",
     )
+    license_ready = locker.license_is_active(state)
     add(
         "license-state",
         "Account",
-        "Free local access",
-        True,
+        "Customer service license",
+        license_ready,
         6,
-        "All local tools are available without a license or account sign-in.",
-        "Sign in only when optional online account services are needed.",
+        f"License state is {str(state.get('status', 'unlicensed')).replace('_', ' ')}.",
+        "Open License Center and refresh the saved license. Local unlock and recovery remain available.",
     )
     guide_ready = bool(guide.get("ok"))
     add(

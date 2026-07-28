@@ -1521,8 +1521,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Owner policy: VERIFIED", summary)
         self.assertIn("Queue: 4 items; 2 selected", summary)
         self.assertIn("PIN mode: USB KEY + PIN", summary)
-        self.assertIn("Local access: FREE - NO LICENSE REQUIRED", summary)
-        self.assertIn("Online account: OPTIONAL PLAN ACTIVE", summary)
+        self.assertIn("License: ACTIVE", summary)
         self.assertIn("Verified auto-updates: ON", summary)
         self.assertIn("not a malware scan or a security guarantee", summary)
         self.assertIn("No filenames, paths, PIN values, key IDs", summary)
@@ -1573,7 +1572,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertIn("Access: USB KEY READY", copied)
         self.assertIn("Queue: 3 ITEMS | 1 SELECTED", copied)
         self.assertIn("PIN mode: USB KEY + PIN", copied)
-        self.assertIn("Local mode: PRO", copied)
+        self.assertIn("License: PRO", copied)
         self.assertIn("no filenames, paths, PINs, key IDs, secrets", copied)
         self.assertNotIn("C:\\", copied)
         self.assertNotIn(".locked", copied)
@@ -6822,7 +6821,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertEqual(set(license_issuer.PLAN_CHOICES.values()), locker.LICENSE_PLAN_IDS)
         self.assertIn("$20,000+ Pro Baseline", license_issuer.PLAN_CHOICES)
 
-    def test_free_local_access_enables_buttons_without_overriding_usb_lock(self):
+    def test_license_activation_reenables_buttons_without_overriding_usb_lock(self):
         apps_button = FakeButton(state="disabled")
         lock_button = FakeButton(state="disabled")
         owner_enable = FakeButton()
@@ -6838,54 +6837,64 @@ class DesktopHelperTests(unittest.TestCase):
             owner_enable_button=owner_enable,
             owner_disable_button=owner_disable,
             owner_verify_button=owner_verify,
-            local_feature_buttons=[apps_button, lock_button],
-            license_state={},
+            license_gated_buttons={
+                apps_button: "privacy-safety-hub",
+                lock_button: "portable-locking",
+            },
+            license_state={"features": ["privacy-safety-hub", "portable-locking"]},
+            account_ready=True,
             busy=False,
             busy_buttons=[lock_button],
         )
         fake.active_key_matches_owner_policy = lambda: fake.key is not None
+        fake.account_is_signed_in = lambda: fake.account_ready
 
-        locker.USBFileLocker.apply_access_state(fake)
-        self.assertEqual(apps_button.state, "normal")
-        self.assertEqual(lock_button.state, "normal")
-
-        fake.key = None
-        locker.USBFileLocker.apply_access_state(fake)
-        self.assertEqual(apps_button.state, "normal")
-        self.assertEqual(lock_button.state, "disabled")
-
-        fake.key = {"key_id": "KEY-1"}
-        fake.busy = True
-        locker.USBFileLocker.apply_access_state(fake)
-        self.assertEqual(apps_button.state, "normal")
-        self.assertEqual(lock_button.state, "disabled")
-
-    def test_free_local_access_has_no_license_refresh_or_forced_login_gate(self):
-        with (
-            mock.patch.object(
-                locker,
-                "refresh_license_for_feature_gate",
-                side_effect=AssertionError("local access must not contact the license API"),
-            ),
-            mock.patch.object(locker.messagebox, "showwarning") as warning,
+        with mock.patch.object(
+            locker,
+            "license_feature_allowed",
+            side_effect=lambda feature_id, state=None: feature_id in state.get("features", []),
         ):
-            self.assertTrue(
-                locker.ensure_license_feature(
-                    "personal-vault",
-                    parent=SimpleNamespace(account_is_signed_in=lambda: False),
-                )
-            )
-        warning.assert_not_called()
+            locker.USBFileLocker.apply_access_state(fake)
+            self.assertEqual(apps_button.state, "normal")
+            self.assertEqual(lock_button.state, "normal")
 
-        startup_source = inspect.getsource(locker.USBFileLocker.__init__)
-        login_source = inspect.getsource(locker.USBFileLocker.open_account_login)
-        launcher_source = inspect.getsource(locker.launch_companion_script)
-        owner_lab_source = inspect.getsource(locker.USBFileLocker.open_owner_update_lab)
-        self.assertNotIn("open_account_login", startup_source)
-        self.assertNotIn("required", login_source)
-        self.assertNotIn("license_feature_allowed", launcher_source)
-        self.assertIn("active_key_matches_owner_policy", owner_lab_source)
-        self.assertIn("DRIVE_REMOVABLE", owner_lab_source)
+            fake.account_ready = False
+            locker.USBFileLocker.apply_access_state(fake)
+            self.assertEqual(apps_button.state, "disabled")
+            self.assertEqual(lock_button.state, "disabled")
+
+            fake.account_ready = True
+            fake.key = None
+            locker.USBFileLocker.apply_access_state(fake)
+            self.assertEqual(apps_button.state, "normal")
+            self.assertEqual(lock_button.state, "disabled")
+
+            fake.license_state = {"features": []}
+            locker.USBFileLocker.apply_access_state(fake)
+            self.assertEqual(apps_button.state, "disabled")
+            self.assertEqual(lock_button.state, "disabled")
+
+            fake.license_state = {"features": ["privacy-safety-hub", "portable-locking"]}
+            fake.key = {"key_id": "KEY-1"}
+            fake.busy = True
+            locker.USBFileLocker.apply_access_state(fake)
+            self.assertEqual(apps_button.state, "normal")
+            self.assertEqual(lock_button.state, "disabled")
+
+    def test_customer_app_requires_account_and_active_license(self):
+        self.assertFalse(hasattr(locker, "FREE_LOCAL_ACCESS"))
+        self.assertIn(
+            "open_account_login(required=True)",
+            inspect.getsource(locker.USBFileLocker.__init__),
+        )
+        self.assertIn(
+            "not parent.account_is_signed_in()",
+            inspect.getsource(locker.ensure_license_feature),
+        )
+        self.assertIn(
+            "license_feature_allowed",
+            inspect.getsource(locker.launch_companion_script),
+        )
 
     def test_audit_worker_reports_through_queue_without_tk_calls(self):
         fake = SimpleNamespace(api_export_results=queue.Queue())

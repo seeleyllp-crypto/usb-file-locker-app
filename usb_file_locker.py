@@ -41,9 +41,8 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.40"
+DESKTOP_APP_VERSION = "2026.07.18.41"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
-FREE_LOCAL_ACCESS = True
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
 UPDATE_SIGNING_KEY_ID = "4f8fb9b8dbffd4c0"
@@ -120,7 +119,7 @@ LOCK_WORKFLOW_PROFILES = {
 TOOL_FINDER_ACTIONS = (
     ("Access", "Load USB Key", "load_key"),
     ("Access", "Panic Lock Now", "panic_lock_now"),
-    ("Access", "Optional Account", "open_license_center"),
+    ("Access", "License Center", "open_license_center"),
     ("Access", "Local Readiness Check", "show_local_readiness"),
     ("Guidance", "Tip Center", "open_tip_center"),
     ("Locking", "Lock Protection Center", "open_lock_protection_center"),
@@ -232,6 +231,27 @@ LICENSE_PLAN_IDS = {
     "family-office",
     "pro-baseline",
 }
+SCRIPT_LICENSE_FEATURES = {
+    "security_maintenance_center.py": "security-maintenance-center",
+    "storage_retention_center.py": "storage-retention-center",
+    "local_data_control_center.py": "data-control-center",
+    "recovery_kit_builder.py": "recovery-kit-builder",
+    "backup_verification_center.py": "backup-verification-center",
+    "recovery_drill_center.py": "recovery-drill-center",
+    "incident_response_center.py": "incident-response-center",
+    "diagnostics_center.py": "diagnostics-center",
+    "trust_recovery_center.py": "trust-recovery-center",
+    "privacy_safety_hub.py": "privacy-safety-hub",
+    "personal_vault_pad.py": "personal-vault",
+    "audit_log_viewer.py": "audit-log-viewer",
+    "global_breach_guard.py": "global-breach-guard",
+    "text_log_processor.py": "text-log-processor",
+    "locked_file_browser.py": "locked-file-browser",
+    "vault_health_center.py": "locked-file-browser",
+    "perm_unlock_workbench.py": "perm-unlock",
+}
+
+
 def normalize_saved_path(path):
     text = str(path).strip()
     if not text:
@@ -1987,6 +2007,10 @@ def feature_title(feature_id):
     return PLAN_FEATURE_TITLES.get(feature_id, feature_id.replace("-", " ").title())
 
 
+def feature_required_plan(feature_id):
+    return PLAN_FEATURE_REQUIREMENTS.get(feature_id, "an active license")
+
+
 def license_is_active(state):
     current = normalize_license_state(state)
     if current.get("status") != "active":
@@ -2103,11 +2127,11 @@ def local_readiness_summary(
     else:
         owner_state = "STANDARD MODE"
     if license_active:
-        online_state = "OPTIONAL PLAN ACTIVE"
+        license_state = "ACTIVE"
     elif license_saved:
-        online_state = "OPTIONAL PLAN SAVED - ONLINE CHECK NEEDED"
+        license_state = "SAVED - ONLINE CHECK NEEDED"
     else:
-        online_state = "OPTIONAL - NOT CONFIGURED"
+        license_state = "INACTIVE"
 
     lines = [
         "VaultLink Local Readiness",
@@ -2117,8 +2141,7 @@ def local_readiness_summary(
         f"Queue: {queue_count} item{'s' if queue_count != 1 else ''}; "
         f"{selected_count} selected",
         f"PIN mode: {'USB KEY + PIN' if pin_enabled else 'USB KEY ONLY'}",
-        "Local access: FREE - NO LICENSE REQUIRED",
-        f"Online account: {online_state}",
+        f"License: {license_state}",
         f"Verified auto-updates: {'ON' if auto_updates else 'OFF'}",
         f"Current job: {'RUNNING' if busy else 'IDLE'}",
         "",
@@ -3565,8 +3588,41 @@ def license_feature_lines(state):
     return "\n".join(f"- {feature_title(feature_id)}" for feature_id in features)
 
 
+def license_required_message(feature_id):
+    return (
+        f"{feature_title(feature_id)} needs an active {feature_required_plan(feature_id)} license.\n\n"
+        f"Open License Center and sign in to the customer account that owns the license.\n\n"
+        f"Unlocking existing files and recovery tools still stay available."
+    )
+
+
 def ensure_license_feature(feature_id, parent=None, show_message=True):
-    return FREE_LOCAL_ACCESS
+    if (
+        not LAB_MODE
+        and parent is not None
+        and hasattr(parent, "account_is_signed_in")
+        and not parent.account_is_signed_in()
+    ):
+        if show_message:
+            messagebox.showwarning(
+                "Account sign-in required",
+                "Sign in to the customer account before using licensed controls.",
+                parent=parent,
+            )
+        return False
+    state = refresh_license_for_feature_gate()
+    if parent is not None and hasattr(parent, "update_license_state_ui"):
+        try:
+            parent.update_license_state_ui(state)
+            if hasattr(parent, "apply_access_state"):
+                parent.apply_access_state()
+        except Exception:
+            pass
+    if license_feature_allowed(feature_id, state=state):
+        return True
+    if show_message:
+        messagebox.showwarning("License required", license_required_message(feature_id), parent=parent)
+    return False
 
 
 def license_api_post_json(server_url, api_path, payload, extra_headers=None, timeout=15):
@@ -4618,6 +4674,9 @@ def pythonw_path():
 
 def launch_companion_script(script_name, *args):
     script_name = str(script_name)
+    feature_id = SCRIPT_LICENSE_FEATURES.get(script_name)
+    if feature_id and not license_feature_allowed(feature_id):
+        raise PermissionError(license_required_message(feature_id))
     if getattr(sys, "frozen", False):
         exe_path = RUNTIME_DIR / f"{Path(script_name).stem}.exe"
         if not exe_path.exists():
@@ -6761,7 +6820,11 @@ class USBFileLocker(tk.Tk):
         self.breach_status = tk.StringVar(value="Breach detection ready.")
         self.license_state = load_license_state(self.settings)
         self.license_status = tk.StringVar(
-            value="FREE LOCAL MODE | ACCOUNT OPTIONAL"
+            value=(
+                license_status_text(self.license_state)
+                if LAB_MODE
+                else "Account sign-in required"
+            )
         )
         self.license_refresh_results = queue.Queue()
         self.license_refresh_in_progress = False
@@ -6774,7 +6837,7 @@ class USBFileLocker(tk.Tk):
         self.account_server_url = normalize_license_server_url(
             self.license_state.get("server_url")
         )
-        self.account_status = tk.StringVar(value="OPTIONAL - LOCAL MODE READY")
+        self.account_status = tk.StringVar(value="SIGN IN REQUIRED")
         self.account_refresh_results = queue.Queue()
         self.account_refresh_in_progress = False
         self.account_refresh_after_id = None
@@ -6798,7 +6861,7 @@ class USBFileLocker(tk.Tk):
         self.overview_access_var = tk.StringVar(value="NO USB KEY LOADED")
         self.overview_queue_var = tk.StringVar(value="0 ITEMS | 0 SELECTED")
         self.overview_pin_var = tk.StringVar(value="USB KEY ONLY")
-        self.overview_license_var = tk.StringVar(value="FREE LOCAL MODE")
+        self.overview_license_var = tk.StringVar(value="CHECKING LICENSE")
         self.overview_activity_var = tk.StringVar(value="READY")
         self.customer_message_index = -1
         self.customer_message_text = customer_idle_message(0)
@@ -6831,7 +6894,7 @@ class USBFileLocker(tk.Tk):
         self.cancel_event = threading.Event()
         self.busy_buttons = []
         self.key_required_buttons = []
-        self.local_feature_buttons = []
+        self.license_gated_buttons = {}
         self.secondary_windows = []
         self.tool_finder_window = None
         self.tip_center_window = None
@@ -6879,6 +6942,8 @@ class USBFileLocker(tk.Tk):
         )
         self.refresh_breach_status()
         self.schedule_license_refresh(INITIAL_LICENSE_REFRESH_MS)
+        if not LAB_MODE:
+            self.after(250, lambda: self.open_account_login(required=True))
         self.breach_refresh_after_id = self.after(
             20000,
             self.periodic_breach_refresh,
@@ -6969,7 +7034,7 @@ class USBFileLocker(tk.Tk):
         ).grid(row=0, column=0, sticky="w", padx=(14, 8), pady=(10, 2))
         tk.Label(
             status_panel,
-            text="LOCAL ACCESS",
+            text="LICENSE",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 8, "bold"),
@@ -7079,7 +7144,7 @@ class USBFileLocker(tk.Tk):
         add_overview_metric(0, "ACCESS", self.overview_access_var, YELLOW)
         add_overview_metric(1, "QUEUE", self.overview_queue_var, BLUE)
         add_overview_metric(2, "PIN MODE", self.overview_pin_var, GREEN)
-        add_overview_metric(3, "LOCAL MODE", self.overview_license_var, GREEN)
+        add_overview_metric(3, "LICENSE", self.overview_license_var, GREEN)
 
         tk.Label(
             overview_panel,
@@ -7139,7 +7204,7 @@ class USBFileLocker(tk.Tk):
         )
         tk.Button(
             overview_actions,
-            text="OPTIONAL ACCOUNT",
+            text="LICENSE CENTER",
             command=self.open_license_center,
             bg=BLUE,
             fg=BLACK,
@@ -7326,7 +7391,7 @@ class USBFileLocker(tk.Tk):
         top_secondary.pack(fill="x", padx=18, pady=(0, 10))
         self.register_button = tk.Button(top_secondary, text="REGISTER .LOCKED", command=self.register_association_from_gui, bg="#252936", fg=TEXT, relief="flat", font=("Segoe UI", 9, "bold"))
         self.register_button.pack(side="left", ipadx=10, ipady=8)
-        self.license_button = tk.Button(top_secondary, text="OPTIONAL ACCOUNT", command=self.open_license_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
+        self.license_button = tk.Button(top_secondary, text="LICENSE CENTER", command=self.open_license_center, bg=BLUE, fg=BLACK, relief="flat", font=("Segoe UI", 9, "bold"))
         self.license_button.pack(side="left", padx=(10, 0), ipadx=10, ipady=8)
         key_health_panel = tk.Frame(
             key_panel,
@@ -7386,7 +7451,7 @@ class USBFileLocker(tk.Tk):
         account_login_row.pack(fill="x", padx=18, pady=(18, 10))
         tk.Label(
             account_login_row,
-            text="OPTIONAL CUSTOMER ACCOUNT",
+            text="CUSTOMER ACCOUNT",
             bg=PANEL,
             fg=MUTED,
             font=("Segoe UI", 8, "bold"),
@@ -7421,7 +7486,7 @@ class USBFileLocker(tk.Tk):
         self.account_sign_out_button.pack(side="right", padx=(0, 8), ipadx=10, ipady=6)
         self.account_check_button = tk.Button(
             account_login_row,
-            text="CHECK ACCOUNT",
+            text="CHECK LICENSE",
             command=lambda: self.refresh_customer_account(interactive=True),
             state="disabled",
             bg=BLUE,
@@ -7724,27 +7789,27 @@ class USBFileLocker(tk.Tk):
             self.lock_note_button,
             self.personal_vault_button,
         ]
-        self.local_feature_buttons = [
-            self.recovery_kit_button,
-            self.backup_verification_button,
-            self.recovery_drill_button,
-            self.incident_button,
-            self.diagnostics_button,
-            self.apps_hub_button,
-            self.breach_button,
-            self.global_guard_button,
-            self.owner_enable_button,
-            self.owner_disable_button,
-            self.owner_verify_button,
-            self.scan_personal_button,
-            self.lock_button,
-            self.lock_remove_button,
-            self.lock_note_button,
-            self.add_perm_unlock_items_button,
-            self.perm_unlock_button,
-            self.perm_unlock_folder_button,
-            self.personal_vault_button,
-        ]
+        self.license_gated_buttons = {
+            self.recovery_kit_button: "recovery-kit-builder",
+            self.backup_verification_button: "backup-verification-center",
+            self.recovery_drill_button: "recovery-drill-center",
+            self.incident_button: "incident-response-center",
+            self.diagnostics_button: "diagnostics-center",
+            self.apps_hub_button: "privacy-safety-hub",
+            self.breach_button: "global-breach-guard",
+            self.global_guard_button: "global-breach-guard",
+            self.owner_enable_button: "owner-usb-mode",
+            self.owner_disable_button: "owner-usb-mode",
+            self.owner_verify_button: "owner-usb-mode",
+            self.scan_personal_button: "portable-locking",
+            self.lock_button: "portable-locking",
+            self.lock_remove_button: "portable-locking",
+            self.lock_note_button: "quick-lock-note",
+            self.add_perm_unlock_items_button: "perm-unlock",
+            self.perm_unlock_button: "perm-unlock",
+            self.perm_unlock_folder_button: "perm-unlock",
+            self.personal_vault_button: "personal-vault",
+        }
 
     def select_main_tab(self, index):
         try:
@@ -10702,7 +10767,7 @@ class USBFileLocker(tk.Tk):
                 f"Access: {self.overview_access_var.get()}",
                 f"Queue: {self.overview_queue_var.get()}",
                 f"PIN mode: {self.overview_pin_var.get()}",
-                f"Local mode: {self.overview_license_var.get()}",
+                f"License: {self.overview_license_var.get()}",
                 f"Current activity: {self.overview_activity_var.get()}",
                 (
                     "Scope: aggregate local app state only; no filenames, paths, "
@@ -11178,21 +11243,14 @@ class USBFileLocker(tk.Tk):
             if save:
                 self.license_state = save_license_state(self.settings, self.license_state)
         account_check = getattr(self, "account_is_signed_in", None)
-        account_ready = bool(account_check and account_check())
-        if account_ready and license_is_active(self.license_state):
-            plan_name = (
-                self.license_state.get("plan_name")
-                or self.license_state.get("plan_id", "").replace("-", " ").title()
-                or "ONLINE PLAN"
-            )
-            access_text = f"FREE LOCAL MODE | ONLINE {plan_name}"
-        elif account_ready:
-            access_text = "FREE LOCAL MODE | ACCOUNT SIGNED IN"
-        else:
-            access_text = "FREE LOCAL MODE | ACCOUNT OPTIONAL"
-        self.license_status.set(access_text)
+        account_ready = LAB_MODE or bool(account_check and account_check())
+        self.license_status.set(
+            license_status_text(self.license_state)
+            if account_ready
+            else "Account sign-in required"
+        )
         status = self.license_state.get("status", "unlicensed")
-        color = GREEN if FREE_LOCAL_ACCESS else (
+        color = (
             GREEN
             if account_ready and license_is_active(self.license_state)
             else (RED if account_ready and status == "revoked" else YELLOW)
@@ -11222,8 +11280,15 @@ class USBFileLocker(tk.Tk):
         disable_owner_off = not self.owner_policy or not self.active_key_matches_owner_policy()
         self.owner_disable_button.configure(state="disabled" if disable_owner_off else "normal")
         self.owner_verify_button.configure(state="normal" if self.owner_policy else "disabled")
-        for button in self.local_feature_buttons:
-            if (
+        account_ready = LAB_MODE or self.account_is_signed_in()
+        for button, feature_id in self.license_gated_buttons.items():
+            allowed = account_ready and license_feature_allowed(
+                feature_id,
+                state=self.license_state,
+            )
+            if not allowed:
+                button.configure(state="disabled")
+            elif (
                 button not in self.key_required_buttons
                 and button not in {
                     self.owner_enable_button,
@@ -11617,28 +11682,28 @@ class USBFileLocker(tk.Tk):
         rank = license_view.get("rank")
         if updated_state is not None:
             self.finish_license_refresh(updated_state)
-            label = f"RANK {rank}" if rank else str(license_view.get("plan_name") or "ONLINE PLAN")
+            label = f"RANK {rank}" if rank else str(license_view.get("plan_name") or "LICENSE")
             self.account_status.set(f"SIGNED IN: {self.account_username} | {label}")
-            self.status.set(f"Online account synced for {self.account_username}.")
+            self.status.set(f"Account license synced for {self.account_username}.")
             if interactive:
                 messagebox.showinfo(
-                    "Account ready",
+                    "Account license ready",
                     f"Signed in as {self.account_username}.\n\n"
-                    "Local tools are free and ready. The online account was synced.",
+                    f"{license_view.get('plan_name') or 'The assigned license'} is active on this PC.",
                     parent=self,
                 )
         else:
             if clear_license:
                 cleared = clear_license_state(self.settings, self.license_state.get("server_url"))
                 self.update_license_state_ui(cleared)
-            self.account_status.set(f"SIGNED IN: {self.account_username} | FREE LOCAL")
-            self.status.set("Signed in. Local tools are ready without a license.")
+            self.account_status.set(f"SIGNED IN: {self.account_username} | WAITING FOR LICENSE")
+            self.status.set("Signed in. Waiting for the owner to assign a license to this account.")
             self.apply_access_state()
             if interactive:
                 messagebox.showinfo(
                     "Signed in",
                     f"Signed in as {self.account_username}.\n\n"
-                    "No license is required for local tools. Online account services remain optional.",
+                    "No active license is assigned yet. The app will check automatically.",
                     parent=self,
                 )
         self.update_account_controls()
@@ -11650,7 +11715,7 @@ class USBFileLocker(tk.Tk):
             return
         if not self.account_session_token:
             if interactive:
-                self.open_account_login()
+                self.open_account_login(required=True)
             return
         if self.account_refresh_in_progress:
             return
@@ -11717,7 +11782,8 @@ class USBFileLocker(tk.Tk):
         if error is not None:
             if self.account_session_error(error):
                 self.sign_out_customer_account(prompt=False)
-                self.account_status.set("OPTIONAL SESSION EXPIRED | LOCAL MODE READY")
+                self.account_status.set("SESSION EXPIRED - SIGN IN AGAIN")
+                self.after(100, lambda: self.open_account_login(required=True))
             else:
                 self.account_status.set(
                     f"OFFLINE: {self.account_username or 'ACCOUNT CHECK PENDING'}"
@@ -11742,7 +11808,7 @@ class USBFileLocker(tk.Tk):
     def sign_out_customer_account(self, prompt=True):
         if prompt and not messagebox.askyesno(
             "Sign out",
-            "Sign out of the optional customer account?\n\nAll local tools will remain available.",
+            "Sign out of the customer account?\n\nLicensed controls will remain disabled until another successful sign-in.",
             parent=self,
         ):
             return
@@ -11752,7 +11818,7 @@ class USBFileLocker(tk.Tk):
         self.account_server_url = normalize_license_server_url(
             self.license_state.get("server_url")
         )
-        self.account_status.set("OPTIONAL - LOCAL MODE READY")
+        self.account_status.set("SIGN IN REQUIRED")
         self.update_license_state_ui(self.license_state)
         self.account_refresh_in_progress = False
         while True:
@@ -11770,7 +11836,10 @@ class USBFileLocker(tk.Tk):
                 setattr(self, attribute, None)
         self.update_account_controls()
         log_event("account_logout", "api", "ok")
-    def open_account_login(self):
+        if prompt and not self.closing:
+            self.open_account_login(required=True)
+
+    def open_account_login(self, required=False):
         if self.closing:
             return
         if self.account_is_signed_in():
@@ -11797,7 +11866,7 @@ class USBFileLocker(tk.Tk):
         password_var = tk.StringVar(value="")
         show_password_var = tk.BooleanVar(value=False)
         status_var = tk.StringVar(
-            value="Sign in only for optional online account services. Local tools need no license."
+            value="Sign in to receive the license assigned by the owner."
         )
         results = queue.Queue()
         busy = False
@@ -11813,7 +11882,7 @@ class USBFileLocker(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             outer,
-            text="OPTIONAL ACCOUNT | PASSWORD NEVER SAVED | LOCAL TOOLS STAY FREE",
+            text="ACCOUNT REQUIRED | PASSWORD NEVER SAVED | LICENSE AUTO-SYNC",
             bg=BG,
             fg=GREEN,
             font=("Segoe UI", 8, "bold"),
@@ -11842,7 +11911,7 @@ class USBFileLocker(tk.Tk):
             entry.pack(fill="x", padx=18, ipady=7)
             return entry
 
-        server_entry = field("VAULTLINK API URL", server_var)
+        server_entry = field("LICENSE API URL", server_var)
         username_entry = field("USERNAME", username_var)
         password_entry = field("PASSWORD", password_var, secret=True)
         tk.Checkbutton(
@@ -11924,7 +11993,7 @@ class USBFileLocker(tk.Tk):
                 return
             busy = True
             sign_in_button.configure(state="disabled", text="SIGNING IN...")
-            status_var.set("Signing in and checking the online account...")
+            status_var.set("Signing in and checking the assigned license...")
             current_state = normalize_license_state(self.license_state)
 
             def worker():
@@ -11988,8 +12057,8 @@ class USBFileLocker(tk.Tk):
         ).pack(side="left", padx=(10, 0), ipadx=12, ipady=8)
         tk.Button(
             action_row,
-            text="CLOSE",
-            command=close_dialog,
+            text="QUIT APP" if required else "CLOSE",
+            command=self.close_requested if required else close_dialog,
             bg="#252936",
             fg=TEXT,
             relief="flat",
@@ -12006,7 +12075,7 @@ class USBFileLocker(tk.Tk):
         ).pack(anchor="w", pady=(12, 0))
         dialog.protocol(
             "WM_DELETE_WINDOW",
-            close_dialog,
+            self.close_requested if required else close_dialog,
         )
         dialog.bind("<Return>", lambda _event: sign_in())
         username_entry.focus_set()
@@ -12076,19 +12145,19 @@ class USBFileLocker(tk.Tk):
         current_status = self.license_state.get("status", "unlicensed")
         if automatic and previous.get("status") != current_status:
             if license_is_active(self.license_state):
-                self.status.set("Optional online plan restored. Local tools stayed available.")
+                self.status.set("License restored by the API. Premium controls are available again.")
                 log_event("license_sync", "api", "ok")
                 self.last_license_notice_status = "active"
             elif current_status in {"revoked", "limited", "expired", "deactivated", "reset", "wrong_machine", "receipt_expired"}:
                 reason = self.license_state.get("last_error") or f"License status changed to {current_status}."
-                self.status.set(f"Optional online plan changed; local tools remain available: {reason}")
+                self.status.set(f"API license check disabled premium controls: {reason}")
                 log_event("license_sync", "api", "failed")
                 if self.last_license_notice_status != current_status:
                     self.last_license_notice_status = current_status
                     messagebox.showwarning(
-                        "Online plan changed",
+                        "License access changed",
                         f"The API reported {current_status.replace('_', ' ')}.\n\n{reason}\n\n"
-                        "All local tools remain available without a license.",
+                        "Premium controls are now disabled. Unlocking existing files and recovery tools remain available.",
                         parent=self,
                     )
         if automatic and license_is_active(self.license_state):
@@ -12096,7 +12165,7 @@ class USBFileLocker(tk.Tk):
         self.schedule_license_refresh()
 
     def open_license_center(self):
-        self.open_account_login()
+        self.open_account_login(required=True)
 
     def _open_manual_license_center(self):
         dialog = tk.Toplevel(self)

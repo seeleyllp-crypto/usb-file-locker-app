@@ -48,17 +48,17 @@ PINNED_APP_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-app.git
 PINNED_API_REMOTE = "https://github.com/seeleyllp-crypto/usb-file-locker-api.git"
 
 DEFAULT_NOTES = [
-    "Every local customer tool is available without a license.",
-    "Customer account sign-in is optional and no longer appears automatically at startup.",
-    "Signing out or losing an online session never disables local tools.",
-    "Diagnostics and Trust report free local access as ready instead of a missing-license warning.",
+    "The customer Windows app now requires a successful account sign-in at startup.",
+    "Customers sign in with their VaultLink username and password directly inside the app.",
     "Passwords are sent only to the configured HTTPS API and are never saved locally.",
-    "Optional signed account sessions stay only in app memory and clear at sign-out or exit.",
-    "Existing online plans remain compatible with account services and cloud audit authorization.",
-    "Local customer tools remain available without a license or account sign-in.",
+    "The signed account session stays only in app memory and is cleared at sign-out or exit.",
+    "The app retrieves only the active license assigned to the authenticated customer account.",
+    "Assigned licenses activate automatically without copying or pasting a license key.",
+    "The app checks the account every twenty seconds while open for newly assigned access.",
+    "Accounts without an active license stay blocked and automatically receive access after owner assignment.",
+    "Expired or disabled account sessions return the customer to the required sign-in screen.",
+    "Customer controls remain disabled whenever the account is signed out or its license is not active.",
     "The compact signed full-release package keeps every customer file and verifies its pinned payload hash.",
-    "USB-key, optional PIN, and owner-USB controls are unchanged.",
-    "The private Update Lab still requires the registered removable owner USB.",
     "Tests, Defender scanning, signed-package identity, and explicit owner publishing remain required.",
 ]
 
