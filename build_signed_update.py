@@ -126,6 +126,8 @@ def write_status(app_data, ok, message, backup=""):
 
 
 def show_error(message):
+    if os.environ.get("VAULTLINK_COMPACT_BOOTSTRAP_NO_RELAUNCH") == "1":
+        return
     try:
         import tkinter as tk
         from tkinter import messagebox
