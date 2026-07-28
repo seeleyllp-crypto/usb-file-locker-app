@@ -8,6 +8,8 @@ import json
 import os
 import queue
 import stat
+import subprocess
+import sys
 import tempfile
 import textwrap
 import threading
@@ -5126,6 +5128,131 @@ class DesktopHelperTests(unittest.TestCase):
                         ["Old lab regression fixture"],
                         root / "owner.key",
                     )
+
+    def test_compact_update_supports_modern_and_legacy_install_paths(self):
+        source = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(prefix="vaultlink_compact_release_") as temp_dir:
+            root = Path(temp_dir)
+            package = root / f"VaultLink-Windows-{locker.DESKTOP_APP_VERSION}.zip"
+            modern_output = root / "modern"
+            legacy_target = root / "legacy"
+            local_root = root / "local"
+            app_data = local_root / "USBFileLocker"
+            prior_backup = app_data / "update_backups" / "prior"
+            prior_backup.mkdir(parents=True)
+            legacy_target.mkdir()
+
+            build_signed_update.build_package(source, package)
+            self.assertLess(package.stat().st_size, 300 * 1024)
+            with zipfile.ZipFile(package, "r") as archive:
+                self.assertEqual(
+                    set(archive.namelist()),
+                    {"usb_file_locker.py", build_signed_update.COMPACT_PAYLOAD_FILENAME},
+                )
+
+            logical = vaultlink_updater.package_file_contents(package)
+            self.assertEqual(set(logical), set(build_signed_update.PACKAGE_FILES))
+            self.assertEqual(
+                logical["usb_file_locker.py"],
+                (source / "usb_file_locker.py").read_bytes(),
+            )
+            self.assertEqual(
+                vaultlink_updater.extract_verified_package(package, modern_output),
+                len(build_signed_update.PACKAGE_FILES),
+            )
+            self.assertFalse(
+                (modern_output / build_signed_update.COMPACT_PAYLOAD_FILENAME).exists()
+            )
+
+            old_main = b'DESKTOP_APP_VERSION = "2026.07.18.38"\n# prior desktop\n'
+            old_readme = b"prior readme\n"
+            (legacy_target / "usb_file_locker.py").write_bytes(old_main)
+            (legacy_target / "README.txt").write_bytes(old_readme)
+            (prior_backup / "usb_file_locker.py").write_bytes(old_main)
+            status_path = app_data / "update-status.json"
+            status_path.write_text(
+                json.dumps({"backup_dir": str(prior_backup)}),
+                encoding="utf-8",
+            )
+            with zipfile.ZipFile(package, "r") as archive:
+                for name in archive.namelist():
+                    (legacy_target / name).write_bytes(archive.read(name))
+            environment = dict(os.environ)
+            environment["LOCALAPPDATA"] = str(local_root)
+            environment["VAULTLINK_COMPACT_BOOTSTRAP_NO_RELAUNCH"] = "1"
+            completed = subprocess.run(
+                [sys.executable, str(legacy_target / "usb_file_locker.py")],
+                cwd=str(legacy_target),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            compact_backup = Path(status["backup_dir"])
+            self.assertTrue(status["ok"])
+            self.assertFalse(
+                (legacy_target / build_signed_update.COMPACT_PAYLOAD_FILENAME).exists()
+            )
+            for name in build_signed_update.PACKAGE_FILES:
+                self.assertEqual(
+                    (legacy_target / name).read_bytes(),
+                    (source / name).read_bytes(),
+                )
+            self.assertEqual(
+                (compact_backup / "usb_file_locker.py").read_bytes(),
+                old_main,
+            )
+            self.assertEqual((compact_backup / "README.txt").read_bytes(), old_readme)
+
+    def test_compact_bootstrap_rejects_payload_tampering_and_restores_prior_main(self):
+        source = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(prefix="vaultlink_compact_tamper_") as temp_dir:
+            root = Path(temp_dir)
+            package = root / "update.zip"
+            target = root / "app"
+            local_root = root / "local"
+            app_data = local_root / "USBFileLocker"
+            prior_backup = app_data / "update_backups" / "prior"
+            prior_backup.mkdir(parents=True)
+            target.mkdir()
+            old_main = b'DESKTOP_APP_VERSION = "2026.07.18.38"\n# prior desktop\n'
+            (prior_backup / "usb_file_locker.py").write_bytes(old_main)
+            status_path = app_data / "update-status.json"
+            status_path.write_text(
+                json.dumps({"backup_dir": str(prior_backup)}),
+                encoding="utf-8",
+            )
+
+            build_signed_update.build_package(source, package)
+            with zipfile.ZipFile(package, "r") as archive:
+                (target / "usb_file_locker.py").write_bytes(
+                    archive.read("usb_file_locker.py")
+                )
+                payload = bytearray(
+                    archive.read(build_signed_update.COMPACT_PAYLOAD_FILENAME)
+                )
+            payload[len(payload) // 2] ^= 1
+            (target / build_signed_update.COMPACT_PAYLOAD_FILENAME).write_bytes(payload)
+
+            environment = dict(os.environ)
+            environment["LOCALAPPDATA"] = str(local_root)
+            environment["VAULTLINK_COMPACT_BOOTSTRAP_NO_RELAUNCH"] = "1"
+            completed = subprocess.run(
+                [sys.executable, str(target / "usb_file_locker.py")],
+                cwd=str(target),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual((target / "usb_file_locker.py").read_bytes(), old_main)
+            self.assertFalse(
+                (target / build_signed_update.COMPACT_PAYLOAD_FILENAME).exists()
+            )
+            self.assertFalse(json.loads(status_path.read_text(encoding="utf-8"))["ok"])
 
     def test_live_package_verification_runs_full_identity_validation(self):
         private_key = Ed25519PrivateKey.generate()

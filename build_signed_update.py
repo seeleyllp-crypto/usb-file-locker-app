@@ -1,9 +1,12 @@
 import argparse
 import base64
 import hashlib
+import io
 import json
+import lzma
 import os
 import shutil
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -15,6 +18,7 @@ import vaultlink_updater
 
 
 UPDATE_KEY_ENTROPY = b"VaultLinkUpdateSigningKeyV1"
+COMPACT_PAYLOAD_FILENAME = "vaultlink_payload.tar.xz"
 PACKAGE_FILES = [
     "Ensure Dependencies.cmd",
     "README.md",
@@ -74,6 +78,258 @@ PACKAGE_FILES = [
     "vaultlink_updater.py",
 ]
 
+COMPACT_BOOTSTRAP_TEMPLATE = r'''import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from pathlib import Path
+
+
+DESKTOP_APP_VERSION = __VERSION__
+PAYLOAD_FILENAME = "vaultlink_payload.tar.xz"
+PAYLOAD_SHA256 = __PAYLOAD_SHA256__
+EXPECTED_FILES = tuple(__EXPECTED_FILES__)
+MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
+MAX_FILE_BYTES = 16 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_status(app_data, ok, message, backup=""):
+    app_data.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": bool(ok),
+        "version": DESKTOP_APP_VERSION,
+        "message": str(message),
+        "backup_dir": str(backup),
+        "time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    target = app_data / "update-status.json"
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temporary, target)
+
+
+def show_error(message):
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("VaultLink update failed", str(message), parent=root)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def prior_desktop_backup(app_data):
+    status_path = app_data / "update-status.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        backup = Path(str(status.get("backup_dir", ""))).resolve()
+        backup.relative_to((app_data / "update_backups").resolve())
+        candidate = backup / "usb_file_locker.py"
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
+def restore_prior_desktop(app_data, target):
+    prior = prior_desktop_backup(app_data)
+    if prior is None:
+        return None
+    destination = target / "usb_file_locker.py"
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.restore.tmp")
+    try:
+        shutil.copy2(prior, temporary)
+        os.replace(temporary, destination)
+        return prior.parent
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def extract_payload(payload_path, staging):
+    if (
+        not payload_path.is_file()
+        or payload_path.is_symlink()
+        or not 0 < payload_path.stat().st_size <= MAX_PAYLOAD_BYTES
+    ):
+        raise ValueError("The compact update payload is missing or outside the safety limit.")
+    if file_sha256(payload_path) != PAYLOAD_SHA256:
+        raise ValueError("The compact update payload SHA-256 did not match the signed bootstrap.")
+
+    expected = set(EXPECTED_FILES)
+    found = set()
+    total_size = 0
+    with tarfile.open(payload_path, "r:xz") as archive:
+        members = archive.getmembers()
+        if len(members) != len(EXPECTED_FILES):
+            raise ValueError("The compact update payload file count is invalid.")
+        for member in members:
+            name = str(member.name)
+            if (
+                not member.isfile()
+                or name not in expected
+                or name in found
+                or Path(name).name != name
+                or "\\" in name
+                or "\0" in name
+                or not 0 <= member.size <= MAX_FILE_BYTES
+            ):
+                raise ValueError("The compact update payload contains an unexpected file.")
+            total_size += member.size
+            if total_size > MAX_EXTRACTED_BYTES:
+                raise ValueError("The compact update payload expands beyond the safety limit.")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError("A compact update file could not be read.")
+            destination = staging / name
+            with destination.open("xb") as output:
+                remaining = member.size
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("A compact update file ended early.")
+                    output.write(chunk)
+                    remaining -= len(chunk)
+                if source.read(1):
+                    raise ValueError("A compact update file exceeded its declared size.")
+            found.add(name)
+    if found != expected:
+        raise ValueError("The compact update payload is incomplete.")
+
+
+def apply_payload(staging, target, app_data):
+    if target.parent == target or (target / ".git").exists():
+        raise ValueError("Refusing to install a compact update in this application folder.")
+    backup = (
+        app_data
+        / "update_backups"
+        / f"before-{DESKTOP_APP_VERSION}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-compact"
+    )
+    backup.mkdir(parents=True, exist_ok=False)
+    old_main = prior_desktop_backup(app_data)
+    existed = {}
+    for name in EXPECTED_FILES:
+        destination = target / name
+        if destination.exists() and (not destination.is_file() or destination.is_symlink()):
+            raise ValueError(f"Cannot safely replace {name}.")
+        existed[name] = destination.is_file()
+        if existed[name]:
+            source = old_main if name == "usb_file_locker.py" and old_main else destination
+            shutil.copy2(source, backup / name)
+
+    applied = []
+    install_order = [name for name in EXPECTED_FILES if name != "usb_file_locker.py"]
+    install_order.append("usb_file_locker.py")
+    try:
+        for name in install_order:
+            destination = target / name
+            temporary = destination.with_name(f".{destination.name}.{os.getpid()}.compact.tmp")
+            try:
+                shutil.copy2(staging / name, temporary)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+            applied.append(name)
+    except Exception:
+        for name in reversed(applied):
+            destination = target / name
+            saved = backup / name
+            try:
+                if existed[name] and saved.is_file():
+                    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.rollback.tmp")
+                    shutil.copy2(saved, temporary)
+                    os.replace(temporary, destination)
+                elif not existed[name]:
+                    destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    return backup, len(applied)
+
+
+def launch_desktop(target, completed=False):
+    if os.environ.get("VAULTLINK_COMPACT_BOOTSTRAP_NO_RELAUNCH") == "1":
+        return
+    environment = dict(os.environ)
+    if completed:
+        environment["VAULTLINK_UPDATE_COMPLETED"] = DESKTOP_APP_VERSION
+    subprocess.Popen(
+        [sys.executable, str(target / "usb_file_locker.py")],
+        cwd=str(target),
+        env=environment,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def main():
+    script_path = Path(__file__)
+    if script_path.is_symlink():
+        show_error("The update bootstrap cannot run from a linked file.")
+        return 1
+    target = script_path.resolve().parent
+    app_data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
+    payload_path = target / PAYLOAD_FILENAME
+    staging = Path(tempfile.mkdtemp(prefix="vaultlink-compact-update-"))
+    try:
+        extract_payload(payload_path, staging)
+        backup, file_count = apply_payload(staging, target, app_data)
+    except Exception as exc:
+        payload_path.unlink(missing_ok=True)
+        restored_backup = restore_prior_desktop(app_data, target)
+        try:
+            write_status(app_data, False, str(exc), restored_backup or "")
+        except Exception:
+            pass
+        show_error(str(exc))
+        if restored_backup:
+            try:
+                launch_desktop(target, completed=False)
+            except Exception:
+                pass
+        return 1
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    payload_path.unlink(missing_ok=True)
+    try:
+        write_status(
+            app_data,
+            True,
+            f"Updated {file_count} app file(s) from the verified compact package.",
+            backup,
+        )
+    except Exception as exc:
+        show_error(f"The update installed, but its status receipt could not be saved.\n\n{exc}")
+    try:
+        launch_desktop(target, completed=True)
+    except Exception as exc:
+        show_error(f"The update installed, but VaultLink could not restart automatically.\n\n{exc}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -92,6 +348,30 @@ def package_sha256(path):
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def compact_bootstrap_source(version, payload_sha256, expected_files):
+    return (
+        COMPACT_BOOTSTRAP_TEMPLATE.replace("__VERSION__", json.dumps(str(version)))
+        .replace("__PAYLOAD_SHA256__", json.dumps(str(payload_sha256)))
+        .replace("__EXPECTED_FILES__", json.dumps(list(expected_files), ensure_ascii=True))
+    )
+
+
+def build_compact_payload(source_dir, destination):
+    with lzma.open(destination, "wb", format=lzma.FORMAT_XZ, preset=9 | lzma.PRESET_EXTREME) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+            for name in PACKAGE_FILES:
+                data = (source_dir / name).read_bytes()
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o644
+                info.mtime = 0
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                archive.addfile(info, io.BytesIO(data))
 
 
 def authorize_owner_release(owner_key_path):
@@ -139,16 +419,41 @@ def build_package(source_dir, destination):
     missing = [name for name in PACKAGE_FILES if not (source_dir / name).is_file()]
     if missing:
         raise ValueError("Update package files are missing: " + ", ".join(missing))
+    if (
+        len(set(PACKAGE_FILES)) != len(PACKAGE_FILES)
+        or "usb_file_locker.py" not in PACKAGE_FILES
+        or any(Path(name).name != name or "\\" in name or "\0" in name for name in PACKAGE_FILES)
+    ):
+        raise ValueError("Update package file allowlist is invalid.")
     handle, temp_name = tempfile.mkstemp(prefix="vaultlink-update-", suffix=".zip", dir=destination.parent)
     os.close(handle)
     temp_path = Path(temp_name)
+    payload_handle, payload_name = tempfile.mkstemp(
+        prefix="vaultlink-payload-",
+        suffix=".tar.xz",
+        dir=destination.parent,
+    )
+    os.close(payload_handle)
+    payload_path = Path(payload_name)
     try:
+        build_compact_payload(source_dir, payload_path)
+        payload_hash = package_sha256(payload_path)
+        bootstrap = compact_bootstrap_source(
+            locker.DESKTOP_APP_VERSION,
+            payload_hash,
+            PACKAGE_FILES,
+        )
         with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for name in PACKAGE_FILES:
-                archive.write(source_dir / name, arcname=name)
+            archive.writestr("usb_file_locker.py", bootstrap)
+            archive.write(
+                payload_path,
+                arcname=COMPACT_PAYLOAD_FILENAME,
+                compress_type=zipfile.ZIP_STORED,
+            )
         os.replace(temp_path, destination)
     finally:
         temp_path.unlink(missing_ok=True)
+        payload_path.unlink(missing_ok=True)
 
 
 def build_signed_release(source_dir, updates_dir, minimum_supported, notes, owner_key_path):

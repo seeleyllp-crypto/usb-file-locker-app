@@ -18,6 +18,15 @@ First run:
 - The first dependency setup needs an internet connection. Later starts reuse it.
 
 Updates:
+- Version 2026.07.18.40 uses a compact signed full-release package for more
+  reliable updates on slower hosted connections.
+- The package still contains the exact 56-file customer allowlist. Current
+  updaters install those normal files directly; older supported updaters use a
+  transparent one-time bootstrap with a pinned payload SHA-256.
+- Unexpected names, links, unsafe paths, duplicates, oversized content,
+  incomplete payloads, and payload tampering are rejected.
+- Replaced app files are backed up, a failed legacy install restores the prior
+  desktop entrypoint, and temporary payload files are removed.
 - Version 2026.07.18.39 makes every local customer tool free to use.
 - No license or account sign-in is required for local locking, unlocking,
   recovery, privacy, audit viewing, diagnostics, or safety tools.

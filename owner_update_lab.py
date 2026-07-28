@@ -6,7 +6,6 @@ import queue
 import re
 import secrets
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -14,7 +13,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 
 import tkinter as tk
@@ -58,6 +56,7 @@ DEFAULT_NOTES = [
     "Optional signed account sessions stay only in app memory and clear at sign-out or exit.",
     "Existing online plans remain compatible with account services and cloud audit authorization.",
     "Local customer tools remain available without a license or account sign-in.",
+    "The compact signed full-release package keeps every customer file and verifies its pinned payload hash.",
     "USB-key, optional PIN, and owner-USB controls are unchanged.",
     "The private Update Lab still requires the registered removable owner USB.",
     "Tests, Defender scanning, signed-package identity, and explicit owner publishing remain required.",
@@ -196,8 +195,7 @@ def normalized_notes(value):
 
 def package_sensitive_entries(package_path):
     blocked_exact = {"settings.json", "audit_log.jsonl", "locker_log.jsonl", "license_state.json"}
-    with zipfile.ZipFile(package_path) as archive:
-        names = archive.namelist()
+    names = vaultlink_updater.package_file_contents(package_path)
     return [
         name
         for name in names
@@ -269,8 +267,7 @@ def candidate_package_info(report=None):
     manifest_path = CANDIDATE_DIR / manifest_name
     package_path = CANDIDATE_DIR / package_name
     manifest = verify_candidate_files(manifest_path, package_path)
-    with zipfile.ZipFile(package_path) as archive:
-        entries = sorted(archive.namelist(), key=str.lower)
+    entries = sorted(vaultlink_updater.package_file_contents(package_path), key=str.lower)
     return {
         "version": manifest.get("version", ""),
         "package_filename": package_name,
@@ -1001,41 +998,8 @@ def package_file_digests(package_path):
     package_path = Path(package_path)
     if not package_path.is_file() or not 0 < package_path.stat().st_size <= MAX_LIVE_PACKAGE_BYTES:
         raise ValueError("Release delta package size is invalid.")
-    try:
-        with zipfile.ZipFile(package_path, "r") as archive:
-            infos = archive.infolist()
-            file_infos = [info for info in infos if not info.is_dir()]
-            total_size = sum(info.file_size for info in file_infos)
-            if (
-                len(infos) > vaultlink_updater.MAX_UPDATE_ARCHIVE_FILES
-                or total_size > vaultlink_updater.MAX_UPDATE_EXTRACTED_BYTES
-            ):
-                raise ValueError("Release delta package expands beyond the allowed safety limit.")
-            digests = {}
-            casefolded_names = set()
-            for info in infos:
-                relative = vaultlink_updater.safe_member_path(info.filename)
-                mode = (info.external_attr >> 16) & 0o170000
-                if mode == stat.S_IFLNK:
-                    raise ValueError("Release delta packages containing links are not supported.")
-                if info.is_dir():
-                    continue
-                name = relative.as_posix()
-                folded = name.casefold()
-                if name in digests or folded in casefolded_names:
-                    raise ValueError("Release delta package contains duplicate file names.")
-                casefolded_names.add(folded)
-                digest = hashlib.sha256()
-                with archive.open(info, "r") as source:
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        digest.update(chunk)
-                digests[name] = digest.hexdigest()
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise ValueError("Release delta package could not be inspected.") from exc
-    return digests
+    files = vaultlink_updater.package_file_contents(package_path)
+    return {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
 
 
 def release_delta_area(name):

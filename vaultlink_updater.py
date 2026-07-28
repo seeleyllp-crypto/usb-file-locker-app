@@ -3,6 +3,7 @@ import ast
 import base64
 import ctypes
 import hashlib
+import io
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -25,6 +27,8 @@ MAX_UPDATE_PACKAGE_BYTES = 50 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_FILES = 5000
 MAX_UPDATE_EXTRACTED_BYTES = 100 * 1024 * 1024
 MAX_EMBEDDED_APP_SOURCE_BYTES = 4 * 1024 * 1024
+MAX_COMPACT_PAYLOAD_BYTES = 10 * 1024 * 1024
+COMPACT_PAYLOAD_FILENAME = "vaultlink_payload.tar.xz"
 UPDATE_VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){1,7}\Z")
 FORBIDDEN_FILE_NAMES = {
     "settings.json",
@@ -71,18 +75,12 @@ def update_version_is_newer(left, right):
 
 def package_desktop_version(package_path):
     try:
-        with zipfile.ZipFile(package_path, "r") as archive:
-            matches = [
-                info
-                for info in archive.infolist()
-                if not info.is_dir() and info.filename == "usb_file_locker.py"
-            ]
-            if len(matches) != 1:
-                raise ValueError("Update package must contain exactly one desktop entrypoint.")
-            if not 0 < matches[0].file_size <= MAX_EMBEDDED_APP_SOURCE_BYTES:
-                raise ValueError("Update package desktop entrypoint size is invalid.")
-            source = archive.read(matches[0]).decode("utf-8")
-    except (OSError, UnicodeError, zipfile.BadZipFile) as exc:
+        files = package_file_contents(package_path)
+        source_bytes = files.get("usb_file_locker.py", b"")
+        if not 0 < len(source_bytes) <= MAX_EMBEDDED_APP_SOURCE_BYTES:
+            raise ValueError("Update package desktop entrypoint size is invalid.")
+        source = source_bytes.decode("utf-8")
+    except (OSError, UnicodeError, zipfile.BadZipFile, tarfile.TarError) as exc:
         raise ValueError("Update package desktop entrypoint could not be inspected.") from exc
     try:
         module = ast.parse(source, filename="usb_file_locker.py")
@@ -192,6 +190,68 @@ def safe_member_path(name):
     return relative
 
 
+def package_file_contents(package_path):
+    package_path = Path(package_path)
+    try:
+        with zipfile.ZipFile(package_path, "r") as archive:
+            infos = archive.infolist()
+            file_infos = [info for info in infos if not info.is_dir()]
+            total_size = sum(info.file_size for info in file_infos)
+            if len(infos) > MAX_UPDATE_ARCHIVE_FILES or total_size > MAX_UPDATE_EXTRACTED_BYTES:
+                raise ValueError("Update package expands beyond the allowed safety limit.")
+            physical = {}
+            physical_casefolded = set()
+            for info in infos:
+                relative = safe_member_path(info.filename)
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == stat.S_IFLNK:
+                    raise ValueError("Update packages containing links are not supported.")
+                if info.is_dir():
+                    continue
+                name = relative.as_posix()
+                folded = name.casefold()
+                if name in physical or folded in physical_casefolded:
+                    raise ValueError("Update package contains duplicate file names.")
+                physical_casefolded.add(folded)
+                physical[name] = info
+
+            if COMPACT_PAYLOAD_FILENAME not in physical:
+                return {name: archive.read(info) for name, info in physical.items()}
+            if set(physical) != {"usb_file_locker.py", COMPACT_PAYLOAD_FILENAME}:
+                raise ValueError("Compact update package entries are invalid.")
+            payload_info = physical[COMPACT_PAYLOAD_FILENAME]
+            if not 0 < payload_info.file_size <= MAX_COMPACT_PAYLOAD_BYTES:
+                raise ValueError("Compact update payload size is invalid.")
+            payload = archive.read(payload_info)
+
+        files = {}
+        casefolded_names = set()
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:xz") as payload_archive:
+            members = payload_archive.getmembers()
+            total_size = sum(member.size for member in members if member.isfile())
+            if len(members) > MAX_UPDATE_ARCHIVE_FILES or total_size > MAX_UPDATE_EXTRACTED_BYTES:
+                raise ValueError("Compact update payload expands beyond the allowed safety limit.")
+            for member in members:
+                relative = safe_member_path(member.name)
+                if not member.isfile():
+                    raise ValueError("Compact update payload entries must be regular files.")
+                name = relative.as_posix()
+                folded = name.casefold()
+                if name in files or folded in casefolded_names:
+                    raise ValueError("Compact update payload contains duplicate file names.")
+                casefolded_names.add(folded)
+                source = payload_archive.extractfile(member)
+                if source is None:
+                    raise ValueError("Compact update payload file could not be read.")
+                data = source.read(member.size + 1)
+                if len(data) != member.size:
+                    raise ValueError("Compact update payload file size is invalid.")
+                files[name] = data
+        return files
+    except (OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        raise ValueError("Update package could not be inspected.") from exc
+
+
 def extract_verified_package(package_path, destination):
     if destination.exists():
         if not destination.is_dir() or destination.is_symlink():
@@ -201,29 +261,18 @@ def extract_verified_package(package_path, destination):
     else:
         destination.mkdir(parents=True, exist_ok=False)
     destination_root = destination.resolve()
-    with zipfile.ZipFile(package_path, "r") as archive:
-        infos = archive.infolist()
-        file_count = sum(1 for info in infos if not info.is_dir())
-        total_size = sum(info.file_size for info in infos if not info.is_dir())
-        if len(infos) > MAX_UPDATE_ARCHIVE_FILES or total_size > MAX_UPDATE_EXTRACTED_BYTES:
-            raise ValueError("Update package expands beyond the allowed safety limit.")
-        for info in infos:
-            relative = safe_member_path(info.filename)
-            mode = (info.external_attr >> 16) & 0o170000
-            if mode == stat.S_IFLNK:
-                raise ValueError("Update packages containing links are not supported.")
-            target = (destination / relative).resolve()
-            try:
-                target.relative_to(destination_root)
-            except ValueError as exc:
-                raise ValueError("Update package tried to write outside the staging folder.") from exc
-            if info.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info, "r") as source, target.open("xb") as output:
-                shutil.copyfileobj(source, output, 1024 * 1024)
-    return file_count
+    files = package_file_contents(package_path)
+    for name, data in files.items():
+        relative = safe_member_path(name)
+        target = (destination / relative).resolve()
+        try:
+            target.relative_to(destination_root)
+        except ValueError as exc:
+            raise ValueError("Update package tried to write outside the staging folder.") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as output:
+            output.write(data)
+    return len(files)
 
 
 def wait_for_parent_exit(parent_pid, timeout_seconds=45):
