@@ -41,7 +41,7 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "USBFileLocker"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 BOOTSTRAP_MAX_AUDIT_BACKUPS = 5
 MAX_RECENT_KEYS = 8
-DESKTOP_APP_VERSION = "2026.07.18.37"
+DESKTOP_APP_VERSION = "2026.07.18.38"
 LAB_MODE = os.environ.get("VAULTLINK_LAB_MODE", "").strip() == "1"
 DEFAULT_LICENSE_SERVER = "https://enthusiastic-exploration-production-b87d.up.railway.app"
 UPDATE_SIGNING_PUBLIC_KEY_B64 = "UhQt7KyhSd6na6ZL5zmvOTKMgQqdY3FUEdoKRX-iGKU"
@@ -85,12 +85,44 @@ MAX_TOOL_FINDER_RECENT = 8
 MAX_SAFE_LOCK_PREVIEW_ITEMS = 1000
 MAX_SAFE_QUEUE_UNDO = 10
 MAX_SESSION_LOCK_RECEIPTS = 10
+MAX_LOCK_CAPACITY_ROOTS = MAX_SAFE_LOCK_PREVIEW_ITEMS
+MAX_LOCK_CAPACITY_ENTRIES = 50_000
+LOCK_CAPACITY_BASE_RESERVE_BYTES = 64 * 1024 * 1024
+RECOVERY_TEST_MAX_AGE_SECONDS = 30 * 60
+DEFAULT_LOCK_WORKFLOW_PROFILE = "standard"
+LOCK_WORKFLOW_PROFILES = {
+    "standard": {
+        "label": "STANDARD",
+        "description": "Keeps the current workflow and confirmation prompts.",
+        "requires_preview_guard": False,
+        "requires_recovery_test": False,
+        "requires_pin": False,
+        "requires_capacity_check": False,
+    },
+    "guarded": {
+        "label": "GUARDED",
+        "description": "Requires an exact one-time Safe Lock Preview approval.",
+        "requires_preview_guard": True,
+        "requires_recovery_test": False,
+        "requires_pin": False,
+        "requires_capacity_check": False,
+    },
+    "maximum": {
+        "label": "MAXIMUM",
+        "description": "Requires preview approval, capacity headroom, a PIN, and a recent recovery test.",
+        "requires_preview_guard": True,
+        "requires_recovery_test": True,
+        "requires_pin": True,
+        "requires_capacity_check": True,
+    },
+}
 TOOL_FINDER_ACTIONS = (
     ("Access", "Load USB Key", "load_key"),
     ("Access", "Panic Lock Now", "panic_lock_now"),
     ("Access", "License Center", "open_license_center"),
     ("Access", "Local Readiness Check", "show_local_readiness"),
     ("Guidance", "Tip Center", "open_tip_center"),
+    ("Locking", "Lock Protection Center", "open_lock_protection_center"),
     ("Locking", "Safe Lock Preview", "open_safe_lock_preview"),
     ("Locking", "Receipt History", "open_last_lock_receipt"),
     ("Locking", "Receipt Comparison", "open_lock_receipt_comparison"),
@@ -286,6 +318,20 @@ def normalize_security_profile_name(name):
     }
     lowered = aliases.get(lowered, lowered)
     return lowered if lowered in {"balanced", "strong", "maximum"} else "strong"
+
+
+def normalize_lock_workflow_profile(name):
+    profile_id = str(name or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": DEFAULT_LOCK_WORKFLOW_PROFILE,
+        "default": "standard",
+        "safe": "guarded",
+        "max": "maximum",
+    }
+    profile_id = aliases.get(profile_id, profile_id)
+    if profile_id not in LOCK_WORKFLOW_PROFILES:
+        return DEFAULT_LOCK_WORKFLOW_PROFILE
+    return profile_id
 
 
 def bootstrap_candidate_dirs():
@@ -1443,6 +1489,13 @@ def save_settings(settings):
     else:
         normalized.pop("recent_key_paths", None)
     normalized["security_profile"] = normalize_security_profile_name(normalized.get("security_profile", DEFAULT_SECURITY_PROFILE))
+    lock_profile = normalize_lock_workflow_profile(
+        normalized.get("lock_workflow_profile", DEFAULT_LOCK_WORKFLOW_PROFILE)
+    )
+    if lock_profile == DEFAULT_LOCK_WORKFLOW_PROFILE:
+        normalized.pop("lock_workflow_profile", None)
+    else:
+        normalized["lock_workflow_profile"] = lock_profile
     favorites = normalize_tool_finder_method_ids(
         normalized.get("tool_finder_favorites", []),
         MAX_TOOL_FINDER_FAVORITES,
@@ -2485,6 +2538,466 @@ def safe_lock_preview_guard_report(
         "current_target_items": len(target_snapshot),
         "comparison_limited": limited,
     }
+
+
+def format_capacity_bytes(value):
+    if type(value) is not int or value < 0:
+        raise ValueError("Capacity value is invalid.")
+    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{int(amount)} {unit}"
+    return f"{amount:.1f} {unit}"
+
+
+def build_lock_capacity_report(
+    entries,
+    *,
+    max_roots=MAX_LOCK_CAPACITY_ROOTS,
+    max_entries=MAX_LOCK_CAPACITY_ENTRIES,
+    cancel_event=None,
+    progress=None,
+):
+    if type(max_roots) is not int or not 1 <= max_roots <= MAX_LOCK_CAPACITY_ROOTS:
+        raise ValueError("Capacity root limit is invalid.")
+    if type(max_entries) is not int or not 1 <= max_entries <= MAX_LOCK_CAPACITY_ENTRIES:
+        raise ValueError("Capacity entry limit is invalid.")
+    try:
+        iterator = iter(entries)
+    except TypeError as exc:
+        raise ValueError("Capacity check needs a bounded queue.") from exc
+    supplied = list(islice(iterator, max_roots + 1))
+    roots_truncated = len(supplied) > max_roots
+    roots = supplied[:max_roots]
+    seen = set()
+    capacity_groups = {}
+    counters = {
+        "requested_roots": len(roots),
+        "unique_roots": 0,
+        "duplicate_roots": 0,
+        "file_roots": 0,
+        "folder_roots": 0,
+        "files_scanned": 0,
+        "folders_scanned": 0,
+        "nested_entries": 0,
+        "missing_roots": 0,
+        "links_or_junctions": 0,
+        "unsupported_roots": 0,
+        "inaccessible_items": 0,
+        "total_source_bytes": 0,
+    }
+    entries_truncated = False
+    canceled = False
+
+    def cancellation_requested():
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    def capacity_group_for(path):
+        try:
+            absolute = os.path.abspath(os.fspath(path))
+            drive_key = os.path.normcase(os.path.splitdrive(absolute)[0] or Path(absolute).anchor)
+            usage_target = path if path.is_dir() else path.parent
+            usage = shutil.disk_usage(usage_target)
+        except (OSError, TypeError, ValueError):
+            return None
+        group = capacity_groups.setdefault(
+            drive_key or "default",
+            {"required_bytes": 0, "free_bytes": int(usage.free)},
+        )
+        group["free_bytes"] = min(group["free_bytes"], int(usage.free))
+        return group
+
+    for root_index, raw_entry in enumerate(roots, 1):
+        if cancellation_requested():
+            canceled = True
+            break
+        try:
+            raw_path = os.fspath(raw_entry)
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("Empty path")
+            path = Path(raw_path)
+            canonical = os.path.normcase(os.path.abspath(raw_path))
+        except (OSError, TypeError, ValueError):
+            counters["unsupported_roots"] += 1
+            continue
+        if canonical in seen:
+            counters["duplicate_roots"] += 1
+            continue
+        seen.add(canonical)
+        counters["unique_roots"] += 1
+        root_bytes = 0
+        try:
+            if path_is_link_or_junction(path):
+                counters["links_or_junctions"] += 1
+                continue
+            if not path.exists():
+                counters["missing_roots"] += 1
+                continue
+            if path.is_file():
+                root_bytes = max(0, int(path.stat().st_size))
+                counters["file_roots"] += 1
+                counters["files_scanned"] += 1
+            elif path.is_dir():
+                counters["folder_roots"] += 1
+                counters["folders_scanned"] += 1
+                stack = [path]
+                while stack and not entries_truncated and not canceled:
+                    folder = stack.pop()
+                    try:
+                        with os.scandir(folder) as directory:
+                            for entry in directory:
+                                if cancellation_requested():
+                                    canceled = True
+                                    break
+                                if counters["nested_entries"] >= max_entries:
+                                    entries_truncated = True
+                                    break
+                                counters["nested_entries"] += 1
+                                nested = Path(entry.path)
+                                try:
+                                    if entry.is_symlink() or path_is_link_or_junction(nested):
+                                        counters["links_or_junctions"] += 1
+                                    elif entry.is_file(follow_symlinks=False):
+                                        size = max(
+                                            0,
+                                            int(entry.stat(follow_symlinks=False).st_size),
+                                        )
+                                        root_bytes += size
+                                        counters["files_scanned"] += 1
+                                    elif entry.is_dir(follow_symlinks=False):
+                                        counters["folders_scanned"] += 1
+                                        stack.append(nested)
+                                    else:
+                                        counters["inaccessible_items"] += 1
+                                except OSError:
+                                    counters["inaccessible_items"] += 1
+                    except OSError:
+                        counters["inaccessible_items"] += 1
+            else:
+                counters["unsupported_roots"] += 1
+                continue
+        except OSError:
+            counters["inaccessible_items"] += 1
+            continue
+        counters["total_source_bytes"] += root_bytes
+        group = capacity_group_for(path)
+        if group is None:
+            counters["inaccessible_items"] += 1
+        else:
+            group["required_bytes"] += max(
+                1024 * 1024,
+                root_bytes * 2 + 1024 * 1024,
+            )
+        if progress is not None:
+            progress(root_index, len(roots))
+
+    required_bytes = 0
+    available_bytes = 0
+    minimum_headroom_bytes = None
+    low_space_drives = 0
+    for group in capacity_groups.values():
+        group_required = group["required_bytes"] + LOCK_CAPACITY_BASE_RESERVE_BYTES
+        group_free = group["free_bytes"]
+        required_bytes += group_required
+        available_bytes += group_free
+        headroom = group_free - group_required
+        minimum_headroom_bytes = (
+            headroom
+            if minimum_headroom_bytes is None
+            else min(minimum_headroom_bytes, headroom)
+        )
+        if headroom < 0:
+            low_space_drives += 1
+
+    review_count = sum(
+        counters[name]
+        for name in (
+            "duplicate_roots",
+            "missing_roots",
+            "links_or_junctions",
+            "unsupported_roots",
+            "inaccessible_items",
+        )
+    )
+    if canceled:
+        status = "CANCELED"
+    elif not roots:
+        status = "EMPTY"
+    elif roots_truncated or entries_truncated:
+        status = "LIMIT"
+    elif low_space_drives:
+        status = "LOW SPACE"
+    elif review_count:
+        status = "REVIEW"
+    elif counters["unique_roots"]:
+        status = "READY"
+    else:
+        status = "EMPTY"
+    return {
+        "schema_version": 1,
+        "status": status,
+        **counters,
+        "roots_truncated": roots_truncated,
+        "entries_truncated": entries_truncated,
+        "canceled": canceled,
+        "drive_count": len(capacity_groups),
+        "low_space_drives": low_space_drives,
+        "recommended_free_bytes": required_bytes,
+        "available_free_bytes": available_bytes,
+        "minimum_headroom_bytes": minimum_headroom_bytes or 0,
+        "review_items": review_count,
+        "can_continue": status == "READY",
+    }
+
+
+def lock_capacity_summary(report):
+    current = dict(report or {})
+    status = current.get("status")
+    if status not in {"EMPTY", "READY", "REVIEW", "LOW SPACE", "LIMIT", "CANCELED"}:
+        raise ValueError("Capacity report status is invalid.")
+    integer_fields = (
+        "requested_roots",
+        "unique_roots",
+        "duplicate_roots",
+        "file_roots",
+        "folder_roots",
+        "files_scanned",
+        "folders_scanned",
+        "nested_entries",
+        "missing_roots",
+        "links_or_junctions",
+        "unsupported_roots",
+        "inaccessible_items",
+        "total_source_bytes",
+        "drive_count",
+        "low_space_drives",
+        "recommended_free_bytes",
+        "available_free_bytes",
+        "review_items",
+    )
+    for name in integer_fields:
+        if type(current.get(name)) is not int or current[name] < 0:
+            raise ValueError("Capacity report counts are invalid.")
+    if type(current.get("minimum_headroom_bytes")) is not int:
+        raise ValueError("Capacity headroom is invalid.")
+    for name in ("roots_truncated", "entries_truncated", "canceled", "can_continue"):
+        if type(current.get(name)) is not bool:
+            raise ValueError("Capacity report flags are invalid.")
+    headroom = current["minimum_headroom_bytes"]
+    headroom_text = (
+        f"-{format_capacity_bytes(abs(headroom))}"
+        if headroom < 0
+        else format_capacity_bytes(headroom)
+    )
+    lines = [
+        "VaultLink Lock Capacity Check",
+        f"Status: {status}",
+        f"Queue roots checked: {current['requested_roots']}",
+        f"Unique roots: {current['unique_roots']}",
+        f"File roots: {current['file_roots']}",
+        f"Folder roots: {current['folder_roots']}",
+        f"Files scanned: {current['files_scanned']}",
+        f"Folders scanned: {current['folders_scanned']}",
+        f"Nested entries checked: {current['nested_entries']}",
+        f"Source size: {format_capacity_bytes(current['total_source_bytes'])}",
+        f"Storage locations checked: {current['drive_count']}",
+        f"Recommended free space: {format_capacity_bytes(current['recommended_free_bytes'])}",
+        f"Available free space: {format_capacity_bytes(current['available_free_bytes'])}",
+        f"Lowest headroom: {headroom_text}",
+        f"Low-space locations: {current['low_space_drives']}",
+        f"Items needing review: {current['review_items']}",
+        f"Root limit reached: {'YES' if current['roots_truncated'] else 'NO'}",
+        f"Nested-entry limit reached: {'YES' if current['entries_truncated'] else 'NO'}",
+        "",
+        (
+            "The estimate reads file and folder metadata only. It does not read "
+            "file contents or change, lock, delete, copy, rename, or upload files."
+        ),
+        (
+            "Privacy: this summary excludes filenames, paths, drive names, USB "
+            "key IDs, PINs, secrets, and file contents."
+        ),
+        "Capacity headroom is an estimate, not a guarantee.",
+    ]
+    return "\n".join(lines)
+
+
+def build_recovery_test_proof(session_secret, key_id, pin, now=None):
+    if not isinstance(session_secret, bytes) or len(session_secret) < 16:
+        raise ValueError("Recovery-test session secret is invalid.")
+    key_text = str(key_id or "").strip()
+    if not key_text or not isinstance(pin, str):
+        raise ValueError("Recovery-test inputs are invalid.")
+    tested_at = float(time.monotonic() if now is None else now)
+    digest = hmac.new(
+        session_secret,
+        key_text.encode("utf-8") + b"\0" + pin.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "schema_version": 1,
+        "key_id": key_text,
+        "pin_digest": digest,
+        "tested_at": tested_at,
+    }
+
+
+def recovery_test_proof_matches(
+    proof,
+    session_secret,
+    key_id,
+    pin,
+    *,
+    now=None,
+    max_age_seconds=RECOVERY_TEST_MAX_AGE_SECONDS,
+):
+    if not isinstance(proof, dict):
+        return False
+    if type(max_age_seconds) not in {int, float} or not 1 <= max_age_seconds <= 86_400:
+        raise ValueError("Recovery-test age limit is invalid.")
+    try:
+        expected = build_recovery_test_proof(
+            session_secret,
+            key_id,
+            pin,
+            now=proof.get("tested_at"),
+        )
+        tested_at = float(proof.get("tested_at"))
+        current_time = float(time.monotonic() if now is None else now)
+    except (TypeError, ValueError):
+        return False
+    age = current_time - tested_at
+    return (
+        proof.get("schema_version") == 1
+        and 0 <= age <= max_age_seconds
+        and hmac.compare_digest(str(proof.get("key_id", "")), expected["key_id"])
+        and hmac.compare_digest(
+            str(proof.get("pin_digest", "")),
+            expected["pin_digest"],
+        )
+    )
+
+
+def lock_workflow_profile_report(
+    profile_id,
+    *,
+    mode,
+    access_ready,
+    target_items,
+    preview_guard_armed,
+    recovery_test_ready,
+    pin_present,
+    capacity_status,
+):
+    profile_id = normalize_lock_workflow_profile(profile_id)
+    if mode not in {"lock_copy", "lock_remove"}:
+        raise ValueError("Lock workflow mode is invalid.")
+    if type(target_items) is not int or not 0 <= target_items <= 1_000_000:
+        raise ValueError("Lock workflow target count is invalid.")
+    if any(
+        type(value) is not bool
+        for value in (
+            access_ready,
+            preview_guard_armed,
+            recovery_test_ready,
+            pin_present,
+        )
+    ):
+        raise ValueError("Lock workflow readiness flags are invalid.")
+    if capacity_status not in {
+        "NOT CHECKED",
+        "STALE",
+        "EMPTY",
+        "READY",
+        "REVIEW",
+        "LOW SPACE",
+        "LIMIT",
+        "CANCELED",
+    }:
+        raise ValueError("Lock workflow capacity state is invalid.")
+    profile = LOCK_WORKFLOW_PROFILES[profile_id]
+    reasons = []
+    if not access_ready:
+        reasons.append("USB KEY REQUIRED")
+    if target_items == 0:
+        reasons.append("LOCK TARGETS REQUIRED")
+    if (
+        target_items > MAX_SAFE_LOCK_PREVIEW_ITEMS
+        and profile["requires_preview_guard"]
+    ):
+        reasons.append("QUEUE LIMIT EXCEEDED")
+    if profile["requires_preview_guard"] and not preview_guard_armed:
+        reasons.append("PREVIEW GUARD REQUIRED")
+    if profile["requires_recovery_test"] and not recovery_test_ready:
+        reasons.append("RECOVERY TEST REQUIRED")
+    if profile["requires_pin"] and not pin_present:
+        reasons.append("PIN REQUIRED")
+    if profile["requires_capacity_check"] and capacity_status != "READY":
+        reasons.append("CURRENT CAPACITY CHECK REQUIRED")
+    return {
+        "schema_version": 1,
+        "status": "READY" if not reasons else "BLOCKED",
+        "profile_id": profile_id,
+        "profile_label": profile["label"],
+        "mode": mode,
+        "target_items": target_items,
+        "access_ready": access_ready,
+        "preview_guard_armed": preview_guard_armed,
+        "recovery_test_ready": recovery_test_ready,
+        "pin_present": pin_present,
+        "capacity_status": capacity_status,
+        "requirements": {
+            "preview_guard": profile["requires_preview_guard"],
+            "recovery_test": profile["requires_recovery_test"],
+            "pin": profile["requires_pin"],
+            "capacity_check": profile["requires_capacity_check"],
+        },
+        "reasons": tuple(reasons),
+        "can_start": not reasons,
+    }
+
+
+def lock_workflow_profile_summary(report):
+    current = dict(report or {})
+    profile_id = normalize_lock_workflow_profile(current.get("profile_id"))
+    mode = current.get("mode")
+    rebuilt = lock_workflow_profile_report(
+        profile_id,
+        mode=mode,
+        access_ready=current.get("access_ready"),
+        target_items=current.get("target_items"),
+        preview_guard_armed=current.get("preview_guard_armed"),
+        recovery_test_ready=current.get("recovery_test_ready"),
+        pin_present=current.get("pin_present"),
+        capacity_status=current.get("capacity_status"),
+    )
+    reasons = ", ".join(rebuilt["reasons"]) or "NONE"
+    return "\n".join(
+        (
+            "VaultLink Lock Protection Readiness",
+            f"Profile: {rebuilt['profile_label']}",
+            f"Mode: {'LOCK COPY' if mode == 'lock_copy' else 'LOCK + REMOVE ORIGINAL'}",
+            f"Status: {rebuilt['status']}",
+            f"Targets: {rebuilt['target_items']}",
+            f"USB access ready: {'YES' if rebuilt['access_ready'] else 'NO'}",
+            f"Preview Guard armed: {'YES' if rebuilt['preview_guard_armed'] else 'NO'}",
+            f"Recovery test ready: {'YES' if rebuilt['recovery_test_ready'] else 'NO'}",
+            f"PIN present: {'YES' if rebuilt['pin_present'] else 'NO'}",
+            f"Capacity check: {rebuilt['capacity_status']}",
+            f"Blocking checks: {reasons}",
+            "",
+            (
+                "Privacy: this readiness summary excludes filenames, paths, "
+                "drive names, USB key IDs, PIN values, secrets, and file contents."
+            ),
+            "Readiness checks are not a malware scan or a security guarantee.",
+        )
+    )
 
 
 def safe_lock_preview_summary(report):
@@ -6398,6 +6911,7 @@ class USBFileLocker(tk.Tk):
         self.tip_center_toggle_button = None
         self.tool_finder_recent_methods = []
         self.safe_lock_preview_window = None
+        self.lock_protection_window = None
         self.last_lock_receipt_window = None
         self.lock_receipt_comparison_window = None
         self.last_lock_receipt = None
@@ -6406,6 +6920,16 @@ class USBFileLocker(tk.Tk):
         self.safe_lock_queue_history = []
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
+        self.lock_workflow_profile = normalize_lock_workflow_profile(
+            self.settings.get(
+                "lock_workflow_profile",
+                DEFAULT_LOCK_WORKFLOW_PROFILE,
+            )
+        )
+        self.recovery_test_session_secret = secrets.token_bytes(32)
+        self.recovery_test_proof = None
+        self.lock_capacity_report = None
+        self.lock_capacity_snapshot = None
         self.build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_requested)
         self.rotate_customer_message()
@@ -6573,6 +7097,7 @@ class USBFileLocker(tk.Tk):
             )
         self.bind("<Control-k>", self.open_tool_finder)
         self.bind("<Control-Shift-P>", self.open_safe_lock_preview)
+        self.bind("<Control-Shift-S>", self.open_lock_protection_center)
 
         tk.Label(
             overview_panel,
@@ -6746,6 +7271,10 @@ class USBFileLocker(tk.Tk):
         overview_more_menu.add_command(
             label="Open Tip Center",
             command=self.open_tip_center,
+        )
+        overview_more_menu.add_command(
+            label="Open Lock Protection Center",
+            command=self.open_lock_protection_center,
         )
         overview_more_menu.add_command(
             label="Preview lock queue",
@@ -7979,6 +8508,504 @@ class USBFileLocker(tk.Tk):
         window.bind("<Destroy>", cleanup, add="+")
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         self.refresh_tip_center()
+        window.lift()
+        return "break"
+
+    def current_lock_capacity_status(self, paths=None):
+        if self.lock_capacity_report is None or self.lock_capacity_snapshot is None:
+            return "NOT CHECKED"
+        try:
+            current_queue = tuple(self.file_list.get(0, tk.END))
+            current_targets = tuple(
+                paths if paths is not None else self.selected_or_all_files()
+            )
+        except (AttributeError, tk.TclError):
+            return "STALE"
+        if self.lock_capacity_snapshot != (current_queue, current_targets):
+            return "STALE"
+        status = str(self.lock_capacity_report.get("status", "")).upper()
+        if status not in {
+            "EMPTY",
+            "READY",
+            "REVIEW",
+            "LOW SPACE",
+            "LIMIT",
+            "CANCELED",
+        }:
+            return "STALE"
+        return status
+
+    def recovery_test_is_ready(self):
+        if not self.key:
+            return False
+        try:
+            return recovery_test_proof_matches(
+                self.recovery_test_proof,
+                self.recovery_test_session_secret,
+                self.key.get("key_id"),
+                self.pin_entry.get(),
+            )
+        except (AttributeError, ValueError, tk.TclError):
+            return False
+
+    def lock_workflow_readiness(self, mode, paths=None):
+        targets = tuple(
+            paths if paths is not None else self.selected_or_all_files()
+        )
+        access_ready = bool(
+            self.key
+            and (
+                not self.owner_policy
+                or self.active_key_matches_owner_policy()
+            )
+        )
+        return lock_workflow_profile_report(
+            self.lock_workflow_profile,
+            mode=mode,
+            access_ready=access_ready,
+            target_items=len(targets),
+            preview_guard_armed=self.safe_lock_preview_approval is not None,
+            recovery_test_ready=self.recovery_test_is_ready(),
+            pin_present=bool(self.pin_entry.get()),
+            capacity_status=self.current_lock_capacity_status(targets),
+        )
+
+    def set_lock_workflow_profile(self, profile_id):
+        selected = normalize_lock_workflow_profile(profile_id)
+        self.lock_workflow_profile = selected
+        if selected == DEFAULT_LOCK_WORKFLOW_PROFILE:
+            self.settings.pop("lock_workflow_profile", None)
+        else:
+            self.settings["lock_workflow_profile"] = selected
+        save_settings(self.settings)
+        profile = LOCK_WORKFLOW_PROFILES[selected]
+        self.status.set(f"Lock protection profile set to {profile['label']}.")
+        log_event("configuration_change", "lock_workflow_profile", "ok", selected)
+        window = self.lock_protection_window
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.event_generate("<<LockProtectionChanged>>")
+            except tk.TclError:
+                pass
+
+    def lock_workflow_allows(self, mode, paths):
+        try:
+            report = self.lock_workflow_readiness(mode, paths)
+        except (AttributeError, ValueError, tk.TclError):
+            report = {
+                "can_start": False,
+                "reasons": ("READINESS CHECK FAILED",),
+                "profile_label": "UNKNOWN",
+            }
+        if report["can_start"]:
+            return True
+        reason_text = "\n".join(f"- {reason}" for reason in report["reasons"])
+        self.status.set(
+            f"{report['profile_label']} protection blocked this lock."
+        )
+        log_event("lock_workflow_profile_block", "aggregate", "failed")
+        messagebox.showwarning(
+            "Lock protection stopped the job",
+            f"{report['profile_label']} protection requires:\n\n"
+            f"{reason_text}\n\n"
+            "No files were changed. Complete the checks in Lock Protection Center.",
+            parent=self,
+        )
+        self.open_lock_protection_center()
+        return False
+
+    def open_lock_protection_center(self, _event=None):
+        if self.lock_protection_window is not None:
+            try:
+                if self.lock_protection_window.winfo_exists():
+                    self.lock_protection_window.deiconify()
+                    self.lock_protection_window.lift()
+                    self.lock_protection_window.focus_set()
+                    return "break"
+            except tk.TclError:
+                pass
+            self.lock_protection_window = None
+
+        window = tk.Toplevel(self)
+        self.lock_protection_window = window
+        self.secondary_windows.append(window)
+        window.title("VaultLink Lock Protection Center")
+        window.geometry("800x520")
+        window.resizable(False, False)
+        window.configure(bg=BG)
+        window.transient(self)
+
+        mode_var = tk.StringVar(window, value="lock_copy")
+        profile_var = tk.StringVar(window, value="STANDARD")
+        status_var = tk.StringVar(window, value="CHECKING")
+        targets_var = tk.StringVar(window, value="0")
+        capacity_var = tk.StringVar(window, value="NOT CHECKED")
+        preview_var = tk.StringVar(window, value="PREVIEW GUARD OPTIONAL")
+        recovery_var = tk.StringVar(window, value="RECOVERY TEST OPTIONAL")
+        pin_var = tk.StringVar(window, value="PIN OPTIONAL")
+        capacity_detail_var = tk.StringVar(window, value="CAPACITY CHECK OPTIONAL")
+        result_var = tk.StringVar(window, value="Choose a profile and mode.")
+        monitor_after_id = [None]
+        observed_state = [None]
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill="both", expand=True, padx=24, pady=18)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Lock Protection Center",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 20, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text="METADATA ONLY | SESSION SAFETY GATES",
+            bg=BG,
+            fg=GREEN,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="right", pady=(8, 0))
+
+        profile_row = tk.Frame(outer, bg=BG)
+        profile_row.pack(fill="x", pady=(12, 0))
+        tk.Label(
+            profile_row,
+            text="PROTECTION PROFILE",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(0, 10))
+        for profile_id in ("standard", "guarded", "maximum"):
+            profile = LOCK_WORKFLOW_PROFILES[profile_id]
+            tk.Button(
+                profile_row,
+                text=profile["label"],
+                command=lambda selected=profile_id: self.set_lock_workflow_profile(selected),
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BORDER,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+                width=12,
+            ).pack(side="left", padx=(0, 7), ipady=6)
+        tk.Label(
+            profile_row,
+            text="MODE",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(14, 8))
+        for label, mode in (
+            ("COPY", "lock_copy"),
+            ("REMOVE", "lock_remove"),
+        ):
+            tk.Button(
+                profile_row,
+                text=label,
+                command=lambda selected=mode: (
+                    mode_var.set(selected),
+                    window.event_generate("<<LockProtectionChanged>>"),
+                ),
+                bg=SURFACE,
+                fg=TEXT,
+                activebackground=BORDER,
+                activeforeground=TEXT,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+                width=8,
+            ).pack(side="left", padx=(0, 7), ipady=6)
+
+        metrics = tk.Frame(outer, bg=BG)
+        metrics.pack(fill="x", pady=(12, 0))
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1, uniform="protection")
+
+        def add_metric(column, heading, variable, color):
+            panel = tk.Frame(
+                metrics,
+                bg=FIELD,
+                highlightbackground=BORDER,
+                highlightthickness=1,
+            )
+            panel.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 5, 0 if column == 3 else 5),
+            )
+            tk.Label(
+                panel,
+                text=heading,
+                bg=FIELD,
+                fg=MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w", padx=11, pady=(9, 3))
+            tk.Label(
+                panel,
+                textvariable=variable,
+                bg=FIELD,
+                fg=color,
+                font=("Segoe UI", 10, "bold"),
+                wraplength=150,
+                justify="left",
+            ).pack(anchor="w", padx=11, pady=(0, 10))
+
+        add_metric(0, "PROFILE", profile_var, BLUE)
+        add_metric(1, "STATUS", status_var, GREEN)
+        add_metric(2, "TARGETS", targets_var, TEXT)
+        add_metric(3, "CAPACITY", capacity_var, YELLOW)
+
+        details = tk.Frame(
+            outer,
+            bg=PANEL,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        details.pack(fill="x", pady=(12, 0))
+        tk.Label(
+            details,
+            text="CURRENT REQUIREMENTS",
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(anchor="w", padx=13, pady=(10, 6))
+        for variable in (
+            preview_var,
+            recovery_var,
+            pin_var,
+            capacity_detail_var,
+            result_var,
+        ):
+            tk.Label(
+                details,
+                textvariable=variable,
+                bg=PANEL,
+                fg=TEXT,
+                font=("Segoe UI", 8, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=730,
+            ).pack(fill="x", padx=13, pady=(0, 4))
+        tk.Label(
+            details,
+            text=(
+                "The capacity check reads names only to reach selected items, "
+                "but reports no names or paths and never reads file contents."
+            ),
+            bg=PANEL,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            wraplength=730,
+            justify="left",
+        ).pack(anchor="w", padx=13, pady=(2, 10))
+
+        actions_one = tk.Frame(outer, bg=BG)
+        actions_one.pack(fill="x", pady=(12, 0))
+        actions_two = tk.Frame(outer, bg=BG)
+        actions_two.pack(fill="x", pady=(8, 0))
+
+        def render(_event=None):
+            try:
+                report = self.lock_workflow_readiness(mode_var.get())
+            except (AttributeError, ValueError, tk.TclError):
+                status_var.set("CHECK FAILED")
+                return
+            profile = LOCK_WORKFLOW_PROFILES[report["profile_id"]]
+            profile_var.set(profile["label"])
+            status_var.set(report["status"])
+            targets_var.set(str(report["target_items"]))
+            capacity_var.set(report["capacity_status"])
+            status_color = GREEN if report["can_start"] else YELLOW
+            for child in metrics.grid_slaves(row=0, column=1):
+                labels = child.winfo_children()
+                if len(labels) > 1:
+                    labels[1].configure(fg=status_color)
+            preview_var.set(
+                "PREVIEW GUARD | "
+                + ("REQUIRED | " if profile["requires_preview_guard"] else "OPTIONAL | ")
+                + ("ARMED" if report["preview_guard_armed"] else "NOT ARMED")
+            )
+            recovery_var.set(
+                "RECOVERY TEST | "
+                + ("REQUIRED | " if profile["requires_recovery_test"] else "OPTIONAL | ")
+                + ("READY" if report["recovery_test_ready"] else "NOT READY")
+            )
+            pin_var.set(
+                "CURRENT PIN | "
+                + ("REQUIRED | " if profile["requires_pin"] else "OPTIONAL | ")
+                + ("PRESENT" if report["pin_present"] else "NOT PRESENT")
+            )
+            capacity_detail_var.set(
+                "CAPACITY HEADROOM | "
+                + ("REQUIRED | " if profile["requires_capacity_check"] else "OPTIONAL | ")
+                + report["capacity_status"]
+            )
+            result_var.set(
+                (
+                    "MODE LOCK COPY | READY TO START"
+                    if report["mode"] == "lock_copy"
+                    else "MODE LOCK + REMOVE ORIGINAL | READY TO START"
+                )
+                if report["can_start"]
+                else (
+                    (
+                        "MODE LOCK COPY | BLOCKING | "
+                        if report["mode"] == "lock_copy"
+                        else "MODE LOCK + REMOVE ORIGINAL | BLOCKING | "
+                    )
+                    + " | ".join(report["reasons"])
+                )
+            )
+
+        def run_capacity_check():
+            try:
+                queue_snapshot = tuple(self.file_list.get(0, tk.END))
+                target_snapshot = tuple(self.selected_or_all_files())
+            except (AttributeError, tk.TclError):
+                self.status.set("Could not read the current lock queue.")
+                return
+            if not target_snapshot:
+                self.status.set("Add or select lock targets before checking capacity.")
+                return
+
+            def worker(report_progress, cancel):
+                return build_lock_capacity_report(
+                    target_snapshot,
+                    cancel_event=cancel,
+                    progress=lambda completed, _total: report_progress(
+                        completed,
+                        f"Capacity {completed}/{len(target_snapshot)}",
+                    ),
+                )
+
+            def finished(report):
+                self.lock_capacity_report = report
+                self.lock_capacity_snapshot = (
+                    queue_snapshot,
+                    target_snapshot,
+                )
+                render()
+                self.status.set(
+                    f"Lock capacity check finished: {report['status']}."
+                )
+                log_event("lock_capacity_check", "aggregate", "ok", report["status"])
+
+            self.start_background_job(
+                "Capacity check",
+                len(target_snapshot),
+                worker,
+                finished,
+            )
+
+        def copy_readiness():
+            try:
+                summary = lock_workflow_profile_summary(
+                    self.lock_workflow_readiness(mode_var.get())
+                )
+                self.clipboard_clear()
+                self.clipboard_append(summary)
+                self.update_idletasks()
+            except (AttributeError, ValueError, tk.TclError):
+                self.status.set("Could not copy lock protection readiness.")
+                return
+            self.status.set("Privacy-safe lock protection readiness copied.")
+            log_event("lock_protection_summary_copy", "aggregate", "ok")
+
+        def copy_capacity():
+            if self.lock_capacity_report is None:
+                self.status.set("Run the capacity check before copying its summary.")
+                return
+            try:
+                summary = lock_capacity_summary(self.lock_capacity_report)
+                self.clipboard_clear()
+                self.clipboard_append(summary)
+                self.update_idletasks()
+            except (ValueError, tk.TclError):
+                self.status.set("Could not copy the capacity summary.")
+                return
+            self.status.set("Privacy-safe lock capacity summary copied.")
+            log_event("lock_capacity_summary_copy", "aggregate", "ok")
+
+        for parent, label, command, background, foreground in (
+            (actions_one, "RUN CAPACITY CHECK", run_capacity_check, GREEN, BLACK),
+            (actions_one, "OPEN SAFE PREVIEW", self.open_safe_lock_preview, BLUE, BLACK),
+            (actions_one, "RUN RECOVERY TEST", self.run_recovery_test_gui, YELLOW, BLACK),
+            (actions_two, "COPY READINESS", copy_readiness, SURFACE, TEXT),
+            (actions_two, "COPY CAPACITY", copy_capacity, SURFACE, TEXT),
+            (actions_two, "OPEN LOCKER", lambda: self.select_main_tab(2), SURFACE, TEXT),
+        ):
+            tk.Button(
+                parent,
+                text=label,
+                command=command,
+                bg=background,
+                fg=foreground,
+                activebackground=background,
+                activeforeground=foreground,
+                relief="flat",
+                font=("Segoe UI", 8, "bold"),
+            ).pack(side="left", padx=(0, 8), ipadx=10, ipady=8)
+        tk.Button(
+            actions_two,
+            text="CLOSE",
+            command=window.destroy,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="right", ipadx=12, ipady=8)
+
+        def monitor():
+            try:
+                if not window.winfo_exists():
+                    return
+                key_id = self.key.get("key_id") if self.key else ""
+                current = (
+                    tuple(self.file_list.get(0, tk.END)),
+                    tuple(self.selected_or_all_files()),
+                    self.pin_entry.get(),
+                    key_id,
+                    self.lock_workflow_profile,
+                    self.safe_lock_preview_approval is not None,
+                    self.current_lock_capacity_status(),
+                    self.recovery_test_is_ready(),
+                    mode_var.get(),
+                )
+                if current != observed_state[0]:
+                    observed_state[0] = current
+                    render()
+                monitor_after_id[0] = window.after(500, monitor)
+            except (AttributeError, tk.TclError):
+                monitor_after_id[0] = None
+
+        def cleanup(event):
+            if event.widget is not window:
+                return
+            if monitor_after_id[0] is not None:
+                try:
+                    window.after_cancel(monitor_after_id[0])
+                except tk.TclError:
+                    pass
+                monitor_after_id[0] = None
+            if self.lock_protection_window is window:
+                self.lock_protection_window = None
+            try:
+                self.secondary_windows.remove(window)
+            except ValueError:
+                pass
+
+        window.bind("<<LockProtectionChanged>>", render)
+        window.bind("<F5>", render)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.bind("<Destroy>", cleanup, add="+")
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        render()
+        monitor_after_id[0] = window.after(500, monitor)
         window.lift()
         return "break"
 
@@ -10190,6 +11217,13 @@ class USBFileLocker(tk.Tk):
             self.pin_mode.set("USB KEY + PIN ACTIVE")
         else:
             self.pin_mode.set("USB KEY ONLY")
+        window = getattr(self, "lock_protection_window", None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.event_generate("<<LockProtectionChanged>>")
+            except tk.TclError:
+                pass
 
     def register_secondary_window(self, window):
         self.secondary_windows.append(window)
@@ -10278,6 +11312,9 @@ class USBFileLocker(tk.Tk):
     def unload_session(self, reason, action_name, result):
         previous_key = self.key["key_id"] if self.key else ""
         self.key = None
+        self.recovery_test_proof = None
+        self.lock_capacity_report = None
+        self.lock_capacity_snapshot = None
         self.safe_lock_queue_history.clear()
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
@@ -11850,6 +12887,9 @@ class USBFileLocker(tk.Tk):
         self.account_username = ""
         self.safe_lock_queue_checkpoint = None
         self.safe_lock_preview_approval = None
+        self.recovery_test_proof = None
+        self.lock_capacity_report = None
+        self.lock_capacity_snapshot = None
         self.last_lock_receipt = None
         self.lock_receipt_history.clear()
         self.lock_receipt_history_index = -1
@@ -11945,6 +12985,9 @@ class USBFileLocker(tk.Tk):
         allowed, message = owner_key_allowed(key, self.owner_policy)
         if not allowed:
             raise ValueError(message)
+        self.recovery_test_proof = None
+        self.lock_capacity_report = None
+        self.lock_capacity_snapshot = None
         self.key = key
         remember_recent_key_path(self.settings, key["path"])
         save_settings(self.settings)
@@ -12198,8 +13241,20 @@ class USBFileLocker(tk.Tk):
             return result
 
         def finished(result):
+            self.recovery_test_proof = build_recovery_test_proof(
+                self.recovery_test_session_secret,
+                result["key_id"],
+                pin,
+            )
             log_event("recovery_self_test", "portable_test", "ok")
             self.status.set("Portable key + PIN recovery test passed.")
+            window = self.lock_protection_window
+            if window is not None:
+                try:
+                    if window.winfo_exists():
+                        window.event_generate("<<LockProtectionChanged>>")
+                except tk.TclError:
+                    pass
             messagebox.showinfo(
                 "Recovery test passed",
                 "Portable lock and unlock succeeded.\n\n"
@@ -12584,6 +13639,8 @@ class USBFileLocker(tk.Tk):
         if not paths:
             self.status.set("Add files or folders first.")
             return
+        if not self.lock_workflow_allows("lock_copy", paths):
+            return
         if not self.safe_lock_preview_guard_allows(paths):
             return
         pin = self.confirmed_lock_pin()
@@ -12650,6 +13707,8 @@ class USBFileLocker(tk.Tk):
         paths = self.selected_or_all_files()
         if not paths:
             self.status.set("Add files or folders first.")
+            return
+        if not self.lock_workflow_allows("lock_remove", paths):
             return
         if not self.safe_lock_preview_guard_allows(paths):
             return

@@ -355,7 +355,7 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("request", source)
 
     def test_tool_finder_catalog_is_fixed_and_resolves_to_app_commands(self):
-        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 31)
+        self.assertEqual(len(locker.TOOL_FINDER_ACTIONS), 32)
         self.assertEqual(
             len({action[1] for action in locker.TOOL_FINDER_ACTIONS}),
             len(locker.TOOL_FINDER_ACTIONS),
@@ -786,6 +786,231 @@ class DesktopHelperTests(unittest.TestCase):
         self.assertNotIn("private", serialized)
         with self.assertRaises(ValueError):
             locker.safe_lock_preview_guard_report("invalid", (), ())
+
+    def test_lock_workflow_profiles_enforce_only_their_declared_gates(self):
+        standard = locker.lock_workflow_profile_report(
+            "standard",
+            mode="lock_copy",
+            access_ready=True,
+            target_items=2,
+            preview_guard_armed=False,
+            recovery_test_ready=False,
+            pin_present=False,
+            capacity_status="NOT CHECKED",
+        )
+        guarded = locker.lock_workflow_profile_report(
+            "guarded",
+            mode="lock_copy",
+            access_ready=True,
+            target_items=2,
+            preview_guard_armed=False,
+            recovery_test_ready=False,
+            pin_present=False,
+            capacity_status="NOT CHECKED",
+        )
+        maximum = locker.lock_workflow_profile_report(
+            "maximum",
+            mode="lock_remove",
+            access_ready=True,
+            target_items=2,
+            preview_guard_armed=True,
+            recovery_test_ready=True,
+            pin_present=True,
+            capacity_status="READY",
+        )
+        maximum_blocked = locker.lock_workflow_profile_report(
+            "maximum",
+            mode="lock_remove",
+            access_ready=True,
+            target_items=2,
+            preview_guard_armed=False,
+            recovery_test_ready=False,
+            pin_present=False,
+            capacity_status="STALE",
+        )
+        standard_large = locker.lock_workflow_profile_report(
+            "standard",
+            mode="lock_copy",
+            access_ready=True,
+            target_items=1001,
+            preview_guard_armed=False,
+            recovery_test_ready=False,
+            pin_present=False,
+            capacity_status="NOT CHECKED",
+        )
+        guarded_large = locker.lock_workflow_profile_report(
+            "guarded",
+            mode="lock_copy",
+            access_ready=True,
+            target_items=1001,
+            preview_guard_armed=True,
+            recovery_test_ready=False,
+            pin_present=False,
+            capacity_status="NOT CHECKED",
+        )
+
+        self.assertTrue(standard["can_start"])
+        self.assertTrue(standard_large["can_start"])
+        self.assertEqual(guarded["reasons"], ("PREVIEW GUARD REQUIRED",))
+        self.assertEqual(guarded_large["reasons"], ("QUEUE LIMIT EXCEEDED",))
+        self.assertTrue(maximum["can_start"])
+        self.assertEqual(
+            maximum_blocked["reasons"],
+            (
+                "PREVIEW GUARD REQUIRED",
+                "RECOVERY TEST REQUIRED",
+                "PIN REQUIRED",
+                "CURRENT CAPACITY CHECK REQUIRED",
+            ),
+        )
+        self.assertEqual(locker.normalize_lock_workflow_profile("safe"), "guarded")
+        self.assertEqual(locker.normalize_lock_workflow_profile("unknown"), "standard")
+        summary = locker.lock_workflow_profile_summary(maximum_blocked)
+        self.assertIn("Profile: MAXIMUM", summary)
+        self.assertIn("Status: BLOCKED", summary)
+        self.assertIn("excludes filenames, paths", summary)
+
+    def test_recovery_test_proof_is_session_bound_private_and_expires(self):
+        secret = b"s" * 32
+        proof = locker.build_recovery_test_proof(
+            secret,
+            "KEY-ONE",
+            "private-pin",
+            now=100.0,
+        )
+        self.assertTrue(
+            locker.recovery_test_proof_matches(
+                proof,
+                secret,
+                "KEY-ONE",
+                "private-pin",
+                now=200.0,
+            )
+        )
+        self.assertFalse(
+            locker.recovery_test_proof_matches(
+                proof,
+                secret,
+                "KEY-TWO",
+                "private-pin",
+                now=200.0,
+            )
+        )
+        self.assertFalse(
+            locker.recovery_test_proof_matches(
+                proof,
+                secret,
+                "KEY-ONE",
+                "wrong-pin",
+                now=200.0,
+            )
+        )
+        self.assertFalse(
+            locker.recovery_test_proof_matches(
+                proof,
+                secret,
+                "KEY-ONE",
+                "private-pin",
+                now=100.0 + locker.RECOVERY_TEST_MAX_AGE_SECONDS + 1,
+            )
+        )
+        self.assertNotIn("private-pin", json.dumps(proof))
+
+    def test_lock_capacity_report_is_bounded_metadata_only_and_private(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "private-folder"
+            root.mkdir()
+            (root / "customer-name.txt").write_bytes(b"a" * 2048)
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / "secret.bin").write_bytes(b"b" * 4096)
+            direct = Path(temp_dir) / "direct-private.txt"
+            direct.write_bytes(b"c" * 1024)
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("contents were read"),
+            ), mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("contents were read"),
+            ):
+                report = locker.build_lock_capacity_report([root, direct])
+
+        self.assertEqual(report["status"], "READY")
+        self.assertTrue(report["can_continue"])
+        self.assertEqual(report["requested_roots"], 2)
+        self.assertEqual(report["folder_roots"], 1)
+        self.assertEqual(report["file_roots"], 1)
+        self.assertEqual(report["files_scanned"], 3)
+        self.assertEqual(report["total_source_bytes"], 7168)
+        serialized = json.dumps(report)
+        self.assertNotIn("customer-name", serialized)
+        self.assertNotIn("direct-private", serialized)
+        self.assertNotIn(temp_dir, serialized)
+        summary = locker.lock_capacity_summary(report)
+        self.assertIn("Status: READY", summary)
+        self.assertIn("Source size: 7.0 KB", summary)
+        self.assertIn("does not read file contents", summary)
+        self.assertIn("excludes filenames, paths, drive names", summary)
+        self.assertNotIn("customer-name", summary)
+
+    def test_lock_capacity_report_blocks_low_space_and_entry_limits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "one.txt").write_bytes(b"one")
+            (root / "two.txt").write_bytes(b"two")
+            with mock.patch.object(
+                locker.shutil,
+                "disk_usage",
+                return_value=SimpleNamespace(free=1),
+            ):
+                low_space = locker.build_lock_capacity_report([root])
+            limited = locker.build_lock_capacity_report(
+                [root],
+                max_entries=1,
+            )
+
+        self.assertEqual(low_space["status"], "LOW SPACE")
+        self.assertEqual(low_space["low_space_drives"], 1)
+        self.assertFalse(low_space["can_continue"])
+        self.assertEqual(limited["status"], "LIMIT")
+        self.assertTrue(limited["entries_truncated"])
+        with self.assertRaises(ValueError):
+            locker.build_lock_capacity_report([], max_entries=0)
+
+    def test_lock_protection_center_is_fixed_private_reachable_and_enforced(self):
+        source = inspect.getsource(
+            locker.USBFileLocker.open_lock_protection_center
+        )
+        app_source = Path(locker.__file__).read_text(encoding="utf-8")
+        self.assertIn('window.geometry("800x520")', source)
+        self.assertIn("window.resizable(False, False)", source)
+        self.assertIn('"RUN CAPACITY CHECK"', source)
+        self.assertIn('"OPEN SAFE PREVIEW"', source)
+        self.assertIn('"RUN RECOVERY TEST"', source)
+        self.assertIn('"COPY READINESS"', source)
+        self.assertIn('"COPY CAPACITY"', source)
+        self.assertIn("build_lock_capacity_report", source)
+        self.assertIn("lock_workflow_profile_summary", source)
+        self.assertIn("never reads file contents", source)
+        self.assertNotIn("tk.Canvas", source)
+        self.assertNotIn("Scrollbar", source)
+        self.assertIn('label="Open Lock Protection Center"', app_source)
+        self.assertIn(
+            ("Locking", "Lock Protection Center", "open_lock_protection_center"),
+            locker.TOOL_FINDER_ACTIONS,
+        )
+        for method in (
+            locker.USBFileLocker.lock_selected,
+            locker.USBFileLocker.lock_and_remove_selected,
+        ):
+            method_source = inspect.getsource(method)
+            self.assertIn("self.lock_workflow_allows(", method_source)
+            self.assertLess(
+                method_source.index("self.lock_workflow_allows("),
+                method_source.index("self.start_background_job("),
+            )
 
     def test_lock_job_receipt_completed_copy_is_aggregate_and_private(self):
         receipt = locker.build_lock_job_receipt(
